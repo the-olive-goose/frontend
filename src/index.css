@@ -1,0 +1,176 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&family=Inter:wght@300;400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 40 33% 96%;
+    --foreground: 220 10% 15%;
+
+    --card: 40 30% 98%;
+    --card-foreground: 220 10% 15%;
+
+    --popover: 40 30% 98%;
+    --popover-foreground: 220 10% 15%;
+
+    --primary: 82 40% 30%;
+    --primary-foreground: 40 33% 96%;
+
+    --secondary: 40 20% 90%;
+    --secondary-foreground: 220 10% 15%;
+
+    --muted: 40 15% 92%;
+    --muted-foreground: 220 5% 50%;
+
+    --accent: 82 30% 40%;
+    --accent-foreground: 40 33% 96%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 40 15% 85%;
+    --input: 40 15% 85%;
+    --ring: 82 40% 30%;
+
+    --radius: 0.5rem;
+
+    --olive: 82 40% 30%;
+    --olive-light: 82 25% 45%;
+    --olive-dark: 82 45% 20%;
+    --cream: 40 33% 96%;
+    --cream-dark: 40 20% 88%;
+    --charcoal: 220 10% 15%;
+    --charcoal-light: 220 5% 35%;
+    --warm-glow: 35 80% 55%;
+    --warm-glow-soft: 35 60% 70%;
+
+    --font-serif: 'Cormorant Garamond', Georgia, serif;
+    --font-sans: 'Inter', system-ui, sans-serif;
+
+    --shadow-glow: 0 0 60px hsl(35 80% 55% / 0.15);
+    --shadow-glow-strong: 0 0 100px hsl(35 80% 55% / 0.25);
+    --shadow-elegant: 0 10px 40px -10px hsl(220 10% 15% / 0.1);
+
+    --sidebar-background: 40 30% 98%;
+    --sidebar-foreground: 220 10% 15%;
+    --sidebar-primary: 82 40% 30%;
+    --sidebar-primary-foreground: 40 33% 96%;
+    --sidebar-accent: 40 15% 92%;
+    --sidebar-accent-foreground: 220 10% 15%;
+    --sidebar-border: 40 15% 85%;
+    --sidebar-ring: 82 40% 30%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-serif);
+  }
+}
+
+@layer utilities {
+  .font-serif {
+    font-family: var(--font-serif);
+  }
+
+  .font-sans {
+    font-family: var(--font-sans);
+  }
+
+  .text-glow {
+    text-shadow: 0 0 40px hsl(35 80% 55% / 0.3);
+  }
+
+  .bg-glow {
+    box-shadow: var(--shadow-glow);
+  }
+
+  .bg-glow-strong {
+    box-shadow: var(--shadow-glow-strong);
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes glow-pulse {
+  0%, 100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes logo-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+    filter: blur(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.8s ease-out forwards;
+}
+
+.animate-fade-up-delay-1 {
+  animation: fade-up 0.8s ease-out 0.2s forwards;
+  opacity: 0;
+}
+
+.animate-fade-up-delay-2 {
+  animation: fade-up 0.8s ease-out 0.4s forwards;
+  opacity: 0;
+}
+
+.animate-fade-up-delay-3 {
+  animation: fade-up 0.8s ease-out 0.6s forwards;
+  opacity: 0;
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 4s ease-in-out infinite;
+}
+
+.animate-logo-reveal {
+  animation: logo-reveal 1.2s ease-out forwards;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, hsl(35 80% 55% / 0.1), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 3s ease-in-out infinite;
+}
