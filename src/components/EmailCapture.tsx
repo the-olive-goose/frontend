@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { subscribe } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
 const EmailCapture = () => {
@@ -14,29 +14,23 @@ const EmailCapture = () => {
 
     setIsLoading(true);
     try {
-      const { error } = await supabase
-        .from("subscribers")
-        .insert({ email: email.trim().toLowerCase() });
-
-      if (error) {
-        if (error.code === "23505") {
-          toast({
-            title: "Already on the list",
-            description: "This email is already registered. We'll be in touch!",
-          });
-        } else {
-          throw error;
-        }
+      await subscribe(email.trim().toLowerCase());
+      setIsSuccess(true);
+      setEmail("");
+    } catch (err: unknown) {
+      const error = err as { code?: string };
+      if (error.code === "23505") {
+        toast({
+          title: "Already on the list",
+          description: "This email is already registered. We'll be in touch!",
+        });
       } else {
-        setIsSuccess(true);
-        setEmail("");
+        toast({
+          title: "Something went wrong",
+          description: "Please try again later.",
+          variant: "destructive",
+        });
       }
-    } catch {
-      toast({
-        title: "Something went wrong",
-        description: "Please try again later.",
-        variant: "destructive",
-      });
     } finally {
       setIsLoading(false);
     }

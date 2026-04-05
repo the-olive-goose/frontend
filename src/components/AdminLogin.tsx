@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { login } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import logo from "@/assets/logo.png";
 
@@ -13,8 +13,7 @@ const AdminLogin = ({ onLogin }: { onLogin: () => void }) => {
     e.preventDefault();
     setIsLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
+      await login(email, password);
       onLogin();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Login failed";

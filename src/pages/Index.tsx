@@ -1,17 +1,9 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { getSettings, type HeroSettings } from "@/lib/api";
 import logo from "@/assets/logo.png";
 import heroBg from "@/assets/hero-bg.jpg";
 import EmailCapture from "@/components/EmailCapture";
 import CountdownTimer from "@/components/CountdownTimer";
-
-interface HeroSettings {
-  headline: string;
-  subtext: string;
-  cta_text: string;
-  show_countdown: boolean;
-  launch_date: string | null;
-}
 
 const defaultHero: HeroSettings = {
   headline: "Something beautiful is coming",
@@ -27,16 +19,14 @@ const Index = () => {
 
   useEffect(() => {
     const fetchSettings = async () => {
-      const { data } = await supabase
-        .from("site_settings")
-        .select("value")
-        .eq("key", "hero")
-        .single();
-
-      if (data?.value) {
-        setHero(data.value as unknown as HeroSettings);
+      try {
+        const data = await getSettings();
+        if (data?.headline) setHero(data);
+      } catch {
+        // fall back to defaults silently
+      } finally {
+        setLoaded(true);
       }
-      setLoaded(true);
     };
     fetchSettings();
   }, []);

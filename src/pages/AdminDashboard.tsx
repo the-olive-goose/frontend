@@ -1,23 +1,17 @@
 import { useEffect, useState, useCallback } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import {
+  isLoggedIn,
+  logout,
+  getSettings,
+  saveSettings,
+  getSubscribers,
+  deleteSubscriber,
+  type HeroSettings,
+  type Subscriber,
+} from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
 import logo from "@/assets/logo.png";
-import type { Json } from "@/integrations/supabase/types";
-
-interface HeroSettings {
-  headline: string;
-  subtext: string;
-  cta_text: string;
-  show_countdown: boolean;
-  launch_date: string | null;
-}
-
-interface Subscriber {
-  id: string;
-  email: string;
-  subscribed_at: string;
-}
 
 const AdminDashboard = () => {
   const [session, setSession] = useState<boolean | null>(null);
@@ -34,23 +28,21 @@ const AdminDashboard = () => {
   const { toast } = useToast();
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(!!session);
-    });
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(!!session);
-    });
-    return () => subscription.unsubscribe();
+    setSession(isLoggedIn());
   }, []);
 
   const loadData = useCallback(async () => {
-    const [heroRes, subsRes] = await Promise.all([
-      supabase.from("site_settings").select("value").eq("key", "hero").single(),
-      supabase.from("subscribers").select("*").order("subscribed_at", { ascending: false }),
-    ]);
-    if (heroRes.data?.value) setHero(heroRes.data.value as unknown as HeroSettings);
-    if (subsRes.data) setSubscribers(subsRes.data);
-  }, []);
+    try {
+      const [heroData, subsData] = await Promise.all([
+        getSettings(),
+        getSubscribers(),
+      ]);
+      if (heroData?.headline) setHero(heroData);
+      setSubscribers(subsData);
+    } catch {
+      toast({ title: "Failed to load data", variant: "destructive" });
+    }
+  }, [toast]);
 
   useEffect(() => {
     if (session) loadData();
@@ -58,23 +50,24 @@ const AdminDashboard = () => {
 
   const saveHero = async () => {
     setIsSaving(true);
-    const { error } = await supabase
-      .from("site_settings")
-      .update({ value: hero as unknown as Json })
-      .eq("key", "hero");
-    setIsSaving(false);
-    if (error) {
-      toast({ title: "Error saving", description: error.message, variant: "destructive" });
-    } else {
+    try {
+      await saveSettings(hero);
       toast({ title: "Saved!", description: "Hero section updated." });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Save failed";
+      toast({ title: "Error saving", description: message, variant: "destructive" });
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const deleteSubscriber = async (id: string) => {
-    const { error } = await supabase.from("subscribers").delete().eq("id", id);
-    if (!error) {
+  const handleDeleteSubscriber = async (id: string) => {
+    try {
+      await deleteSubscriber(id);
       setSubscribers((prev) => prev.filter((s) => s.id !== id));
       toast({ title: "Deleted" });
+    } catch {
+      toast({ title: "Failed to delete", variant: "destructive" });
     }
   };
 
@@ -89,8 +82,8 @@ const AdminDashboard = () => {
     URL.revokeObjectURL(url);
   };
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
+  const handleLogout = () => {
+    logout();
     setSession(false);
   };
 
@@ -229,7 +222,7 @@ const AdminDashboard = () => {
                       </td>
                       <td className="px-4 py-3">
                         <button
-                          onClick={() => deleteSubscriber(sub.id)}
+                          onClick={() => handleDeleteSubscriber(sub.id)}
                           className="text-destructive hover:text-destructive/80 transition-colors text-xs font-sans"
                         >
                           Delete
