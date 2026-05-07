@@ -8,7 +8,7 @@ const authHeaders = (includeAuth = false): Record<string, string> => ({
   ...(includeAuth && getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
 });
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+// ── Legacy types (kept for backward compat) ────────────────────────────────────
 export interface HeroSettings {
   headline: string;
   subtext: string;
@@ -44,7 +44,36 @@ export const logout = (): void => {
 
 export const isLoggedIn = (): boolean => !!getToken();
 
-// ── Settings ───────────────────────────────────────────────────────────────────
+// ── Generic content API ────────────────────────────────────────────────────────
+// All site sections stored under /api/content/:section.
+// Falls back to `fallback` when the backend is unavailable.
+
+export const getContent = async <T>(section: string, fallback: T): Promise<T> => {
+  try {
+    const res = await fetch(`${API_URL}/api/content/${section}`);
+    if (!res.ok) return fallback;
+    const data = await res.json();
+    if (!data) return fallback;
+    if (Array.isArray(fallback)) return data as T;
+    return { ...fallback, ...data } as T;
+  } catch {
+    return fallback;
+  }
+};
+
+export const saveContent = async <T>(section: string, data: T): Promise<void> => {
+  const res = await fetch(`${API_URL}/api/content/${section}`, {
+    method: 'PUT',
+    headers: authHeaders(true),
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Failed to save');
+  }
+};
+
+// ── Legacy settings API ────────────────────────────────────────────────────────
 export const getSettings = async (): Promise<HeroSettings> => {
   const res = await fetch(`${API_URL}/api/settings`);
   if (!res.ok) throw new Error('Failed to load settings');

@@ -1,108 +1,95 @@
 import { useEffect, useState } from "react";
-import { getSettings, type HeroSettings } from "@/lib/api";
+import { getContent } from "@/lib/api";
+import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
 import logo from "@/assets/logo.png";
-import heroBg from "@/assets/hero-bg.jpg";
-import EmailCapture from "@/components/EmailCapture";
-import CountdownTimer from "@/components/CountdownTimer";
 
-const defaultHero: HeroSettings = {
-  headline: "Something beautiful is coming",
-  subtext: "Handcrafted candles designed to elevate your space",
-  cta_text: "Join the Waiting List",
-  show_countdown: false,
-  launch_date: null,
-};
+import NavbarSection      from "@/components/sections/NavbarSection";
+import HeroSection        from "@/components/sections/HeroSection";
+import SmellsLikeSection  from "@/components/sections/SmellsLikeSection";
+import ProductsSection    from "@/components/sections/ProductsSection";
+import MomentPillSection  from "@/components/sections/MomentPillSection";
+import WelcomeSection     from "@/components/sections/WelcomeSection";
+import FooterSection      from "@/components/sections/FooterSection";
 
 const Index = () => {
-  const [hero, setHero] = useState<HeroSettings>(defaultHero);
+  const [content, setContent] = useState<SiteContent>(DEFAULT_CONTENT);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const fetchSettings = async () => {
+    const load = async () => {
       try {
-        const data = await getSettings();
-        if (data?.headline) setHero(data);
+        const [
+          announcementBar,
+          navbar,
+          hero,
+          momentPill,
+          welcomeClub,
+          products,
+          candleCare,
+          brandStory,
+          videos,
+          testimonials,
+          newsletter,
+          footer,
+        ] = await Promise.all([
+          getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
+          getContent("navbar",          DEFAULT_CONTENT.navbar),
+          getContent("hero",            DEFAULT_CONTENT.hero),
+          getContent("momentPill",      DEFAULT_CONTENT.momentPill),
+          getContent("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
+          getContent("products",        DEFAULT_CONTENT.products),
+          getContent("candleCare",      DEFAULT_CONTENT.candleCare),
+          getContent("brandStory",      DEFAULT_CONTENT.brandStory),
+          getContent("videos",          DEFAULT_CONTENT.videos),
+          getContent("testimonials",    DEFAULT_CONTENT.testimonials),
+          getContent("newsletter",      DEFAULT_CONTENT.newsletter),
+          getContent("footer",          DEFAULT_CONTENT.footer),
+        ]);
+        setContent({
+          announcementBar, navbar, hero, momentPill, welcomeClub,
+          products, candleCare, brandStory, videos, testimonials, newsletter, footer,
+        });
       } catch {
-        // fall back to defaults silently
+        /* fall back to defaults */
       } finally {
         setLoaded(true);
       }
     };
-    fetchSettings();
+    load();
   }, []);
 
   if (!loaded) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-charcoal">
-        <img
-          src={logo}
-          alt="The Olive Goose"
-          className="w-24 h-24 animate-logo-reveal"
-          width={512}
-          height={512}
-        />
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "#1E2918" }}>
+        <img src={logo} alt="The Olive Goose" className="w-24 h-24 animate-logo-reveal" width={512} height={512} />
       </div>
     );
   }
 
   return (
-    <div className="relative min-h-screen flex items-center justify-center overflow-hidden">
-      {/* Background Image */}
-      <div
-        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-        style={{ backgroundImage: `url(${heroBg})` }}
-      />
+    <div className="w-full">
+      {/* Fixed header: announcement bar (38px) + nav (~56px) = 94px */}
+      <NavbarSection data={content.navbar} announcement={content.announcementBar} />
 
-      {/* Dark Overlay */}
-      <div className="absolute inset-0 bg-charcoal/70" />
+      <div className="pt-[94px]">
+        {/* 1. Hero — full-width image */}
+        <HeroSection data={content.hero} />
 
-      {/* Warm Glow Effects */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[600px] rounded-full bg-warm-glow/10 blur-[120px] animate-glow-pulse pointer-events-none" />
-      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-full h-1/3 bg-gradient-to-t from-warm-glow/5 to-transparent pointer-events-none" />
+        {/* 2. "SMELLS LIKE YOUR CAFÉ ERA." — cream bg */}
+        <SmellsLikeSection />
 
-      {/* Content */}
-      <div className="relative z-10 w-full max-w-2xl mx-auto px-6 py-20 text-center">
-        {/* Logo */}
-        <div className="animate-logo-reveal mb-10">
-          <img
-            src={logo}
-            alt="The Olive Goose"
-            className="w-28 h-28 sm:w-36 sm:h-36 mx-auto drop-shadow-2xl"
-            width={512}
-            height={512}
-          />
-        </div>
+        {/* 3. Products — green bg */}
+        <ProductsSection data={content.products} />
 
-        {/* Headline */}
-        <h1 className="font-serif text-4xl sm:text-5xl lg:text-6xl text-primary-foreground font-light leading-tight mb-6 animate-fade-up text-glow tracking-tight">
-          {hero.headline}
-        </h1>
+        {/* 4. "Live in the moment" pill — green bg */}
+        <MomentPillSection data={content.momentPill} />
 
-        {/* Subtext */}
-        <p className="font-sans text-base sm:text-lg text-primary-foreground/70 mb-10 animate-fade-up-delay-1 max-w-lg mx-auto leading-relaxed">
-          {hero.subtext}
-        </p>
+        {/* 5. "Welcome to the Olive Goose Club!" — green bg */}
+        <WelcomeSection data={content.welcomeClub} />
 
-        {/* Countdown */}
-        {hero.show_countdown && hero.launch_date && (
-          <div className="mb-10">
-            <CountdownTimer targetDate={hero.launch_date} />
-          </div>
-        )}
-
-        {/* Email Capture */}
-        <EmailCapture />
-
-        {/* Shimmer Line */}
-        <div className="mt-16 animate-shimmer h-px w-48 mx-auto opacity-30" />
+        {/* 6. Footer — white quick links + copyright */}
+        <FooterSection data={content.footer} />
       </div>
-
-      {/* Footer */}
-      <footer className="absolute bottom-6 left-0 right-0 text-center">
-        <p className="text-primary-foreground/30 text-xs font-sans tracking-widest uppercase">
-          © {new Date().getFullYear()} The Olive Goose
-        </p>
-      </footer>
     </div>
   );
 };

@@ -2,29 +2,995 @@ import { useEffect, useState, useCallback } from "react";
 import {
   isLoggedIn,
   logout,
-  getSettings,
-  saveSettings,
+  getContent,
+  saveContent,
   getSubscribers,
   deleteSubscriber,
-  type HeroSettings,
   type Subscriber,
 } from "@/lib/api";
+import {
+  DEFAULT_CONTENT,
+  type SiteContent,
+  type AnnouncementBarContent,
+  type NavbarContent,
+  type HeroContent,
+  type MomentPillContent,
+  type WelcomeClubContent,
+  type BrandStoryContent,
+  type ProductsContent,
+  type CandleCareContent,
+  type VideosContent,
+  type TestimonialsContent,
+  type NewsletterContent,
+  type FooterContent,
+  type Product,
+  type CandleCareCard,
+  type VideoItem,
+  type Testimonial,
+  type NavLink,
+  type SocialLink,
+} from "@/lib/defaults";
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
 import logo from "@/assets/logo.png";
 
+// ── Shared UI helpers ──────────────────────────────────────────────────────────
+
+const Field = ({
+  label,
+  children,
+  hint,
+}: {
+  label: string;
+  children: React.ReactNode;
+  hint?: string;
+}) => (
+  <div className="space-y-1.5">
+    <label className="block text-sm font-sans font-medium text-foreground">{label}</label>
+    {children}
+    {hint && <p className="text-xs text-muted-foreground font-sans">{hint}</p>}
+  </div>
+);
+
+const Input = (props: React.InputHTMLAttributes<HTMLInputElement>) => (
+  <input
+    {...props}
+    className={`w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 ${props.className ?? ""}`}
+  />
+);
+
+const Textarea = (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => (
+  <textarea
+    {...props}
+    className={`w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 resize-none ${props.className ?? ""}`}
+  />
+);
+
+const SaveButton = ({
+  onClick,
+  saving,
+}: {
+  onClick: () => void;
+  saving: boolean;
+}) => (
+  <button
+    onClick={onClick}
+    disabled={saving}
+    className="px-6 py-2.5 rounded-lg bg-primary text-primary-foreground font-sans text-sm font-medium hover:bg-olive-light transition-all disabled:opacity-50"
+  >
+    {saving ? "Saving…" : "Save Changes"}
+  </button>
+);
+
+const SectionHeading = ({ title, desc }: { title: string; desc?: string }) => (
+  <div className="mb-8 pb-4 border-b border-border">
+    <h2 className="font-serif text-2xl text-foreground">{title}</h2>
+    {desc && <p className="font-sans text-sm text-muted-foreground mt-1">{desc}</p>}
+  </div>
+);
+
+const AddButton = ({ onClick, label }: { onClick: () => void; label: string }) => (
+  <button
+    onClick={onClick}
+    className="flex items-center gap-2 px-4 py-2 rounded-lg border border-dashed border-border text-muted-foreground font-sans text-sm hover:border-primary hover:text-primary transition-colors"
+  >
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+    </svg>
+    {label}
+  </button>
+);
+
+const RemoveButton = ({ onClick }: { onClick: () => void }) => (
+  <button
+    onClick={onClick}
+    className="p-1.5 rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors"
+    title="Remove"
+  >
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  </button>
+);
+
+const Card = ({ children }: { children: React.ReactNode }) => (
+  <div className="bg-muted/40 border border-border rounded-xl p-5 space-y-4">{children}</div>
+);
+
+// ── Section editors ────────────────────────────────────────────────────────────
+
+const AnnouncementBarEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: AnnouncementBarContent;
+  onChange: (d: AnnouncementBarContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading
+      title="Announcement Bar"
+      desc="The coloured strip above the navbar. Messages rotate automatically."
+    />
+
+    <div className="space-y-3">
+      <label className="block text-sm font-sans font-medium text-foreground">
+        Messages (up to 5)
+      </label>
+      {data.messages.map((msg, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <Input
+            placeholder={`Message ${i + 1}`}
+            value={msg}
+            onChange={(e) => {
+              const messages = [...data.messages];
+              messages[i] = e.target.value;
+              onChange({ ...data, messages });
+            }}
+          />
+          <RemoveButton
+            onClick={() => onChange({ ...data, messages: data.messages.filter((_, j) => j !== i) })}
+          />
+        </div>
+      ))}
+      {data.messages.length < 5 && (
+        <AddButton
+          label="Add message"
+          onClick={() => onChange({ ...data, messages: [...data.messages, ""] })}
+        />
+      )}
+    </div>
+
+    <Field
+      label={`Display time per message: ${data.interval_ms / 1000}s`}
+      hint="How long each message stays visible before the next one appears"
+    >
+      <input
+        type="range"
+        min={500}
+        max={8000}
+        step={100}
+        value={data.interval_ms}
+        onChange={(e) => onChange({ ...data, interval_ms: Number(e.target.value) })}
+        className="w-full accent-primary"
+      />
+      <div className="flex justify-between text-xs text-muted-foreground font-sans mt-1">
+        <span>0.5 s</span><span>8 s</span>
+      </div>
+    </Field>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const NavbarEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: NavbarContent;
+  onChange: (d: NavbarContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Navbar" desc="Configure the top navigation bar." />
+    <Field label="Brand Name">
+      <Input value={data.brand_name} onChange={(e) => onChange({ ...data, brand_name: e.target.value })} />
+    </Field>
+    <Field label="CTA Button Text">
+      <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+    </Field>
+    <Field label="CTA Button Link">
+      <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+    </Field>
+
+    <div className="space-y-2">
+      <label className="block text-sm font-sans font-medium text-foreground">Nav Links</label>
+      {data.links.map((link, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <Input
+            placeholder="Label"
+            value={link.label}
+            onChange={(e) => {
+              const links = [...data.links];
+              links[i] = { ...links[i], label: e.target.value };
+              onChange({ ...data, links });
+            }}
+          />
+          <Input
+            placeholder="Href"
+            value={link.href}
+            onChange={(e) => {
+              const links = [...data.links];
+              links[i] = { ...links[i], href: e.target.value };
+              onChange({ ...data, links });
+            }}
+          />
+          <RemoveButton onClick={() => {
+            const links = data.links.filter((_, j) => j !== i);
+            onChange({ ...data, links });
+          }} />
+        </div>
+      ))}
+      <AddButton
+        label="Add link"
+        onClick={() => onChange({ ...data, links: [...data.links, { label: "", href: "#" }] })}
+      />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const HeroEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: HeroContent;
+  onChange: (d: HeroContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Hero Section" desc="The full-screen banner at the top of the page." />
+    <Field label="Headline">
+      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+    </Field>
+    <Field label="Subtext">
+      <Textarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="CTA Button Text">
+        <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+      </Field>
+      <Field label="CTA Button Link">
+        <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+      </Field>
+    </div>
+    <Field label="Background Image URL" hint="Paste a direct image URL (jpg, png, webp)">
+      <Input
+        placeholder="https://…"
+        value={data.bg_image_url}
+        onChange={(e) => onChange({ ...data, bg_image_url: e.target.value })}
+      />
+    </Field>
+    <Field label={`Overlay Opacity: ${Math.round(data.overlay_opacity * 100)}%`}>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={Math.round(data.overlay_opacity * 100)}
+        onChange={(e) => onChange({ ...data, overlay_opacity: Number(e.target.value) / 100 })}
+        className="w-full accent-primary"
+      />
+    </Field>
+    <div className="flex items-center gap-3">
+      <input
+        type="checkbox"
+        id="countdown"
+        checked={data.show_countdown}
+        onChange={(e) => onChange({ ...data, show_countdown: e.target.checked })}
+        className="w-4 h-4 rounded border-border text-primary"
+      />
+      <label htmlFor="countdown" className="text-sm font-sans text-foreground">Show Countdown Timer</label>
+    </div>
+    {data.show_countdown && (
+      <Field label="Launch Date">
+        <Input
+          type="datetime-local"
+          value={data.launch_date || ""}
+          onChange={(e) => onChange({ ...data, launch_date: e.target.value })}
+        />
+      </Field>
+    )}
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const BrandStoryEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: BrandStoryContent;
+  onChange: (d: BrandStoryContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Brand Story" desc="The 'Our Story' two-column section." />
+    <Field label="Section Label" hint="Small uppercase label above the headline">
+      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+    </Field>
+    <Field label="Headline">
+      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+    </Field>
+    <Field label="Body Text" hint="Use blank lines to separate paragraphs">
+      <Textarea rows={6} value={data.body} onChange={(e) => onChange({ ...data, body: e.target.value })} />
+    </Field>
+    <Field label="Image URL">
+      <Input
+        placeholder="https://…"
+        value={data.image_url}
+        onChange={(e) => onChange({ ...data, image_url: e.target.value })}
+      />
+    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="CTA Button Text">
+        <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+      </Field>
+      <Field label="CTA Button Link">
+        <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+      </Field>
+    </div>
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const ProductsEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: ProductsContent;
+  onChange: (d: ProductsContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Products / Collection" desc="Product cards shown in the grid." />
+    <Field label="Section Label">
+      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+    </Field>
+    <Field label="Section Headline">
+      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+    </Field>
+    <Field label="Section Subtext">
+      <Textarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+    </Field>
+
+    <div className="space-y-4">
+      <label className="block text-sm font-sans font-medium text-foreground">Products</label>
+      {data.items.map((product, i) => (
+        <Card key={product.id}>
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm font-medium text-foreground">Product {i + 1}</span>
+            <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Name">
+              <Input value={product.name} onChange={(e) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], name: e.target.value };
+                onChange({ ...data, items });
+              }} />
+            </Field>
+            <Field label="Price">
+              <Input value={product.price} onChange={(e) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], price: e.target.value };
+                onChange({ ...data, items });
+              }} />
+            </Field>
+          </div>
+          <Field label="Description">
+            <Input value={product.description} onChange={(e) => {
+              const items = [...data.items];
+              items[i] = { ...items[i], description: e.target.value };
+              onChange({ ...data, items });
+            }} />
+          </Field>
+          <Field label="Image URL">
+            <Input placeholder="https://…" value={product.image_url} onChange={(e) => {
+              const items = [...data.items];
+              items[i] = { ...items[i], image_url: e.target.value };
+              onChange({ ...data, items });
+            }} />
+          </Field>
+          <Field label="Badge / Tag" hint={`e.g. "NEW", "BESTSELLER" — leave blank to hide`}>
+            <Input value={product.tag} onChange={(e) => {
+              const items = [...data.items];
+              items[i] = { ...items[i], tag: e.target.value };
+              onChange({ ...data, items });
+            }} />
+          </Field>
+        </Card>
+      ))}
+      <AddButton
+        label="Add product"
+        onClick={() => {
+          const newProduct: Product = {
+            id: Date.now().toString(),
+            name: "New Product",
+            description: "",
+            price: "$0",
+            image_url: "",
+            tag: "",
+          };
+          onChange({ ...data, items: [...data.items, newProduct] });
+        }}
+      />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const MomentPillEditor = ({
+  data, onChange, onSave, saving,
+}: { data: MomentPillContent; onChange: (d: MomentPillContent) => void; onSave: () => void; saving: boolean }) => (
+  <div className="space-y-6">
+    <SectionHeading title="'Live in the Moment' Pill" desc="The white pill section between Products and Welcome." />
+    <Field label="Text 1" hint={`e.g. "Live in the moment."`}>
+      <Input value={data.text1} onChange={(e) => onChange({ ...data, text1: e.target.value })} />
+    </Field>
+    <Field label="Image 1 URL" hint="Small inline oval image (e.g. candles photo)">
+      <Input placeholder="https://…" value={data.image1_url} onChange={(e) => onChange({ ...data, image1_url: e.target.value })} />
+    </Field>
+    <Field label="Text 2" hint={`e.g. "Because after all,"`}>
+      <Input value={data.text2} onChange={(e) => onChange({ ...data, text2: e.target.value })} />
+    </Field>
+    <Field label="Image 2 URL" hint="Second small inline oval image">
+      <Input placeholder="https://…" value={data.image2_url} onChange={(e) => onChange({ ...data, image2_url: e.target.value })} />
+    </Field>
+      <Field label="Text 3" hint={`e.g. "isn't it the most important?"`}>
+      <Input value={data.text3} onChange={(e) => onChange({ ...data, text3: e.target.value })} />
+    </Field>
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const WelcomeClubEditor = ({
+  data, onChange, onSave, saving,
+}: { data: WelcomeClubContent; onChange: (d: WelcomeClubContent) => void; onSave: () => void; saving: boolean }) => (
+  <div className="space-y-6">
+    <SectionHeading title="Welcome to the Club" desc="Green section with founder photo and bio." />
+    <Field label="Headline" hint={`e.g. "Welcome to the Olive Goose Club!"`}>
+      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+    </Field>
+    <Field label="Founder Photo URL" hint="Circular profile photo — paste a direct image URL">
+      <Input placeholder="https://…" value={data.photo_url} onChange={(e) => onChange({ ...data, photo_url: e.target.value })} />
+    </Field>
+    <Field label="Name Line" hint={`e.g. "I'm Meghna, the person behind The Olive Goose."`}>
+      <Input value={data.name_line} onChange={(e) => onChange({ ...data, name_line: e.target.value })} />
+    </Field>
+    <Field label="Bio">
+      <Textarea rows={3} value={data.bio} onChange={(e) => onChange({ ...data, bio: e.target.value })} />
+    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Button Text">
+        <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+      </Field>
+      <Field label="Button Link">
+        <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+      </Field>
+    </div>
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const CandleCareEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: CandleCareContent;
+  onChange: (d: CandleCareContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Candle Care" desc='The "Love it long. Burn it right." instruction section.' />
+    <Field label="Section Label">
+      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Headline Part 1 (plain)" hint={`e.g. "Love it long."`}>
+        <Input value={data.headline_part1} onChange={(e) => onChange({ ...data, headline_part1: e.target.value })} />
+      </Field>
+      <Field label="Headline Part 2 (italic / olive)" hint={`e.g. "Burn it right."`}>
+        <Input value={data.headline_part2} onChange={(e) => onChange({ ...data, headline_part2: e.target.value })} />
+      </Field>
+    </div>
+
+    <div className="space-y-4">
+      <label className="block text-sm font-sans font-medium text-foreground">Care Cards</label>
+      {data.cards.map((card, i) => (
+        <Card key={i}>
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm font-medium text-foreground">Card {i + 1}</span>
+            <RemoveButton onClick={() => onChange({ ...data, cards: data.cards.filter((_, j) => j !== i) })} />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Number" hint={`e.g. "01"`}>
+              <Input value={card.number} onChange={(e) => {
+                const cards = [...data.cards];
+                cards[i] = { ...cards[i], number: e.target.value };
+                onChange({ ...data, cards });
+              }} />
+            </Field>
+            <div className="col-span-2">
+              <Field label="Title">
+                <Input value={card.title} onChange={(e) => {
+                  const cards = [...data.cards];
+                  cards[i] = { ...cards[i], title: e.target.value };
+                  onChange({ ...data, cards });
+                }} />
+              </Field>
+            </div>
+          </div>
+          <Field label="Description">
+            <Textarea rows={3} value={card.description} onChange={(e) => {
+              const cards = [...data.cards];
+              cards[i] = { ...cards[i], description: e.target.value };
+              onChange({ ...data, cards });
+            }} />
+          </Field>
+        </Card>
+      ))}
+      <AddButton
+        label="Add card"
+        onClick={() => {
+          const newCard: CandleCareCard = { number: `0${data.cards.length + 1}`, title: "", description: "" };
+          onChange({ ...data, cards: [...data.cards, newCard] });
+        }}
+      />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const VideosEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: VideosContent;
+  onChange: (d: VideosContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Videos" desc="Three studio/brand videos embedded from YouTube, Vimeo, or a direct URL." />
+    <Field label="Section Label">
+      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+    </Field>
+    <Field label="Section Headline">
+      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+    </Field>
+    <Field label="Section Subtext">
+      <Input value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+    </Field>
+
+    <div className="space-y-4">
+      <label className="block text-sm font-sans font-medium text-foreground">Videos</label>
+      {data.items.map((item, i) => (
+        <Card key={item.id}>
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm font-medium text-foreground">Video {i + 1}</span>
+            <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
+          </div>
+          <Field label="Title">
+            <Input value={item.title} onChange={(e) => {
+              const items = [...data.items];
+              items[i] = { ...items[i], title: e.target.value };
+              onChange({ ...data, items });
+            }} />
+          </Field>
+          <Field label="Description">
+            <Input value={item.description} onChange={(e) => {
+              const items = [...data.items];
+              items[i] = { ...items[i], description: e.target.value };
+              onChange({ ...data, items });
+            }} />
+          </Field>
+          <Field
+            label="Video URL"
+            hint="Paste a YouTube link (youtube.com/watch?v=… or youtu.be/…), Vimeo link, or direct .mp4 URL"
+          >
+            <Input
+              placeholder="https://www.youtube.com/watch?v=…"
+              value={item.video_url}
+              onChange={(e) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], video_url: e.target.value };
+                onChange({ ...data, items });
+              }}
+            />
+          </Field>
+        </Card>
+      ))}
+      <AddButton
+        label="Add video"
+        onClick={() => {
+          const newVideo: VideoItem = { id: Date.now().toString(), title: "", description: "", video_url: "" };
+          onChange({ ...data, items: [...data.items, newVideo] });
+        }}
+      />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const TestimonialsEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: TestimonialsContent;
+  onChange: (d: TestimonialsContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Testimonials" desc="Customer review cards." />
+    <Field label="Section Label">
+      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+    </Field>
+    <Field label="Section Headline">
+      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+    </Field>
+
+    <div className="space-y-4">
+      <label className="block text-sm font-sans font-medium text-foreground">Testimonials</label>
+      {data.items.map((item, i) => (
+        <Card key={item.id}>
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm font-medium text-foreground">Testimonial {i + 1}</span>
+            <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
+          </div>
+          <Field label="Quote">
+            <Textarea rows={3} value={item.quote} onChange={(e) => {
+              const items = [...data.items];
+              items[i] = { ...items[i], quote: e.target.value };
+              onChange({ ...data, items });
+            }} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Author Name">
+              <Input value={item.author} onChange={(e) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], author: e.target.value };
+                onChange({ ...data, items });
+              }} />
+            </Field>
+            <Field label="Location">
+              <Input value={item.location} onChange={(e) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], location: e.target.value };
+                onChange({ ...data, items });
+              }} />
+            </Field>
+          </div>
+          <Field label={`Star Rating: ${item.rating} / 5`}>
+            <input
+              type="range"
+              min={1}
+              max={5}
+              value={item.rating}
+              onChange={(e) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], rating: Number(e.target.value) };
+                onChange({ ...data, items });
+              }}
+              className="w-full accent-primary"
+            />
+          </Field>
+        </Card>
+      ))}
+      <AddButton
+        label="Add testimonial"
+        onClick={() => {
+          const newT: Testimonial = { id: Date.now().toString(), quote: "", author: "", location: "", rating: 5 };
+          onChange({ ...data, items: [...data.items, newT] });
+        }}
+      />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const NewsletterEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: NewsletterContent;
+  onChange: (d: NewsletterContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Newsletter Section" desc="The olive-green email sign-up banner." />
+    <Field label="Section Label">
+      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+    </Field>
+    <Field label="Headline">
+      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+    </Field>
+    <Field label="Subtext">
+      <Textarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+    </Field>
+    <Field label="Input Placeholder">
+      <Input value={data.placeholder} onChange={(e) => onChange({ ...data, placeholder: e.target.value })} />
+    </Field>
+    <Field label="Submit Button Text">
+      <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+    </Field>
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const FooterEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: FooterContent;
+  onChange: (d: FooterContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Footer" desc="Dark footer with links, social, and copyright." />
+    <Field label="Brand Name" hint="Shown next to the logo in the footer">
+      <Input value={data.brand_name ?? ""} onChange={(e) => onChange({ ...data, brand_name: e.target.value })} />
+    </Field>
+    <Field label="Tagline">
+      <Input value={data.tagline} onChange={(e) => onChange({ ...data, tagline: e.target.value })} />
+    </Field>
+    <Field label="Copyright Text">
+      <Input value={data.copyright} onChange={(e) => onChange({ ...data, copyright: e.target.value })} />
+    </Field>
+
+    <div className="space-y-2">
+      <label className="block text-sm font-sans font-medium text-foreground">Footer Links</label>
+      {(data.links ?? []).map((link, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <Input
+            placeholder="Label"
+            value={link.label}
+            onChange={(e) => {
+              const links = [...(data.links ?? [])];
+              links[i] = { ...links[i], label: e.target.value };
+              onChange({ ...data, links });
+            }}
+          />
+          <Input
+            placeholder="Href"
+            value={link.href}
+            onChange={(e) => {
+              const links = [...(data.links ?? [])];
+              links[i] = { ...links[i], href: e.target.value };
+              onChange({ ...data, links });
+            }}
+          />
+          <RemoveButton onClick={() => onChange({ ...data, links: (data.links ?? []).filter((_, j) => j !== i) })} />
+        </div>
+      ))}
+      <AddButton
+        label="Add link"
+        onClick={() => onChange({ ...data, links: [...(data.links ?? []), { label: "", href: "#" }] })}
+      />
+    </div>
+
+    <div className="space-y-2">
+      <label className="block text-sm font-sans font-medium text-foreground">Social Links</label>
+      {(data.social_links ?? []).map((social, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <Input
+            placeholder="Platform name"
+            value={social.platform}
+            onChange={(e) => {
+              const social_links = [...(data.social_links ?? [])];
+              social_links[i] = { ...social_links[i], platform: e.target.value };
+              onChange({ ...data, social_links });
+            }}
+          />
+          <Input
+            placeholder="URL"
+            value={social.href}
+            onChange={(e) => {
+              const social_links = [...(data.social_links ?? [])];
+              social_links[i] = { ...social_links[i], href: e.target.value };
+              onChange({ ...data, social_links });
+            }}
+          />
+          <RemoveButton onClick={() => onChange({ ...data, social_links: (data.social_links ?? []).filter((_, j) => j !== i) })} />
+        </div>
+      ))}
+      <AddButton
+        label="Add social"
+        onClick={() => onChange({ ...data, social_links: [...(data.social_links ?? []), { platform: "", href: "#" }] })}
+      />
+    </div>
+
+    <div className="space-y-2">
+      <label className="block text-sm font-sans font-medium text-foreground">Policy Links</label>
+      <p className="text-xs text-muted-foreground font-sans">Links shown in the bottom copyright bar (Privacy policy, Terms of service, etc.)</p>
+      {(data.policy_links ?? []).map((link, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <Input
+            placeholder="Label"
+            value={link.label}
+            onChange={(e) => {
+              const policy_links = [...(data.policy_links ?? [])];
+              policy_links[i] = { ...policy_links[i], label: e.target.value };
+              onChange({ ...data, policy_links });
+            }}
+          />
+          <Input
+            placeholder="Href"
+            value={link.href}
+            onChange={(e) => {
+              const policy_links = [...(data.policy_links ?? [])];
+              policy_links[i] = { ...policy_links[i], href: e.target.value };
+              onChange({ ...data, policy_links });
+            }}
+          />
+          <RemoveButton onClick={() => onChange({ ...data, policy_links: (data.policy_links ?? []).filter((_, j) => j !== i) })} />
+        </div>
+      ))}
+      <AddButton
+        label="Add policy link"
+        onClick={() => onChange({ ...data, policy_links: [...(data.policy_links ?? []), { label: "", href: "#" }] })}
+      />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const SubscribersPanel = ({
+  subscribers,
+  onDelete,
+}: {
+  subscribers: Subscriber[];
+  onDelete: (id: string) => void;
+}) => {
+  const exportCSV = () => {
+    const csv = ["Email,Subscribed At", ...subscribers.map((s) => `${s.email},${s.subscribed_at}`)].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "subscribers.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Subscribers" desc="Email addresses collected via the newsletter form." />
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground font-sans">
+          {subscribers.length} subscriber{subscribers.length !== 1 ? "s" : ""}
+        </p>
+        <button
+          onClick={exportCSV}
+          className="px-4 py-2 rounded-lg border border-border text-sm font-sans text-foreground hover:bg-muted transition-colors"
+        >
+          Export CSV
+        </button>
+      </div>
+      <div className="border border-border rounded-xl overflow-hidden">
+        <table className="w-full">
+          <thead>
+            <tr className="bg-muted/50">
+              <th className="text-left px-4 py-3 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Email</th>
+              <th className="text-left px-4 py-3 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Date</th>
+              <th className="px-4 py-3 w-10" />
+            </tr>
+          </thead>
+          <tbody>
+            {subscribers.map((sub) => (
+              <tr key={sub.id} className="border-t border-border hover:bg-muted/30 transition-colors">
+                <td className="px-4 py-3 text-sm font-sans text-foreground">{sub.email}</td>
+                <td className="px-4 py-3 text-sm font-sans text-muted-foreground">
+                  {new Date(sub.subscribed_at).toLocaleDateString()}
+                </td>
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => onDelete(sub.id)}
+                    className="text-destructive hover:text-destructive/80 transition-colors text-xs font-sans"
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {subscribers.length === 0 && (
+              <tr>
+                <td colSpan={3} className="px-4 py-8 text-center text-sm text-muted-foreground font-sans">
+                  No subscribers yet
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ── Sidebar nav ────────────────────────────────────────────────────────────────
+
+type TabId =
+  | "announcementBar"
+  | "navbar"
+  | "hero"
+  | "momentPill"
+  | "welcomeClub"
+  | "brandStory"
+  | "products"
+  | "candleCare"
+  | "videos"
+  | "testimonials"
+  | "newsletter"
+  | "footer"
+  | "subscribers";
+
+const NAV_ITEMS: { id: TabId; label: string; icon: string }[] = [
+  { id: "announcementBar", label: "Announcement Bar", icon: "📢" },
+  { id: "navbar",       label: "Navbar",        icon: "☰" },
+  { id: "hero",         label: "Hero",           icon: "★" },
+  { id: "products",     label: "Products",       icon: "◈" },
+  { id: "momentPill",   label: "Moment Pill",    icon: "💊" },
+  { id: "welcomeClub",  label: "Welcome Club",   icon: "🫶" },
+  { id: "brandStory",   label: "Brand Story",    icon: "✦" },
+  { id: "candleCare",   label: "Candle Care",    icon: "♨" },
+  { id: "videos",       label: "Videos",         icon: "▶" },
+  { id: "testimonials", label: "Testimonials",   icon: "❝" },
+  { id: "newsletter",   label: "Newsletter",     icon: "✉" },
+  { id: "footer",       label: "Footer",         icon: "⊘" },
+  { id: "subscribers",  label: "Subscribers",    icon: "◉" },
+];
+
+// ── Main Dashboard ─────────────────────────────────────────────────────────────
+
 const AdminDashboard = () => {
   const [session, setSession] = useState<boolean | null>(null);
-  const [activeTab, setActiveTab] = useState("hero");
-  const [hero, setHero] = useState<HeroSettings>({
-    headline: "",
-    subtext: "",
-    cta_text: "",
-    show_countdown: false,
-    launch_date: null,
-  });
+  const [activeTab, setActiveTab] = useState<TabId>("hero");
+  const [content, setContent] = useState<SiteContent>(DEFAULT_CONTENT);
   const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
-  const [isSaving, setIsSaving] = useState(false);
+  const [saving, setSaving] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -32,32 +998,47 @@ const AdminDashboard = () => {
   }, []);
 
   const loadData = useCallback(async () => {
-    try {
-      const [heroData, subsData] = await Promise.all([
-        getSettings(),
-        getSubscribers(),
+    // ── Content sections (getContent never throws — falls back to defaults) ──
+    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer] =
+      await Promise.all([
+        getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
+        getContent("navbar",          DEFAULT_CONTENT.navbar),
+        getContent("hero",            DEFAULT_CONTENT.hero),
+        getContent("momentPill",      DEFAULT_CONTENT.momentPill),
+        getContent("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
+        getContent("brandStory",      DEFAULT_CONTENT.brandStory),
+        getContent("products",        DEFAULT_CONTENT.products),
+        getContent("candleCare",      DEFAULT_CONTENT.candleCare),
+        getContent("videos",          DEFAULT_CONTENT.videos),
+        getContent("testimonials",    DEFAULT_CONTENT.testimonials),
+        getContent("newsletter",      DEFAULT_CONTENT.newsletter),
+        getContent("footer",          DEFAULT_CONTENT.footer),
       ]);
-      if (heroData?.headline) setHero(heroData);
-      setSubscribers(subsData);
+    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer });
+
+    // ── Subscribers (separate — can throw if auth fails) ──────────────────────
+    try {
+      const subs = await getSubscribers();
+      setSubscribers(subs);
     } catch {
-      toast({ title: "Failed to load data", variant: "destructive" });
+      // Token may be expired; subscribers list stays empty — not fatal
     }
-  }, [toast]);
+  }, []);
 
   useEffect(() => {
     if (session) loadData();
   }, [session, loadData]);
 
-  const saveHero = async () => {
-    setIsSaving(true);
+  const handleSave = async (section: keyof SiteContent) => {
+    setSaving(true);
     try {
-      await saveSettings(hero);
-      toast({ title: "Saved!", description: "Hero section updated." });
+      await saveContent(section, content[section]);
+      toast({ title: "Saved!", description: `${section} section updated.` });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Save failed";
       toast({ title: "Error saving", description: message, variant: "destructive" });
     } finally {
-      setIsSaving(false);
+      setSaving(false);
     }
   };
 
@@ -71,177 +1052,83 @@ const AdminDashboard = () => {
     }
   };
 
-  const exportCSV = () => {
-    const csv = ["Email,Subscribed At", ...subscribers.map((s) => `${s.email},${s.subscribed_at}`)].join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "subscribers.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleLogout = () => {
-    logout();
-    setSession(false);
-  };
-
   if (session === null) return null;
   if (!session) return <AdminLogin onLogin={() => setSession(true)} />;
 
-  const tabs = [
-    { id: "hero", label: "Hero Section" },
-    { id: "subscribers", label: "Subscribers" },
-  ];
+  const update = <K extends keyof SiteContent>(section: K) =>
+    (value: SiteContent[K]) => setContent((prev) => ({ ...prev, [section]: value }));
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border px-6 py-4 flex items-center justify-between">
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
+      {/* Top header */}
+      <header className="border-b border-border px-6 py-3 flex items-center justify-between bg-card shrink-0">
         <div className="flex items-center gap-3">
-          <img src={logo} alt="The Olive Goose" className="w-10 h-10" width={512} height={512} />
+          <img src={logo} alt="The Olive Goose" className="w-9 h-9" width={512} height={512} />
           <div>
-            <h1 className="font-serif text-lg text-foreground">The Olive Goose</h1>
+            <h1 className="font-serif text-base text-foreground leading-tight">The Olive Goose</h1>
             <p className="text-xs text-muted-foreground font-sans">Admin Dashboard</p>
           </div>
         </div>
-        <button onClick={handleLogout} className="text-sm text-muted-foreground hover:text-foreground transition-colors font-sans">
-          Sign Out
-        </button>
+        <div className="flex items-center gap-4">
+          <a
+            href="/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors font-sans flex items-center gap-1"
+          >
+            View Site
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+          </a>
+          <button
+            onClick={() => { logout(); setSession(false); }}
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors font-sans"
+          >
+            Sign Out
+          </button>
+        </div>
       </header>
 
-      <div className="max-w-4xl mx-auto px-6 py-8">
-        {/* Tabs */}
-        <div className="flex gap-1 mb-8 border-b border-border">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-2.5 text-sm font-sans transition-colors border-b-2 -mb-px ${
-                activeTab === tab.id
-                  ? "border-primary text-foreground font-medium"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Hero Tab */}
-        {activeTab === "hero" && (
-          <div className="space-y-6">
-            <div>
-              <label className="block text-sm font-sans text-foreground mb-1.5">Headline</label>
-              <input
-                value={hero.headline}
-                onChange={(e) => setHero({ ...hero, headline: e.target.value })}
-                className="w-full px-4 py-3 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-sans text-foreground mb-1.5">Subtext</label>
-              <textarea
-                value={hero.subtext}
-                onChange={(e) => setHero({ ...hero, subtext: e.target.value })}
-                rows={3}
-                className="w-full px-4 py-3 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-sans text-foreground mb-1.5">CTA Button Text</label>
-              <input
-                value={hero.cta_text}
-                onChange={(e) => setHero({ ...hero, cta_text: e.target.value })}
-                className="w-full px-4 py-3 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                id="countdown"
-                checked={hero.show_countdown}
-                onChange={(e) => setHero({ ...hero, show_countdown: e.target.checked })}
-                className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
-              />
-              <label htmlFor="countdown" className="text-sm font-sans text-foreground">
-                Show Countdown Timer
-              </label>
-            </div>
-            {hero.show_countdown && (
-              <div>
-                <label className="block text-sm font-sans text-foreground mb-1.5">Launch Date</label>
-                <input
-                  type="datetime-local"
-                  value={hero.launch_date || ""}
-                  onChange={(e) => setHero({ ...hero, launch_date: e.target.value })}
-                  className="w-full px-4 py-3 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                />
-              </div>
-            )}
-            <button
-              onClick={saveHero}
-              disabled={isSaving}
-              className="px-6 py-2.5 rounded-lg bg-primary text-primary-foreground font-sans text-sm font-medium hover:bg-olive-light transition-all disabled:opacity-50"
-            >
-              {isSaving ? "Saving..." : "Save Changes"}
-            </button>
-          </div>
-        )}
-
-        {/* Subscribers Tab */}
-        {activeTab === "subscribers" && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <p className="text-sm text-muted-foreground font-sans">
-                {subscribers.length} subscriber{subscribers.length !== 1 ? "s" : ""}
-              </p>
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sidebar */}
+        <aside className="w-52 shrink-0 border-r border-border bg-card overflow-y-auto">
+          <nav className="py-4">
+            {NAV_ITEMS.map((item) => (
               <button
-                onClick={exportCSV}
-                className="px-4 py-2 rounded-lg border border-border text-sm font-sans text-foreground hover:bg-muted transition-colors"
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`w-full flex items-center gap-3 px-5 py-2.5 text-left font-sans text-sm transition-colors ${
+                  activeTab === item.id
+                    ? "bg-primary/10 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
               >
-                Export CSV
+                <span className="text-base leading-none">{item.icon}</span>
+                {item.label}
               </button>
-            </div>
-            <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="bg-muted/50">
-                    <th className="text-left px-4 py-3 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Email</th>
-                    <th className="text-left px-4 py-3 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Date</th>
-                    <th className="px-4 py-3 w-10" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {subscribers.map((sub) => (
-                    <tr key={sub.id} className="border-t border-border hover:bg-muted/30 transition-colors">
-                      <td className="px-4 py-3 text-sm font-sans text-foreground">{sub.email}</td>
-                      <td className="px-4 py-3 text-sm font-sans text-muted-foreground">
-                        {new Date(sub.subscribed_at).toLocaleDateString()}
-                      </td>
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => handleDeleteSubscriber(sub.id)}
-                          className="text-destructive hover:text-destructive/80 transition-colors text-xs font-sans"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {subscribers.length === 0 && (
-                    <tr>
-                      <td colSpan={3} className="px-4 py-8 text-center text-sm text-muted-foreground font-sans">
-                        No subscribers yet
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            ))}
+          </nav>
+        </aside>
+
+        {/* Main content */}
+        <main className="flex-1 overflow-y-auto p-8">
+          <div className="max-w-2xl mx-auto">
+            {activeTab === "announcementBar" && <AnnouncementBarEditor data={content.announcementBar} onChange={update("announcementBar")} onSave={() => handleSave("announcementBar")} saving={saving} />}
+            {activeTab === "momentPill"   && <MomentPillEditor   data={content.momentPill}   onChange={update("momentPill")}   onSave={() => handleSave("momentPill")}   saving={saving} />}
+            {activeTab === "welcomeClub"  && <WelcomeClubEditor  data={content.welcomeClub}  onChange={update("welcomeClub")}  onSave={() => handleSave("welcomeClub")}  saving={saving} />}
+            {activeTab === "navbar"       && <NavbarEditor       data={content.navbar}       onChange={update("navbar")}       onSave={() => handleSave("navbar")}       saving={saving} />}
+            {activeTab === "hero"         && <HeroEditor         data={content.hero}         onChange={update("hero")}         onSave={() => handleSave("hero")}         saving={saving} />}
+            {activeTab === "brandStory"   && <BrandStoryEditor   data={content.brandStory}   onChange={update("brandStory")}   onSave={() => handleSave("brandStory")}   saving={saving} />}
+            {activeTab === "products"     && <ProductsEditor     data={content.products}     onChange={update("products")}     onSave={() => handleSave("products")}     saving={saving} />}
+            {activeTab === "candleCare"   && <CandleCareEditor   data={content.candleCare}   onChange={update("candleCare")}   onSave={() => handleSave("candleCare")}   saving={saving} />}
+            {activeTab === "videos"       && <VideosEditor       data={content.videos}       onChange={update("videos")}       onSave={() => handleSave("videos")}       saving={saving} />}
+            {activeTab === "testimonials" && <TestimonialsEditor data={content.testimonials} onChange={update("testimonials")} onSave={() => handleSave("testimonials")} saving={saving} />}
+            {activeTab === "newsletter"   && <NewsletterEditor   data={content.newsletter}   onChange={update("newsletter")}   onSave={() => handleSave("newsletter")}   saving={saving} />}
+            {activeTab === "footer"       && <FooterEditor       data={content.footer}       onChange={update("footer")}       onSave={() => handleSave("footer")}       saving={saving} />}
+            {activeTab === "subscribers"  && <SubscribersPanel   subscribers={subscribers}   onDelete={handleDeleteSubscriber} />}
           </div>
-        )}
+        </main>
       </div>
     </div>
   );

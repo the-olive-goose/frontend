@@ -30,3 +30,16 @@ backend/node_modules
 *.njsproj
 *.sln
 *.sw?
+
+# Vite temp timestamps
+vite.config.ts.timestamp-*.mjs
+
+# Editor / AI tool configs
+.claude/
+.cursorrules
+.mcp.json
+.opencode.json
+.windsurfrules
+AGENTS.md
+GEMINI.md
+backend/package-lock.json

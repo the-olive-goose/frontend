@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&family=Inter:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Chewy&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&family=Inter:wght@300;400;500;600&family=Pacifico&family=Permanent+Marker&family=Fredoka:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,45 +6,55 @@
 
 @layer base {
   :root {
-    --background: 40 33% 96%;
-    --foreground: 220 10% 15%;
+    /* ── Canva palette ────────────────────────────────────
+       Announcement bar bg : #1D2B1B  → hsl(115 23% 14%)
+       Nav / sage green     : #8FA672  → hsl(89  21% 55%)
+       Hero / forest green  : #1E2918  → hsl(110 26% 13%)
+       Gold badge accent    : #C9B26D  → hsl(42  44% 61%)
+       Cream text/bg        : #F5EFE6  → hsl(36  50% 93%)
+       Warm cream page bg   : #F5EAD8  → hsl(35  61% 90%)
+       Primary btn bg       : #F2EDE3  → hsl(38  40% 92%)
+    ──────────────────────────────────────────────────── */
 
-    --card: 40 30% 98%;
-    --card-foreground: 220 10% 15%;
+    --background: 35 61% 90%;        /* warm cream page bg   */
+    --foreground: 110 26% 13%;       /* forest green text    */
 
-    --popover: 40 30% 98%;
-    --popover-foreground: 220 10% 15%;
+    --card: 36 50% 95%;
+    --card-foreground: 110 26% 13%;
 
-    --primary: 82 40% 30%;
-    --primary-foreground: 40 33% 96%;
+    --popover: 36 50% 95%;
+    --popover-foreground: 110 26% 13%;
 
-    --secondary: 40 20% 90%;
-    --secondary-foreground: 220 10% 15%;
+    --primary: 115 23% 14%;          /* dark green #1D2B1B   */
+    --primary-foreground: 36 50% 93%; /* cream #F5EFE6        */
 
-    --muted: 40 15% 92%;
-    --muted-foreground: 220 5% 50%;
+    --secondary: 38 40% 92%;         /* cream btn bg         */
+    --secondary-foreground: 115 23% 14%;
 
-    --accent: 82 30% 40%;
-    --accent-foreground: 40 33% 96%;
+    --muted: 35 30% 85%;
+    --muted-foreground: 89 10% 45%;
+
+    --accent: 42 44% 61%;            /* gold #C9B26D         */
+    --accent-foreground: 115 23% 14%;
 
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 40 15% 85%;
-    --input: 40 15% 85%;
-    --ring: 82 40% 30%;
+    --border: 35 25% 80%;
+    --input: 35 25% 80%;
+    --ring: 89 21% 55%;
 
     --radius: 0.5rem;
 
-    --olive: 82 40% 30%;
-    --olive-light: 82 25% 45%;
-    --olive-dark: 82 45% 20%;
-    --cream: 40 33% 96%;
-    --cream-dark: 40 20% 88%;
-    --charcoal: 220 10% 15%;
-    --charcoal-light: 220 5% 35%;
-    --warm-glow: 35 80% 55%;
-    --warm-glow-soft: 35 60% 70%;
+    --olive: 89 21% 55%;             /* sage #8FA672         */
+    --olive-light: 89 21% 62%;
+    --olive-dark: 115 23% 14%;       /* dark green #1D2B1B   */
+    --cream: 36 50% 93%;             /* #F5EFE6              */
+    --cream-dark: 38 40% 92%;        /* #F2EDE3              */
+    --charcoal: 110 26% 13%;         /* forest #1E2918       */
+    --charcoal-light: 110 15% 30%;
+    --warm-glow: 42 44% 61%;         /* gold #C9B26D         */
+    --warm-glow-soft: 42 35% 72%;
 
     --font-serif: 'Cormorant Garamond', Georgia, serif;
     --font-sans: 'Inter', system-ui, sans-serif;
@@ -69,8 +79,13 @@
     @apply border-border;
   }
 
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    overflow-x: hidden;
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -173,4 +188,48 @@
   background: linear-gradient(90deg, transparent, hsl(35 80% 55% / 0.1), transparent);
   background-size: 200% 100%;
   animation: shimmer 3s ease-in-out infinite;
+}
+
+/* ── More Sugar font substitute (Chewy) ─────────────────── */
+.font-display {
+  font-family: 'Chewy', 'Pacifico', cursive;
+}
+/* ── Permanent Marker — "SMELLS LIKE" headline font ─────── */
+.font-sketch {
+  font-family: 'Permanent Marker', cursive;
+}
+/* ── Fredoka — rounded section headings ─────────────────── */
+.font-rounded {
+  font-family: 'Fredoka', 'Inter', sans-serif;
+}
+
+/* ── Announcement bar message fade ───────────────────────── */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes msg-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-6px); }
+}
+.announce-enter { animation: msg-in 0.35s ease forwards; }
+.announce-exit  { animation: msg-out 0.3s ease forwards; }
+
+/* ── Gen-Z squiggle underline ─────────────────────────────── */
+.squiggle {
+  text-decoration: underline wavy;
+  text-underline-offset: 4px;
+}
+
+/* ── Pill tag ─────────────────────────────────────────────── */
+.pill-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -12,8 +13,19 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL?.includes('railway') ? { rejectUnauthorized: false } : false,
 });
 
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'http://localhost:5173',
+  'http://localhost:8080',
+  'http://localhost:3000',
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
+  origin: (origin, cb) => {
+    // allow requests with no origin (curl, Postman, etc.) and any listed origin
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} not allowed`));
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
@@ -44,11 +56,17 @@ app.post('/api/auth/login', async (req, res) => {
   const adminEmail = process.env.ADMIN_EMAIL;
   const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH;
 
+  // Temporary debug — remove after login is confirmed working
+  console.log('[login] received email:', email);
+  console.log('[login] expected email:', adminEmail);
+  console.log('[login] hash configured:', !!adminPasswordHash);
+
   if (!adminEmail || !adminPasswordHash) {
     return res.status(500).json({ error: 'Admin credentials not configured' });
   }
 
   if (email !== adminEmail) {
+    console.log('[login] email mismatch — rejecting');
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
@@ -77,6 +95,37 @@ app.put('/api/settings', requireAuth, async (req, res) => {
        VALUES ('hero', $1)
        ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
       [JSON.stringify(req.body)]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/content/:section (public) ────────────────────────────────────────
+// Generic endpoint — any section name maps to a row in site_settings
+app.get('/api/content/:section', async (req, res) => {
+  const key = `content_${req.params.section}`;
+  try {
+    const { rows } = await pool.query(
+      'SELECT value FROM site_settings WHERE key = $1',
+      [key]
+    );
+    res.json(rows[0]?.value || null);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PUT /api/content/:section (admin only) ────────────────────────────────────
+app.put('/api/content/:section', requireAuth, async (req, res) => {
+  const key = `content_${req.params.section}`;
+  try {
+    await pool.query(
+      `INSERT INTO site_settings (key, value)
+       VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+      [key, JSON.stringify(req.body)]
     );
     res.json({ success: true });
   } catch (err) {
