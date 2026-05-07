@@ -4,6 +4,10 @@ import cors from 'cors';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 const { Pool } = pg;
@@ -203,6 +207,14 @@ async function initDb() {
   `);
   console.log('✅ Database ready');
 }
+
+// ── Serve React frontend (SPA catch-all) ──────────────────────────────────────
+const distPath = path.join(__dirname, '../dist');
+app.use(express.static(distPath));
+// Any route not matched by the API above returns index.html so React Router works
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(distPath, 'index.html'));
+});
 
 const PORT = process.env.PORT || 3001;
 initDb()
