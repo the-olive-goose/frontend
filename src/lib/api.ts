@@ -8,6 +8,19 @@ const authHeaders = (includeAuth = false): Record<string, string> => ({
   ...(includeAuth && getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
 });
 
+// Thrown when the server returns 401 — callers can catch this to auto-logout
+export class SessionExpiredError extends Error {
+  constructor() { super('Session expired — please sign in again.'); this.name = 'SessionExpiredError'; }
+}
+
+const checkStatus = async (res: Response): Promise<Response> => {
+  if (res.status === 401) {
+    localStorage.removeItem('admin_token');
+    throw new SessionExpiredError();
+  }
+  return res;
+};
+
 // ── Legacy types (kept for backward compat) ────────────────────────────────────
 export interface HeroSettings {
   headline: string;
@@ -69,11 +82,9 @@ export const getContent = async <T>(section: string, fallback: T): Promise<T> =>
 };
 
 export const saveContent = async <T>(section: string, data: T): Promise<void> => {
-  const res = await fetch(`${API_URL}/api/content/${section}`, {
-    method: 'PUT',
-    headers: authHeaders(true),
-    body: JSON.stringify(data),
-  });
+  const res = await checkStatus(await fetch(`${API_URL}/api/content/${section}`, {
+    method: 'PUT', headers: authHeaders(true), body: JSON.stringify(data),
+  }));
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { error?: string }).error || 'Failed to save');
@@ -88,11 +99,9 @@ export const getSettings = async (): Promise<HeroSettings> => {
 };
 
 export const saveSettings = async (data: HeroSettings): Promise<void> => {
-  const res = await fetch(`${API_URL}/api/settings`, {
-    method: 'PUT',
-    headers: authHeaders(true),
-    body: JSON.stringify(data),
-  });
+  const res = await checkStatus(await fetch(`${API_URL}/api/settings`, {
+    method: 'PUT', headers: authHeaders(true), body: JSON.stringify(data),
+  }));
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.error || 'Failed to save settings');
@@ -102,9 +111,7 @@ export const saveSettings = async (data: HeroSettings): Promise<void> => {
 // ── Subscribers ────────────────────────────────────────────────────────────────
 export const subscribe = async (email: string): Promise<void> => {
   const res = await fetch(`${API_URL}/api/subscribers`, {
-    method: 'POST',
-    headers: authHeaders(),
-    body: JSON.stringify({ email }),
+    method: 'POST', headers: authHeaders(), body: JSON.stringify({ email }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -113,17 +120,83 @@ export const subscribe = async (email: string): Promise<void> => {
 };
 
 export const getSubscribers = async (): Promise<Subscriber[]> => {
-  const res = await fetch(`${API_URL}/api/subscribers`, {
+  const res = await checkStatus(await fetch(`${API_URL}/api/subscribers`, {
     headers: authHeaders(true),
-  });
+  }));
   if (!res.ok) throw new Error('Unauthorized');
   return res.json();
 };
 
+// ── Shop categories & candles ──────────────────────────────────────────────────
+
+export interface ShopCandle {
+  id: string;
+  name: string;
+  price: string;
+  scent_notes: string;
+  tagline: string;
+  category_id: string;
+  image_url: string;
+  rotation: number;
+  pos_top: string;
+  pos_left: string;
+  display_order: number;
+  is_active: boolean;
+}
+
+export interface ShopCategory {
+  id: string;
+  name: string;
+  slug: string;
+  mood_description: string;
+  tags: string[];
+  bg_color: string;
+  page_bg_color: string;
+  accent_color: string;
+  text_color: string;
+  stickers: Array<{ emoji: string; top: string; left: string; rotate: number; size: number }>;
+  product_ids: string[];   // IDs referencing items in content_products
+  display_order: number;
+  is_active: boolean;
+}
+
+export const getShopCategories = async (): Promise<ShopCategory[]> => {
+  try {
+    const res = await fetch(`${API_URL}/api/shop/categories`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
+};
+
+export const saveShopCategory = async (cat: Partial<ShopCategory> & { id?: string }): Promise<ShopCategory> => {
+  const method = cat.id ? 'PUT' : 'POST';
+  const url = cat.id ? `${API_URL}/api/shop/categories/${cat.id}` : `${API_URL}/api/shop/categories`;
+  const res = await checkStatus(await fetch(url, { method, headers: authHeaders(true), body: JSON.stringify(cat) }));
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as {error?:string}).error || 'Failed'); }
+  return res.json();
+};
+
+export const deleteShopCategory = async (id: string): Promise<void> => {
+  const res = await checkStatus(await fetch(`${API_URL}/api/shop/categories/${id}`, { method: 'DELETE', headers: authHeaders(true) }));
+  if (!res.ok) throw new Error('Failed to delete category');
+};
+
+export const saveShopCandle = async (candle: Partial<ShopCandle> & { id?: string }): Promise<ShopCandle> => {
+  const method = candle.id ? 'PUT' : 'POST';
+  const url = candle.id ? `${API_URL}/api/shop/candles/${candle.id}` : `${API_URL}/api/shop/candles`;
+  const res = await checkStatus(await fetch(url, { method, headers: authHeaders(true), body: JSON.stringify(candle) }));
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as {error?:string}).error || 'Failed'); }
+  return res.json();
+};
+
+export const deleteShopCandle = async (id: string): Promise<void> => {
+  const res = await checkStatus(await fetch(`${API_URL}/api/shop/candles/${id}`, { method: 'DELETE', headers: authHeaders(true) }));
+  if (!res.ok) throw new Error('Failed to delete candle');
+};
+
 export const deleteSubscriber = async (id: string): Promise<void> => {
-  const res = await fetch(`${API_URL}/api/subscribers/${id}`, {
-    method: 'DELETE',
-    headers: authHeaders(true),
-  });
+  const res = await checkStatus(await fetch(`${API_URL}/api/subscribers/${id}`, { method: 'DELETE', headers: authHeaders(true) }));
   if (!res.ok) throw new Error('Failed to delete subscriber');
 };

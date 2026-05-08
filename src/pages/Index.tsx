@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
+// products section replaced by ScrapbookSection
 import logo from "@/assets/logo.jpg";
 
 import NavbarSection      from "@/components/sections/NavbarSection";
 import HeroSection        from "@/components/sections/HeroSection";
 import SmellsLikeSection  from "@/components/sections/SmellsLikeSection";
-import ProductsSection    from "@/components/sections/ProductsSection";
+import ScrapbookSection  from "@/components/sections/ScrapbookSection";
 import MomentPillSection  from "@/components/sections/MomentPillSection";
 import WelcomeSection     from "@/components/sections/WelcomeSection";
 import VideosSection          from "@/components/sections/VideosSection";
@@ -80,8 +81,8 @@ const Index = () => {
         {/* 2. "SMELLS LIKE YOUR CAFÉ ERA." — cream bg */}
         <SmellsLikeSection />
 
-        {/* 3. Products — green bg */}
-        <ProductsSection data={content.products} />
+        {/* 3. Shop By Category — scrapbook */}
+        <ScrapbookSection />
 
         {/* 4. "Live in the moment" pill — green bg */}
         <MomentPillSection data={content.momentPill} />

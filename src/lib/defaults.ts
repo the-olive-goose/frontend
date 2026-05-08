@@ -157,10 +157,9 @@ export const DEFAULT_CONTENT: SiteContent = {
   navbar: {
     brand_name: "The Olive Goose",
     links: [
-      { label: "Collection", href: "#collection" },
-      { label: "Our Story", href: "#story" },
+      { label: "Shop",        href: "/shop" },
+      { label: "About",       href: "/about" },
       { label: "Candle Care", href: "/candle-care" },
-      { label: "Journal", href: "#journal" },
     ],
     cta_text: "Shop Now",
     cta_href: "#collection",

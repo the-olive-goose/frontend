@@ -6,11 +6,20 @@ import {
   saveContent,
   getSubscribers,
   deleteSubscriber,
+  getShopCategories,
+  saveShopCategory,
+  deleteShopCategory,
+  saveShopCandle,
+  deleteShopCandle,
+  SessionExpiredError,
   type Subscriber,
+  type ShopCategory,
+  type ShopCandle,
 } from "@/lib/api";
 import {
   DEFAULT_CONTENT,
   type SiteContent,
+  type Product,
   type AnnouncementBarContent,
   type NavbarContent,
   type HeroContent,
@@ -956,12 +965,375 @@ const SubscribersPanel = ({
   );
 };
 
+// ── Shop By Category editor ────────────────────────────────────────────────────
+
+const EMPTY_CATEGORY: Partial<ShopCategory> = {
+  name: "", slug: "", mood_description: "", tags: [],
+  bg_color: "#f5e4cb", page_bg_color: "#ede0c8",
+  accent_color: "#6b3520", text_color: "#2c1508",
+  stickers: [], product_ids: [], display_order: 0,
+};
+
+const ShopEditor = ({
+  categories: initCats,
+  allProducts,
+  onRefresh,
+  saving,
+  setSaving,
+  onError,
+}: {
+  categories: ShopCategory[];
+  allProducts: Product[];
+  onRefresh: () => void;
+  saving: boolean;
+  setSaving: (v: boolean) => void;
+  onError: (err: unknown, msg?: string) => void;
+}) => {
+  const [cats, setCats]           = useState<ShopCategory[]>(initCats);
+  const [editingCat, setEditingCat] = useState<Partial<ShopCategory> | null>(null);
+  const { toast } = useToast();
+
+  useEffect(() => { setCats(initCats); }, [initCats]);
+
+  // ── Category CRUD ──────────────────────────────────────────────────────────
+  const saveCat = async () => {
+    if (!editingCat) return;
+    setSaving(true);
+    try {
+      await saveShopCategory(editingCat);
+      toast({ title: "Saved!" });
+      setEditingCat(null);
+      onRefresh();
+    } catch (e: unknown) {
+      onError(e, "Failed to save category");
+    } finally { setSaving(false); }
+  };
+
+  const deleteCat = async (id: string) => {
+    if (!confirm("Delete this category?")) return;
+    setSaving(true);
+    try {
+      await deleteShopCategory(id);
+      toast({ title: "Deleted" });
+      onRefresh();
+    } catch (e: unknown) {
+      onError(e, "Failed to delete category");
+    } finally { setSaving(false); }
+  };
+
+  // ── Product assignment (saves immediately) ─────────────────────────────────
+  const addProductToCat = async (cat: ShopCategory, productId: string) => {
+    if ((cat.product_ids ?? []).includes(productId)) return;
+    const updated = { ...cat, product_ids: [...(cat.product_ids ?? []), productId] };
+    setSaving(true);
+    try {
+      await saveShopCategory(updated);
+      onRefresh();
+    } catch (e: unknown) {
+      onError(e, "Failed to update category");
+    } finally { setSaving(false); }
+  };
+
+  const removeProductFromCat = async (cat: ShopCategory, productId: string) => {
+    const updated = { ...cat, product_ids: (cat.product_ids ?? []).filter(id => id !== productId) };
+    setSaving(true);
+    try {
+      await saveShopCategory(updated);
+      onRefresh();
+    } catch (e: unknown) {
+      onError(e, "Failed to update category");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading
+        title="Shop By Category"
+        desc="Each category becomes a page in the scrapbook book. Assign products from the Products section to each category."
+      />
+
+      {/* How it works */}
+      <div className="rounded-lg bg-muted/40 border border-border px-4 py-3 space-y-1">
+        <p className="font-sans text-xs font-semibold text-foreground">How it works</p>
+        <p className="font-sans text-xs text-muted-foreground">
+          1. Add products in the <strong>Products</strong> tab (name, price, image, description).
+          &nbsp;2. Create a category below.
+          &nbsp;3. Pick products from the dropdown inside each category — they appear as candle cards in the scrapbook.
+        </p>
+      </div>
+
+      {allProducts.length === 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-sans text-amber-800">
+          ⚠️ No products yet — go to the <strong>Products</strong> tab first and add your candles, then come back here.
+        </div>
+      )}
+
+      {/* Category form (add / edit) */}
+      {editingCat && (
+        <div className="border border-primary/30 rounded-xl p-5 space-y-4 bg-primary/5">
+          <h3 className="font-sans text-sm font-semibold text-foreground">
+            {editingCat.id ? "Edit Category" : "New Category"}
+          </h3>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Category Name" hint='e.g. "Coffee Shop Chaos"'>
+              <Input value={editingCat.name ?? ""} onChange={e => setEditingCat(p => ({ ...p!, name: e.target.value }))} />
+            </Field>
+            <Field label="Slug" hint='e.g. "coffee-shop-chaos"'>
+              <Input value={editingCat.slug ?? ""} onChange={e => setEditingCat(p => ({ ...p!, slug: e.target.value }))} />
+            </Field>
+          </div>
+
+          <Field label="Mood Description" hint='e.g. "espresso shots & situationships"'>
+            <Input value={editingCat.mood_description ?? ""} onChange={e => setEditingCat(p => ({ ...p!, mood_description: e.target.value }))} />
+          </Field>
+
+          <Field label="Tags (comma separated)" hint='e.g. "#chaotic, #caffeinated"'>
+            <Input
+              value={(editingCat.tags ?? []).join(", ")}
+              onChange={e => setEditingCat(p => ({ ...p!, tags: e.target.value.split(",").map(t => t.trim()).filter(Boolean) }))}
+            />
+          </Field>
+
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: "Page Background", key: "bg_color",      def: "#f5e4cb" },
+              { label: "Right Panel",     key: "page_bg_color", def: "#ede0c8" },
+              { label: "Accent Color",    key: "accent_color",  def: "#6b3520" },
+              { label: "Text Color",      key: "text_color",    def: "#2c1508" },
+            ].map(({ label, key, def }) => (
+              <Field key={key} label={label}>
+                <div className="flex gap-2 items-center">
+                  <input type="color"
+                    value={(editingCat as Record<string,string>)[key] ?? def}
+                    onChange={e => setEditingCat(p => ({ ...p!, [key]: e.target.value }))}
+                    className="w-10 h-9 rounded border border-border cursor-pointer flex-shrink-0"
+                  />
+                  <Input
+                    value={(editingCat as Record<string,string>)[key] ?? def}
+                    onChange={e => setEditingCat(p => ({ ...p!, [key]: e.target.value }))}
+                  />
+                </div>
+              </Field>
+            ))}
+          </div>
+
+          <Field label="Display Order" hint="Lower = appears earlier in the book">
+            <Input type="number" value={editingCat.display_order ?? 0}
+              onChange={e => setEditingCat(p => ({ ...p!, display_order: Number(e.target.value) }))} />
+          </Field>
+
+          {/* ── Product picker inside the form ── */}
+          <div className="space-y-2 pt-1 border-t border-border">
+            <label className="block text-sm font-sans font-medium text-foreground pt-2">
+              Products shown in this category
+            </label>
+            <p className="text-xs text-muted-foreground font-sans">
+              Select which products appear as candle cards on this scrapbook page.
+            </p>
+
+            {allProducts.length === 0 ? (
+              <p className="text-xs text-amber-700 font-sans bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                No products available — add some in the <strong>Products</strong> tab first.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {/* Dropdown to add a product */}
+                <select
+                  className="w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  value=""
+                  onChange={e => {
+                    const id = e.target.value;
+                    if (!id) return;
+                    const current = editingCat.product_ids ?? [];
+                    if (!current.includes(id)) {
+                      setEditingCat(p => ({ ...p!, product_ids: [...current, id] }));
+                    }
+                    e.currentTarget.value = "";
+                  }}
+                >
+                  <option value="">+ pick a product to add →</option>
+                  {allProducts
+                    .filter(p => !(editingCat.product_ids ?? []).includes(p.id))
+                    .map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}{p.price ? ` · ${p.price}` : ""}{p.tag ? ` · ${p.tag}` : ""}
+                      </option>
+                    ))}
+                </select>
+
+                {/* Selected products list */}
+                {(editingCat.product_ids ?? []).length > 0 && (
+                  <div className="space-y-1.5">
+                    {(editingCat.product_ids ?? []).map(id => {
+                      const p = allProducts.find(x => x.id === id);
+                      if (!p) return null;
+                      return (
+                        <div key={id} className="flex items-center gap-3 bg-card border border-border rounded-lg px-3 py-2">
+                          <div className="flex-1 min-w-0">
+                            <span className="font-sans text-sm text-foreground truncate">{p.name}</span>
+                            {p.price && <span className="font-sans text-xs text-muted-foreground ml-2">{p.price}</span>}
+                          </div>
+                          <button
+                            onClick={() => setEditingCat(prev => ({ ...prev!, product_ids: (prev!.product_ids ?? []).filter(x => x !== id) }))}
+                            className="text-destructive/60 hover:text-destructive text-xs font-sans shrink-0"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-3 pt-1">
+            <SaveButton onClick={saveCat} saving={saving} />
+            <button onClick={() => setEditingCat(null)}
+              className="px-4 py-2.5 rounded-lg border border-border text-sm font-sans text-muted-foreground hover:bg-muted transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Category list — product assignment always visible */}
+      <div className="space-y-6">
+        {cats.map(cat => {
+          const assignedIds = cat.product_ids ?? [];
+          const assigned    = assignedIds.map(id => allProducts.find(p => p.id === id)).filter(Boolean) as Product[];
+          const unassigned  = allProducts.filter(p => !assignedIds.includes(p.id));
+
+          return (
+            <div key={cat.id} className="border border-border rounded-xl overflow-hidden">
+
+              {/* Category header */}
+              <div className="flex items-center justify-between px-4 py-3 bg-muted/40 border-b border-border">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-4 h-4 rounded-full shrink-0" style={{ background: cat.accent_color }} />
+                  <span className="font-sans text-sm font-semibold text-foreground truncate">{cat.name}</span>
+                  {cat.mood_description && (
+                    <span className="text-xs text-muted-foreground font-sans truncate hidden sm:inline">— {cat.mood_description}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0 ml-2">
+                  <button
+                    onClick={() => setEditingCat({ ...cat })}
+                    className="px-3 py-1.5 text-xs font-sans rounded-lg border border-border hover:bg-muted transition-colors"
+                  >
+                    Edit category
+                  </button>
+                  <RemoveButton onClick={() => deleteCat(cat.id)} />
+                </div>
+              </div>
+
+              <div className="p-4 space-y-4">
+
+                {/* ── ADD PRODUCT DROPDOWN ── */}
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-sans font-medium text-foreground">
+                    Add product to this category
+                  </label>
+                  <p className="text-xs text-muted-foreground font-sans">
+                    Products are managed in the <strong>Products</strong> tab. Select one from the dropdown to add it here.
+                  </p>
+                  <div className="flex gap-2">
+                    <select
+                      className="flex-1 px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                      value=""
+                      onChange={e => { if (e.target.value) addProductToCat(cat, e.target.value); e.currentTarget.value = ""; }}
+                    >
+                      <option value="">— pick a product to add —</option>
+                      {unassigned.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}{p.price ? ` · ${p.price}` : ""}{p.tag ? ` · ${p.tag}` : ""}
+                        </option>
+                      ))}
+                      {unassigned.length === 0 && allProducts.length > 0 && (
+                        <option disabled>All products already added to this category</option>
+                      )}
+                      {allProducts.length === 0 && (
+                        <option disabled>No products yet — add them in the Products tab first</option>
+                      )}
+                    </select>
+                  </div>
+                </div>
+
+                {/* ── ASSIGNED PRODUCTS ── */}
+                <div className="space-y-2">
+                  <p className="text-xs font-sans font-medium text-muted-foreground uppercase tracking-wide">
+                    Products in this category ({assigned.length})
+                  </p>
+
+                  {assigned.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-border px-4 py-5 text-center">
+                      <p className="text-xs text-muted-foreground font-sans">
+                        No products assigned yet.<br />Use the dropdown above to add some.
+                      </p>
+                    </div>
+                  ) : (
+                    assigned.map(p => (
+                      <div key={p.id} className="flex items-center gap-3 bg-muted/20 rounded-lg px-3 py-2.5 border border-border/50">
+                        {p.image_url ? (
+                          <img src={p.image_url} alt={p.name} className="w-9 h-9 rounded object-cover shrink-0" />
+                        ) : (
+                          <div className="w-9 h-9 rounded bg-muted flex items-center justify-center shrink-0 text-base">🕯️</div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-sans text-sm font-medium text-foreground truncate">{p.name}</p>
+                          {p.description && (
+                            <p className="font-sans text-xs text-muted-foreground truncate">{p.description}</p>
+                          )}
+                        </div>
+                        <span className="font-sans text-sm font-semibold text-foreground shrink-0">{p.price}</span>
+                        {p.tag && (
+                          <span className="text-xs font-sans bg-muted text-muted-foreground px-2 py-0.5 rounded-full shrink-0">{p.tag}</span>
+                        )}
+                        <RemoveButton onClick={() => removeProductFromCat(cat, p.id)} />
+                      </div>
+                    ))
+                  )}
+                </div>
+
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Empty state */}
+      {cats.length === 0 && !editingCat && (
+        <div className="rounded-xl border border-dashed border-border p-10 text-center space-y-3">
+          <p className="text-2xl">📖</p>
+          <p className="font-sans text-sm font-medium text-foreground">No categories yet</p>
+          <p className="font-sans text-xs text-muted-foreground">
+            Each category becomes a page in the scrapbook. Add one, then assign products to it.
+          </p>
+          <div className="pt-2">
+            <button onClick={() => setEditingCat({ ...EMPTY_CATEGORY })}
+              className="px-5 py-2.5 rounded-lg bg-primary text-primary-foreground font-sans text-sm font-medium hover:opacity-90 transition-opacity">
+              + Add First Category
+            </button>
+          </div>
+        </div>
+      )}
+
+      {cats.length > 0 && !editingCat && (
+        <AddButton label="Add category" onClick={() => setEditingCat({ ...EMPTY_CATEGORY })} />
+      )}
+    </div>
+  );
+};
+
 // ── Sidebar nav ────────────────────────────────────────────────────────────────
 
 type TabId =
   | "announcementBar"
   | "navbar"
   | "hero"
+  | "shopCategories"
   | "momentPill"
   | "welcomeClub"
   | "brandStory"
@@ -975,18 +1347,19 @@ type TabId =
 
 const NAV_ITEMS: { id: TabId; label: string; icon: string }[] = [
   { id: "announcementBar", label: "Announcement Bar", icon: "📢" },
-  { id: "navbar",       label: "Navbar",        icon: "☰" },
-  { id: "hero",         label: "Hero",           icon: "★" },
-  { id: "products",     label: "Products",       icon: "◈" },
-  { id: "momentPill",   label: "Moment Pill",    icon: "💊" },
-  { id: "welcomeClub",  label: "Welcome Club",   icon: "🫶" },
-  { id: "brandStory",   label: "Brand Story",    icon: "✦" },
-  { id: "candleCare",   label: "Candle Care",    icon: "♨" },
-  { id: "videos",       label: "Videos",         icon: "▶" },
-  { id: "testimonials", label: "Testimonials",   icon: "❝" },
-  { id: "newsletter",   label: "Newsletter",     icon: "✉" },
-  { id: "footer",       label: "Footer",         icon: "⊘" },
-  { id: "subscribers",  label: "Subscribers",    icon: "◉" },
+  { id: "navbar",          label: "Navbar",           icon: "☰" },
+  { id: "hero",            label: "Hero",             icon: "★" },
+  { id: "shopCategories",  label: "Shop By Category", icon: "📖" },
+  { id: "products",        label: "Products",         icon: "◈" },
+  { id: "momentPill",      label: "Moment Pill",      icon: "💊" },
+  { id: "welcomeClub",     label: "Welcome Club",     icon: "🫶" },
+  { id: "brandStory",      label: "Brand Story",      icon: "✦" },
+  { id: "candleCare",      label: "Candle Care",      icon: "♨" },
+  { id: "videos",          label: "Videos",           icon: "▶" },
+  { id: "testimonials",    label: "Testimonials",     icon: "❝" },
+  { id: "newsletter",      label: "Newsletter",       icon: "✉" },
+  { id: "footer",          label: "Footer",           icon: "⊘" },
+  { id: "subscribers",     label: "Subscribers",      icon: "◉" },
 ];
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
@@ -996,6 +1369,7 @@ const AdminDashboard = () => {
   const [activeTab, setActiveTab] = useState<TabId>("hero");
   const [content, setContent] = useState<SiteContent>(DEFAULT_CONTENT);
   const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
+  const [shopCategories, setShopCategories] = useState<ShopCategory[]>([]);
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
 
@@ -1022,6 +1396,12 @@ const AdminDashboard = () => {
       ]);
     setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer });
 
+    // ── Shop categories ───────────────────────────────────────────────────────
+    try {
+      const cats = await getShopCategories();
+      setShopCategories(cats);
+    } catch { /* non-fatal */ }
+
     // ── Subscribers (separate — can throw if auth fails) ──────────────────────
     try {
       const subs = await getSubscribers();
@@ -1035,14 +1415,24 @@ const AdminDashboard = () => {
     if (session) loadData();
   }, [session, loadData]);
 
+  // Central error handler — detects expired sessions and auto-logs out
+  const handleError = useCallback((err: unknown, fallbackMsg = "Something went wrong") => {
+    if (err instanceof SessionExpiredError) {
+      toast({ title: "Session expired", description: "Signing you out…", variant: "destructive" });
+      setTimeout(() => { logout(); setSession(false); }, 1200);
+    } else {
+      const message = err instanceof Error ? err.message : fallbackMsg;
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
+  }, [toast]);
+
   const handleSave = async (section: keyof SiteContent) => {
     setSaving(true);
     try {
       await saveContent(section, content[section]);
-      toast({ title: "Saved!", description: `${section} section updated.` });
+      toast({ title: "Saved!", description: `${section} updated.` });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Save failed";
-      toast({ title: "Error saving", description: message, variant: "destructive" });
+      handleError(err, "Save failed");
     } finally {
       setSaving(false);
     }
@@ -1053,8 +1443,8 @@ const AdminDashboard = () => {
       await deleteSubscriber(id);
       setSubscribers((prev) => prev.filter((s) => s.id !== id));
       toast({ title: "Deleted" });
-    } catch {
-      toast({ title: "Failed to delete", variant: "destructive" });
+    } catch (err: unknown) {
+      handleError(err, "Failed to delete");
     }
   };
 
@@ -1120,6 +1510,7 @@ const AdminDashboard = () => {
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-8">
           <div className="max-w-2xl mx-auto">
+            {activeTab === "shopCategories" && <ShopEditor categories={shopCategories} allProducts={content.products.items} onRefresh={loadData} saving={saving} setSaving={setSaving} onError={handleError} />}
             {activeTab === "announcementBar" && <AnnouncementBarEditor data={content.announcementBar} onChange={update("announcementBar")} onSave={() => handleSave("announcementBar")} saving={saving} />}
             {activeTab === "momentPill"   && <MomentPillEditor   data={content.momentPill}   onChange={update("momentPill")}   onSave={() => handleSave("momentPill")}   saving={saving} />}
             {activeTab === "welcomeClub"  && <WelcomeClubEditor  data={content.welcomeClub}  onChange={update("welcomeClub")}  onSave={() => handleSave("welcomeClub")}  saving={saving} />}
