@@ -5,16 +5,17 @@ interface Props { data: CandleCareContent }
 const CandleCareSection = ({ data }: Props) => {
   const cards = data.cards ?? [];
   return (
-  <section id="care" className="bg-cream py-24 lg:py-32">
+  <section id="care" className="py-24 lg:py-32" style={{ background: "var(--bg-page)" }}>
     <div className="max-w-7xl mx-auto px-6">
       {/* Header */}
       <div className="text-center mb-16">
-        <p className="font-sans text-xs tracking-[0.25em] uppercase text-primary font-medium mb-6">
-          {data.label}
-        </p>
-        <h2 className="font-serif text-4xl sm:text-5xl lg:text-6xl text-charcoal">
+        <p className="eyebrow mb-6">{data.label}</p>
+        <h2
+          className="font-serif"
+          style={{ fontSize: "var(--text-serif-xl)", color: "var(--text-primary)", lineHeight: "var(--leading-heading)" }}
+        >
           {data.headline_part1}{" "}
-          <em className="text-primary not-italic" style={{ fontStyle: "italic" }}>
+          <em style={{ fontStyle: "italic", color: "var(--text-primary)" }}>
             {data.headline_part2}
           </em>
         </h2>
@@ -25,14 +26,32 @@ const CandleCareSection = ({ data }: Props) => {
         {cards.map((card, i) => (
           <div
             key={`${card.number}-${i}`}
-            className="bg-card rounded-2xl p-8 border border-border/60 space-y-5"
+            className="p-8 space-y-5"
+            style={{
+              background: "var(--color-cream-card)",
+              borderRadius: "var(--radius-card)",
+              border: "1px solid var(--color-border)",
+            }}
           >
-            <span className="font-serif text-6xl text-primary/40 leading-none italic select-none">
+            <span
+              className="font-serif leading-none italic select-none block"
+              style={{ fontSize: "var(--text-serif-xl)", color: "rgba(29,43,27,0.35)" }}
+            >
               {card.number}
             </span>
             <div className="space-y-3">
-              <h3 className="font-serif text-xl font-semibold text-charcoal">{card.title}</h3>
-              <p className="font-sans text-sm text-charcoal/65 leading-relaxed">{card.description}</p>
+              <h3
+                className="font-serif font-semibold"
+                style={{ fontSize: "var(--text-serif-sm)", color: "var(--text-primary)" }}
+              >
+                {card.title}
+              </h3>
+              <p
+                className="font-sans text-sm leading-relaxed"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {card.description}
+              </p>
             </div>
           </div>
         ))}

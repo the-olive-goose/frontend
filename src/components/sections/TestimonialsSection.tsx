@@ -1,57 +1,67 @@
 import { TestimonialsContent } from "@/lib/defaults";
+import { CircularTestimonials } from "@/components/ui/circular-testimonials";
 
 interface Props { data: TestimonialsContent }
 
-const Stars = ({ rating }: { rating: number }) => (
-  <div className="flex gap-0.5">
-    {Array.from({ length: 5 }).map((_, i) => (
-      <svg
-        key={i}
-        className={`w-4 h-4 ${i < rating ? "text-warm-glow" : "text-charcoal/20"}`}
-        fill="currentColor"
-        viewBox="0 0 20 20"
-      >
-        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-      </svg>
-    ))}
-  </div>
-);
+// Unsplash fallbacks when no avatar URL is provided
+const FALLBACK_IMAGES = [
+  "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=600&auto=format&fit=crop&q=80",
+  "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=600&auto=format&fit=crop&q=80",
+  "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80",
+];
 
 const TestimonialsSection = ({ data }: Props) => {
-  const items = data.items ?? [];
-  return (
-  <section className="bg-cream py-24 lg:py-32">
-    <div className="max-w-7xl mx-auto px-6">
-      {/* Header */}
-      <div className="text-center mb-16 space-y-4">
-        <p className="font-sans text-xs tracking-[0.2em] uppercase text-primary font-medium">
-          {data.label}
-        </p>
-        <h2 className="font-serif text-4xl sm:text-5xl text-charcoal">{data.headline}</h2>
-      </div>
+  const items = (data.items ?? []).filter((t) => t.quote);
+  if (items.length === 0) return null;
 
-      {/* Testimonial cards */}
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-        {items.map((item, i) => (
-          <div
-            key={item.id ?? i}
-            className="bg-card rounded-2xl p-8 border border-border/60 space-y-5 flex flex-col"
+  const mapped = items.map((item, i) => ({
+    quote: item.quote,
+    name: item.author,
+    designation: item.location || "Verified Customer",
+    src: item.avatarUrl || FALLBACK_IMAGES[i % FALLBACK_IMAGES.length],
+  }));
+
+  return (
+    <section style={{ background: "var(--color-cream-section)" }} className="py-20">
+      <div className="max-w-6xl mx-auto px-6">
+        {/* Header — same style as Videos section */}
+        <div className="text-center mb-8">
+          <span
+            className="pill-tag inline-block mb-3"
+            style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
           >
-            <Stars rating={item.rating} />
-            <blockquote className="font-serif text-xl text-charcoal leading-relaxed flex-1">
-              "{item.quote}"
-            </blockquote>
-            <div className="pt-4 border-t border-border/60">
-              <p className="font-sans text-sm font-medium text-charcoal">{item.author}</p>
-              {item.location && (
-                <p className="font-sans text-xs text-charcoal/50 mt-0.5">{item.location}</p>
-              )}
-            </div>
-          </div>
-        ))}
+            {data.label}
+          </span>
+          <h2
+            className="h-display"
+            style={{ fontSize: "var(--text-display-lg)", color: "var(--text-primary)" }}
+          >
+            {data.headline}
+          </h2>
+        </div>
+
+        {/* Circular testimonials — centred */}
+        <div className="flex justify-center">
+          <CircularTestimonials
+            testimonials={mapped}
+            autoplay={true}
+            colors={{
+              name: "var(--text-primary, #1B2A1B)",
+              designation: "var(--text-muted, #6b7280)",
+              testimony: "var(--text-primary, #1B2A1B)",
+              arrowBackground: "var(--color-forest-dark, #1B2A1B)",
+              arrowForeground: "var(--color-cream-text, #F5EFE6)",
+              arrowHoverBackground: "var(--color-sage-mid, #5C7A5C)",
+            }}
+            fontSizes={{
+              name: "1.375rem",
+              designation: "0.875rem",
+              quote: "1.0625rem",
+            }}
+          />
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
   );
 };
 

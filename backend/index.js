@@ -6,10 +6,32 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { existsSync, mkdirSync } from 'fs';
+import multer from 'multer';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+
+// ── Video upload (multer) ──────────────────────────────────────────────────────
+const uploadDir = path.join(__dirname, 'uploads');
+if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `video-${Date.now()}${ext}`);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200 MB
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('video/')) cb(null, true);
+    else cb(new Error('Only video files are allowed'));
+  },
+});
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -210,6 +232,17 @@ async function initDb() {
 
 // ── Serve React frontend (SPA catch-all) ──────────────────────────────────────
 const distPath = path.join(__dirname, '../dist');
+// ── POST /api/upload/video (admin only) ───────────────────────────────────────
+app.post('/api/upload/video', requireAuth, upload.single('video'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file received' });
+  const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
+  const url = `${baseUrl}/uploads/${req.file.filename}`;
+  res.json({ url });
+});
+
+// ── Serve uploaded videos ──────────────────────────────────────────────────────
+app.use('/uploads', express.static(uploadDir));
+
 app.use(express.static(distPath));
 // Any route not matched by the API above returns index.html so React Router works
 app.get('*', (_req, res) => {

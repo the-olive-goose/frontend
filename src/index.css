@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Chewy&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&family=Inter:wght@300;400;500;600&family=Pacifico&family=Permanent+Marker&family=Fredoka:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=More+Sugar&family=Chewy&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&family=Inter:wght@300;400;500;600&family=Pacifico&family=Permanent+Marker&family=Fredoka:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,63 +6,165 @@
 
 @layer base {
   :root {
-    /* ── Canva palette ────────────────────────────────────
-       Announcement bar bg : #1D2B1B  → hsl(115 23% 14%)
-       Nav / sage green     : #8FA672  → hsl(89  21% 55%)
-       Hero / forest green  : #1E2918  → hsl(110 26% 13%)
-       Gold badge accent    : #C9B26D  → hsl(42  44% 61%)
-       Cream text/bg        : #F5EFE6  → hsl(36  50% 93%)
-       Warm cream page bg   : #F5EAD8  → hsl(35  61% 90%)
-       Primary btn bg       : #F2EDE3  → hsl(38  40% 92%)
-    ──────────────────────────────────────────────────── */
+    /* ═══════════════════════════════════════════════════════════
+       THE OLIVE GOOSE — Design Tokens
+       ═══════════════════════════════════════════════════════════ */
 
-    --background: 35 61% 90%;        /* warm cream page bg   */
-    --foreground: 110 26% 13%;       /* forest green text    */
+    /* ── Brand Colors ───────────────────────────────────────────── */
 
+    /* Greens */
+    --color-forest-dark:   #1D2B1B;   /* primary — nav, text, hero overlay */
+    --color-forest-bg:     #1E2918;   /* hero section background */
+    --color-sage-mid:      #a5ba85;   /* navbar bg, products/welcome sections */
+    --color-sage-dark:     #899d6b;   /* announcement bar */
+    --color-sage-light:    #8FA672;   /* muted contexts */
+    --color-sage-pale:     #c8d8b0;   /* product image placeholder, pill images */
+
+    /* Creams */
+    --color-cream-page:    #F5EAD8;   /* page background */
+    --color-cream-text:    #F5EFE6;   /* text/fg on dark backgrounds */
+    --color-cream-button:  #F2EDE3;   /* primary CTA button bg */
+    --color-cream-section: #f0e8d6;   /* SmellsLike + Videos section bg */
+    --color-cream-card:    #F5EFE6;   /* card background */
+
+    /* Accent */
+    --color-gold:          #C9B26D;   /* accent — stars, stamp, eyebrow highlights */
+    --color-gold-soft:     #ddd0a0;   /* lighter gold tint */
+
+    /* Neutrals */
+    --color-white:         #ffffff;
+    --color-border:        #e0d8ce;   /* card/input borders */
+
+    /* ── Semantic Tokens ────────────────────────────────────────── */
+
+    --bg-page:             var(--color-cream-page);
+    --bg-hero:             var(--color-forest-bg);
+    --bg-nav:              var(--color-sage-mid);
+    --bg-announce:         var(--color-sage-dark);
+    --bg-products:         var(--color-sage-mid);
+    --bg-smells-like:      var(--color-cream-section);
+    --bg-moment-pill:      var(--color-sage-mid);
+    --bg-welcome:          var(--color-sage-mid);
+    --bg-videos:           var(--color-cream-section);
+    --bg-footer:           var(--color-white);
+    --bg-newsletter:       var(--color-forest-dark);
+
+    --text-primary:        var(--color-forest-dark);
+    --text-on-dark:        var(--color-cream-text);
+    --text-muted:          rgba(29, 43, 27, 0.65);
+    --text-muted-on-dark:  rgba(245, 239, 230, 0.75);
+    --text-gold:           var(--color-gold);
+
+    --btn-primary-bg:      var(--color-cream-button);
+    --btn-primary-text:    var(--color-forest-dark);
+    --btn-dark-bg:         var(--color-forest-dark);
+    --btn-dark-text:       var(--color-cream-text);
+    --btn-ghost-border:    rgba(245, 239, 230, 0.5);
+    --btn-ghost-text:      var(--color-cream-text);
+
+    /* ── Typography Families ────────────────────────────────────── */
+
+    --font-display:  'More Sugar', 'Chewy', cursive;
+    --font-sketch:   'Permanent Marker', cursive;
+    --font-rounded:  'Fredoka', 'Inter', sans-serif;
+    --font-serif:    'Cormorant Garamond', Georgia, serif;
+    --font-sans:     'Inter', system-ui, sans-serif;
+
+    /* ── Type Scale ─────────────────────────────────────────────── */
+
+    --text-hero:          clamp(2.4rem, 5vw, 3.6rem);
+    --text-display-lg:    clamp(2rem, 5vw, 3.2rem);
+    --text-display-md:    clamp(1.8rem, 4vw, 2.6rem);
+    --text-display-sm:    clamp(1.5rem, 4vw, 2rem);
+    --text-statement:     clamp(2rem, 6vw, 4.2rem);
+    --text-serif-xl:      3.5rem;
+    --text-serif-lg:      3rem;
+    --text-serif-md:      2rem;
+    --text-serif-sm:      1.25rem;
+    --text-body-lg:       1rem;
+    --text-body-md:       0.9375rem;
+    --text-body-sm:       0.875rem;
+    --text-body-xs:       0.75rem;
+    --text-eyebrow:       0.6875rem;
+
+    /* ── Letter Spacing ─────────────────────────────────────────── */
+
+    --tracking-eyebrow:      0.22em;
+    --tracking-eyebrow-wide: 0.25em;
+    --tracking-display:      0.04em;
+    --tracking-nav:          0.06em;
+    --tracking-cta:          0.05em;
+    --tracking-tight:        -0.01em;
+
+    /* ── Line Heights ───────────────────────────────────────────── */
+
+    --leading-display:  1.08;
+    --leading-heading:  1.2;
+    --leading-body:     1.6;
+    --leading-relaxed:  1.7;
+
+    /* ── Spacing Scale ──────────────────────────────────────────── */
+
+    --space-1:  4px;  --space-2:  8px;  --space-3:  12px;
+    --space-4:  16px; --space-5:  20px; --space-6:  24px;
+    --space-8:  32px; --space-10: 40px; --space-12: 48px;
+    --space-14: 56px; --space-16: 64px; --space-20: 80px;
+    --space-24: 96px; --space-32: 128px;
+
+    /* ── Border Radii ───────────────────────────────────────────── */
+
+    --radius-pill:    100px;
+    --radius-product: 28px;
+    --radius-card:    16px;
+    --radius-input:   8px;
+    --radius-badge:   100px;
+    --radius-payment: 6px;
+
+    /* ── Shadows ────────────────────────────────────────────────── */
+
+    --shadow-glow:        0 0 60px hsl(35 80% 55% / 0.15);
+    --shadow-glow-strong: 0 0 100px hsl(35 80% 55% / 0.25);
+    --shadow-elegant:     0 10px 40px -10px hsl(220 10% 15% / 0.1);
+    --shadow-card:        0 2px 16px rgba(29, 43, 27, 0.06);
+    --shadow-stamp:       0 4px 16px rgba(0, 0, 0, 0.25);
+
+    /* ── Transitions ────────────────────────────────────────────── */
+
+    --ease-standard:   0.3s ease;
+    --ease-bounce-out: 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-fade-up:    0.8s ease-out;
+
+    /* ── Tailwind semantic HSL aliases (kept for component compatibility) ── */
+
+    --background: 35 61% 90%;
+    --foreground: 110 26% 13%;
     --card: 36 50% 95%;
     --card-foreground: 110 26% 13%;
-
     --popover: 36 50% 95%;
     --popover-foreground: 110 26% 13%;
-
-    --primary: 115 23% 14%;          /* dark green #1D2B1B   */
-    --primary-foreground: 36 50% 93%; /* cream #F5EFE6        */
-
-    --secondary: 38 40% 92%;         /* cream btn bg         */
+    --primary: 115 23% 14%;
+    --primary-foreground: 36 50% 93%;
+    --secondary: 38 40% 92%;
     --secondary-foreground: 115 23% 14%;
-
     --muted: 35 30% 85%;
     --muted-foreground: 89 10% 45%;
-
-    --accent: 42 44% 61%;            /* gold #C9B26D         */
+    --accent: 42 44% 61%;
     --accent-foreground: 115 23% 14%;
-
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-
     --border: 35 25% 80%;
     --input: 35 25% 80%;
     --ring: 89 21% 55%;
-
     --radius: 0.5rem;
-
-    --olive: 89 21% 55%;             /* sage #8FA672         */
+    --olive: 89 21% 55%;
     --olive-light: 89 21% 62%;
-    --olive-dark: 115 23% 14%;       /* dark green #1D2B1B   */
-    --cream: 36 50% 93%;             /* #F5EFE6              */
-    --cream-dark: 38 40% 92%;        /* #F2EDE3              */
-    --charcoal: 110 26% 13%;         /* forest #1E2918       */
+    --olive-dark: 115 23% 14%;
+    --cream: 36 50% 93%;
+    --cream-dark: 38 40% 92%;
+    --charcoal: 110 26% 13%;
     --charcoal-light: 110 15% 30%;
-    --warm-glow: 42 44% 61%;         /* gold #C9B26D         */
+    --warm-glow: 42 44% 61%;
     --warm-glow-soft: 42 35% 72%;
-
-    --font-serif: 'Cormorant Garamond', Georgia, serif;
-    --font-sans: 'Inter', system-ui, sans-serif;
-
-    --shadow-glow: 0 0 60px hsl(35 80% 55% / 0.15);
-    --shadow-glow-strong: 0 0 100px hsl(35 80% 55% / 0.25);
-    --shadow-elegant: 0 10px 40px -10px hsl(220 10% 15% / 0.1);
-
     --sidebar-background: 40 30% 98%;
     --sidebar-foreground: 220 10% 15%;
     --sidebar-primary: 82 40% 30%;
@@ -85,34 +187,70 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    background-color: var(--bg-page);
     overflow-x: hidden;
   }
 
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-serif);
+    color: var(--text-primary);
+  }
+
+  p, .body {
+    font-family: var(--font-sans);
+    font-size: var(--text-body-md);
+    line-height: var(--leading-relaxed);
+    color: var(--text-muted);
   }
 }
 
 @layer utilities {
-  .font-serif {
-    font-family: var(--font-serif);
+  /* ── Font families ────────────────────────────────────────── */
+  .font-serif    { font-family: var(--font-serif); }
+  .font-sans     { font-family: var(--font-sans); }
+  .font-display  { font-family: var(--font-display); }
+  .font-sketch   { font-family: var(--font-sketch); }
+  .font-rounded  { font-family: var(--font-rounded); }
+
+  /* ── Heading helpers ──────────────────────────────────────── */
+  .h-display {
+    font-family: var(--font-display);
+    line-height: var(--leading-display);
+    letter-spacing: var(--tracking-display);
+  }
+  .h-statement {
+    font-family: var(--font-sketch);
+    font-size: var(--text-statement);
+    line-height: 1.1;
+    letter-spacing: var(--tracking-display);
+  }
+  .h-rounded {
+    font-family: var(--font-rounded);
+    font-weight: 600;
   }
 
-  .font-sans {
+  /* ── Section eyebrow ──────────────────────────────────────── */
+  .eyebrow {
     font-family: var(--font-sans);
+    font-size: var(--text-eyebrow);
+    font-weight: 600;
+    letter-spacing: var(--tracking-eyebrow);
+    text-transform: uppercase;
+    color: var(--text-primary);
+  }
+  .eyebrow-gold {
+    font-family: var(--font-sans);
+    font-size: var(--text-eyebrow);
+    font-weight: 600;
+    letter-spacing: var(--tracking-eyebrow);
+    text-transform: uppercase;
+    color: var(--color-gold);
   }
 
-  .text-glow {
-    text-shadow: 0 0 40px hsl(35 80% 55% / 0.3);
-  }
-
-  .bg-glow {
-    box-shadow: var(--shadow-glow);
-  }
-
-  .bg-glow-strong {
-    box-shadow: var(--shadow-glow-strong);
-  }
+  /* ── Glow helpers ─────────────────────────────────────────── */
+  .text-glow        { text-shadow: 0 0 40px hsl(35 80% 55% / 0.3); }
+  .bg-glow          { box-shadow: var(--shadow-glow); }
+  .bg-glow-strong   { box-shadow: var(--shadow-glow-strong); }
 }
 
 @keyframes fade-up {
@@ -190,20 +328,7 @@
   animation: shimmer 3s ease-in-out infinite;
 }
 
-/* ── More Sugar font substitute (Chewy) ─────────────────── */
-.font-display {
-  font-family: 'Chewy', 'Pacifico', cursive;
-}
-/* ── Permanent Marker — "SMELLS LIKE" headline font ─────── */
-.font-sketch {
-  font-family: 'Permanent Marker', cursive;
-}
-/* ── Fredoka — rounded section headings ─────────────────── */
-.font-rounded {
-  font-family: 'Fredoka', 'Inter', sans-serif;
-}
-
-/* ── Announcement bar message fade ───────────────────────── */
+/* ── Announcement bar message fade ──────────────────────────── */
 @keyframes msg-in {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -212,22 +337,34 @@
   from { opacity: 1; transform: translateY(0); }
   to   { opacity: 0; transform: translateY(-6px); }
 }
-.announce-enter { animation: msg-in 0.35s ease forwards; }
-.announce-exit  { animation: msg-out 0.3s ease forwards; }
+.announce-enter      { animation: msg-in 0.35s ease forwards; }
+.announce-exit       { animation: msg-out 0.3s ease forwards; }
+/* og- aliases */
+.og-announce-enter   { animation: msg-in 0.35s ease forwards; }
+.og-announce-exit    { animation: msg-out 0.30s ease forwards; }
 
-/* ── Gen-Z squiggle underline ─────────────────────────────── */
+/* ── og- animation utility classes ──────────────────────────── */
+.og-fade-up    { animation: fade-up 0.8s ease-out forwards; }
+.og-fade-up-d1 { animation: fade-up 0.8s ease-out 0.2s forwards; opacity: 0; }
+.og-fade-up-d2 { animation: fade-up 0.8s ease-out 0.4s forwards; opacity: 0; }
+.og-fade-up-d3 { animation: fade-up 0.8s ease-out 0.6s forwards; opacity: 0; }
+.og-glow-pulse { animation: glow-pulse 4s ease-in-out infinite; }
+.og-logo-reveal { animation: logo-reveal 1.2s ease-out forwards; }
+
+/* ── Gen-Z squiggle underline ────────────────────────────────── */
 .squiggle {
   text-decoration: underline wavy;
   text-underline-offset: 4px;
 }
 
-/* ── Pill tag ─────────────────────────────────────────────── */
+/* ── Pill tag ────────────────────────────────────────────────── */
 .pill-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 3px 10px;
-  border-radius: 100px;
+  border-radius: var(--radius-badge);
+  font-family: var(--font-sans);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.1em;

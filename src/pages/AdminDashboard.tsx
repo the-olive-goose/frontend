@@ -32,7 +32,7 @@ import {
 } from "@/lib/defaults";
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
-import logo from "@/assets/logo.png";
+import logo from "@/assets/logo.jpg";
 
 // ── Shared UI helpers ──────────────────────────────────────────────────────────
 
@@ -453,14 +453,14 @@ const MomentPillEditor = ({
     <Field label="Text 1" hint={`e.g. "Live in the moment."`}>
       <Input value={data.text1} onChange={(e) => onChange({ ...data, text1: e.target.value })} />
     </Field>
-    <Field label="Image 1 URL" hint="Small inline oval image (e.g. candles photo)">
-      <Input placeholder="https://…" value={data.image1_url} onChange={(e) => onChange({ ...data, image1_url: e.target.value })} />
+    <Field label="Image 1 filename" hint="Filename from src/assets/ folder — e.g. hero-bg.jpg. Drop the file there first, then enter its name here.">
+      <Input placeholder="hero-bg.jpg" value={data.image1_url} onChange={(e) => onChange({ ...data, image1_url: e.target.value })} />
     </Field>
     <Field label="Text 2" hint={`e.g. "Because after all,"`}>
       <Input value={data.text2} onChange={(e) => onChange({ ...data, text2: e.target.value })} />
     </Field>
-    <Field label="Image 2 URL" hint="Second small inline oval image">
-      <Input placeholder="https://…" value={data.image2_url} onChange={(e) => onChange({ ...data, image2_url: e.target.value })} />
+    <Field label="Image 2 filename" hint="Filename from src/assets/ folder — e.g. logo.jpg. Drop the file there first, then enter its name here.">
+      <Input placeholder="logo.jpg" value={data.image2_url} onChange={(e) => onChange({ ...data, image2_url: e.target.value })} />
     </Field>
       <Field label="Text 3" hint={`e.g. "isn't it the most important?"`}>
       <Input value={data.text3} onChange={(e) => onChange({ ...data, text3: e.target.value })} />
@@ -581,69 +581,64 @@ const VideosEditor = ({
   onChange: (d: VideosContent) => void;
   onSave: () => void;
   saving: boolean;
-}) => (
-  <div className="space-y-6">
-    <SectionHeading title="Videos" desc="Three studio/brand videos embedded from YouTube, Vimeo, or a direct URL." />
-    <Field label="Section Label">
-      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
-    </Field>
-    <Field label="Section Headline">
-      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
-    </Field>
-    <Field label="Section Subtext">
-      <Input value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
-    </Field>
+}) => {
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Videos" desc="Drop .mp4 files into public/videos/ in your project, then type /videos/filename.mp4 below. Or paste a YouTube / Vimeo link." />
+      <Field label="Section Label">
+        <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+      </Field>
+      <Field label="Section Headline">
+        <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+      </Field>
+      <Field label="Section Subtext">
+        <Input value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+      </Field>
 
-    <div className="space-y-4">
-      <label className="block text-sm font-sans font-medium text-foreground">Videos</label>
-      {data.items.map((item, i) => (
-        <Card key={item.id}>
-          <div className="flex items-center justify-between">
-            <span className="font-sans text-sm font-medium text-foreground">Video {i + 1}</span>
-            <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
-          </div>
-          <Field label="Title">
-            <Input value={item.title} onChange={(e) => {
-              const items = [...data.items];
-              items[i] = { ...items[i], title: e.target.value };
-              onChange({ ...data, items });
-            }} />
-          </Field>
-          <Field label="Description">
-            <Input value={item.description} onChange={(e) => {
-              const items = [...data.items];
-              items[i] = { ...items[i], description: e.target.value };
-              onChange({ ...data, items });
-            }} />
-          </Field>
-          <Field
-            label="Video URL"
-            hint="Paste a YouTube link (youtube.com/watch?v=… or youtu.be/…), Vimeo link, or direct .mp4 URL"
-          >
-            <Input
-              placeholder="https://www.youtube.com/watch?v=…"
-              value={item.video_url}
-              onChange={(e) => {
+      <div className="space-y-4">
+        <label className="block text-sm font-sans font-medium text-foreground">Videos</label>
+        {data.items.map((item, i) => (
+          <Card key={item.id}>
+            <div className="flex items-center justify-between">
+              <span className="font-sans text-sm font-medium text-foreground">Video {i + 1}</span>
+              <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
+            </div>
+            <Field label="Title">
+              <Input value={item.title} onChange={(e) => {
                 const items = [...data.items];
-                items[i] = { ...items[i], video_url: e.target.value };
+                items[i] = { ...items[i], title: e.target.value };
                 onChange({ ...data, items });
-              }}
-            />
-          </Field>
-        </Card>
-      ))}
-      <AddButton
-        label="Add video"
-        onClick={() => {
-          const newVideo: VideoItem = { id: Date.now().toString(), title: "", description: "", video_url: "" };
-          onChange({ ...data, items: [...data.items, newVideo] });
-        }}
-      />
-    </div>
+              }} />
+            </Field>
+            <Field label="Video URL" hint="Local file: drop .mp4 into public/videos/ → type /videos/filename.mp4  |  Or paste a YouTube / Vimeo link">
+              <Input
+                placeholder="/videos/my-reel.mp4  or  https://youtube.com/watch?v=…"
+                value={item.video_url}
+                onChange={(e) => {
+                  const items = [...data.items];
+                  items[i] = { ...items[i], video_url: e.target.value };
+                  onChange({ ...data, items });
+                }}
+              />
+              {item.video_url && (
+                <p className="text-xs text-muted-foreground truncate mt-1">✓ {item.video_url}</p>
+              )}
+            </Field>
+          </Card>
+        ))}
+        <AddButton
+          label="Add video"
+          onClick={() => {
+            const newVideo: VideoItem = { id: Date.now().toString(), title: "", description: "", video_url: "" };
+            onChange({ ...data, items: [...data.items, newVideo] });
+          }}
+        />
+      </div>
 
-    <SaveButton onClick={onSave} saving={saving} />
-  </div>
-);
+      <SaveButton onClick={onSave} saving={saving} />
+    </div>
+  );
+};
 
 const TestimonialsEditor = ({
   data,
@@ -708,6 +703,17 @@ const TestimonialsEditor = ({
                 onChange({ ...data, items });
               }}
               className="w-full accent-primary"
+            />
+          </Field>
+          <Field label="Avatar Image URL" hint="Optional — paste a photo URL to show a profile picture">
+            <Input
+              value={item.avatarUrl ?? ""}
+              placeholder="https://…"
+              onChange={(e) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], avatarUrl: e.target.value };
+                onChange({ ...data, items });
+              }}
             />
           </Field>
         </Card>

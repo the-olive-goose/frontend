@@ -25,14 +25,21 @@ export interface Subscriber {
 
 // ── Auth ───────────────────────────────────────────────────────────────────────
 export const login = async (email: string, password: string): Promise<void> => {
-  const res = await fetch(`${API_URL}/api/auth/login`, {
-    method: 'POST',
-    headers: authHeaders(),
-    body: JSON.stringify({ email, password }),
-  });
+  console.log('[api] login → POST', `${API_URL}/api/auth/login`);
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ email, password }),
+    });
+  } catch (networkErr) {
+    throw new Error(`Cannot reach backend at ${API_URL} — check VITE_API_URL env var`);
+  }
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error || 'Login failed');
+    let errMsg = `HTTP ${res.status}`;
+    try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+    throw new Error(errMsg);
   }
   const { token } = await res.json();
   localStorage.setItem('admin_token', token);

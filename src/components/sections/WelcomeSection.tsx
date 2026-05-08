@@ -7,7 +7,7 @@ const WelcomeSection = ({ data }: Props) => (
   <section
     id="story"
     className="w-full py-20 px-6"
-    style={{ background: "#a5ba85" }}
+    style={{ background: "var(--bg-welcome)" }}
   >
     <div className="max-w-5xl mx-auto flex flex-col md:flex-row items-center gap-10 md:gap-14">
 
@@ -19,7 +19,7 @@ const WelcomeSection = ({ data }: Props) => (
             width: "clamp(120px, 18vw, 180px)",
             height: "clamp(120px, 18vw, 180px)",
             borderRadius: "50%",
-            background: "#8fa672",
+            background: "var(--color-sage-light)",
             border: "3px solid rgba(255,255,255,0.5)",
           }}
         >
@@ -37,21 +37,19 @@ const WelcomeSection = ({ data }: Props) => (
         </div>
       </div>
 
-      {/* Text — center/right */}
+      {/* Text */}
       <div className="flex flex-col items-center md:items-start text-center md:text-left gap-5">
-        {/* Headline in Pacifico with wide letter-spacing */}
         <h2
           className="font-display leading-tight"
           style={{
-            fontSize: "clamp(1.5rem, 4vw, 2.6rem)",
-            color: "#ffffff",
-            letterSpacing: "0.06em",
+            fontSize: "var(--text-display-sm)",
+            color: "var(--color-white)",
+            letterSpacing: "var(--tracking-nav)",
           }}
         >
           {data.headline}
         </h2>
 
-        {/* Name line */}
         <p
           className="font-sans font-light"
           style={{
@@ -64,12 +62,11 @@ const WelcomeSection = ({ data }: Props) => (
           {data.name_line}
         </p>
 
-        {/* Bio */}
         <p
           className="font-sans font-light"
           style={{
             fontSize: "clamp(0.82rem, 1.8vw, 0.97rem)",
-            color: "rgba(255,255,255,0.75)",
+            color: "var(--text-muted-on-dark)",
             letterSpacing: "0.1em",
             maxWidth: "580px",
           }}
@@ -77,15 +74,15 @@ const WelcomeSection = ({ data }: Props) => (
           {data.bio}
         </p>
 
-        {/* CTA */}
         <a
           href={data.cta_href || "#"}
-          className="mt-2 inline-flex items-center justify-center px-10 py-3 font-sans text-sm font-medium transition-all hover:bg-white hover:text-[#1D2B1B]"
+          className="mt-2 inline-flex items-center justify-center font-sans text-sm font-medium transition-all hover:bg-white"
           style={{
-            borderRadius: "100px",
-            border: "1.5px solid #ffffff",
-            color: "#ffffff",
-            letterSpacing: "0.05em",
+            borderRadius: "var(--radius-pill)",
+            border: "1.5px solid var(--color-white)",
+            color: "var(--color-white)",
+            letterSpacing: "var(--tracking-cta)",
+            padding: "12px 40px",
           }}
         >
           {data.cta_text}

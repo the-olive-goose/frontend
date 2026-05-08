@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { login } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
-import logo from "@/assets/logo.png";
+import logo from "@/assets/logo.jpg";
 
 const AdminLogin = ({ onLogin }: { onLogin: () => void }) => {
   const [email, setEmail] = useState("");
@@ -17,7 +17,14 @@ const AdminLogin = ({ onLogin }: { onLogin: () => void }) => {
       onLogin();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Login failed";
-      toast({ title: "Login failed", description: message, variant: "destructive" });
+      // Show the full technical error so we can diagnose it
+      toast({
+        title: "Login failed",
+        description: message,
+        variant: "destructive",
+        duration: 10000,
+      });
+      console.error("[AdminLogin] error:", err);
     } finally {
       setIsLoading(false);
     }

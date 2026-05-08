@@ -31,26 +31,30 @@ const NewsletterSection = ({ data }: Props) => {
   };
 
   return (
-    <section className="bg-primary py-24 lg:py-32">
+    <section className="py-24 lg:py-32" style={{ background: "var(--bg-newsletter)" }}>
       <div className="max-w-3xl mx-auto px-6 text-center space-y-6">
-        <p className="font-sans text-xs tracking-[0.2em] uppercase text-primary-foreground/60 font-medium">
-          {data.label}
-        </p>
-        <h2 className="font-serif text-4xl sm:text-5xl text-primary-foreground leading-tight">
+        <p className="eyebrow" style={{ color: "rgba(245,239,230,0.6)" }}>{data.label}</p>
+        <h2
+          className="font-serif leading-tight"
+          style={{ fontSize: "var(--text-serif-lg)", color: "var(--text-on-dark)" }}
+        >
           {data.headline}
         </h2>
         {data.subtext && (
-          <p className="font-sans text-base text-primary-foreground/70 max-w-md mx-auto leading-relaxed">
+          <p
+            className="font-sans text-base max-w-md mx-auto leading-relaxed"
+            style={{ color: "var(--text-muted-on-dark)" }}
+          >
             {data.subtext}
           </p>
         )}
 
         {status === "done" ? (
           <div className="flex items-center justify-center gap-3 py-4">
-            <svg className="w-6 h-6 text-primary-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-6 h-6" style={{ color: "var(--text-on-dark)" }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
-            <p className="font-sans text-primary-foreground font-medium">You're on the list!</p>
+            <p className="font-sans font-medium" style={{ color: "var(--text-on-dark)" }}>You're on the list!</p>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-3 mt-4 max-w-md mx-auto">
@@ -60,12 +64,26 @@ const NewsletterSection = ({ data }: Props) => {
               onChange={(e) => setEmail(e.target.value)}
               placeholder={data.placeholder}
               required
-              className="flex-1 px-5 py-3 rounded-full bg-primary-foreground/10 border border-primary-foreground/20 text-primary-foreground placeholder:text-primary-foreground/40 font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary-foreground/30"
+              className="flex-1 font-sans text-sm focus:outline-none focus:ring-2"
+              style={{
+                padding: "12px 20px",
+                borderRadius: "var(--radius-input)",
+                background: "rgba(245,239,230,0.1)",
+                border: "1px solid rgba(245,239,230,0.2)",
+                color: "var(--text-on-dark)",
+              }}
             />
             <button
               type="submit"
               disabled={status === "loading"}
-              className="px-7 py-3 rounded-full bg-primary-foreground text-primary font-sans text-sm font-medium hover:bg-cream-dark transition-all disabled:opacity-60 shrink-0"
+              className="font-sans text-sm font-medium transition-all disabled:opacity-60 shrink-0"
+              style={{
+                padding: "12px 28px",
+                borderRadius: "var(--radius-pill)",
+                background: "var(--color-cream-button)",
+                color: "var(--color-forest-dark)",
+                letterSpacing: "var(--tracking-cta)",
+              }}
             >
               {status === "loading" ? "..." : data.cta_text}
             </button>

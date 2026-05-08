@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
-import logo from "@/assets/logo.png";
+import logo from "@/assets/logo.jpg";
 
 import NavbarSection      from "@/components/sections/NavbarSection";
 import HeroSection        from "@/components/sections/HeroSection";
@@ -9,7 +9,9 @@ import SmellsLikeSection  from "@/components/sections/SmellsLikeSection";
 import ProductsSection    from "@/components/sections/ProductsSection";
 import MomentPillSection  from "@/components/sections/MomentPillSection";
 import WelcomeSection     from "@/components/sections/WelcomeSection";
-import FooterSection      from "@/components/sections/FooterSection";
+import VideosSection          from "@/components/sections/VideosSection";
+import TestimonialsSection    from "@/components/sections/TestimonialsSection";
+import FooterSection          from "@/components/sections/FooterSection";
 
 const Index = () => {
   const [content, setContent] = useState<SiteContent>(DEFAULT_CONTENT);
@@ -60,8 +62,8 @@ const Index = () => {
 
   if (!loaded) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "#1E2918" }}>
-        <img src={logo} alt="The Olive Goose" className="w-24 h-24 animate-logo-reveal" width={512} height={512} />
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--bg-hero)" }}>
+        <img src={logo} alt="The Olive Goose" className="w-24 h-24 og-logo-reveal" width={512} height={512} />
       </div>
     );
   }
@@ -71,8 +73,8 @@ const Index = () => {
       {/* Fixed header: announcement bar (38px) + nav (~56px) = 94px */}
       <NavbarSection data={content.navbar} announcement={content.announcementBar} />
 
-      <div className="pt-[94px]">
-        {/* 1. Hero — full-width image */}
+      <div>
+        {/* 1. Hero — full-width image, sits flush under fixed navbar */}
         <HeroSection data={content.hero} />
 
         {/* 2. "SMELLS LIKE YOUR CAFÉ ERA." — cream bg */}
@@ -84,10 +86,16 @@ const Index = () => {
         {/* 4. "Live in the moment" pill — green bg */}
         <MomentPillSection data={content.momentPill} />
 
-        {/* 5. "Welcome to the Olive Goose Club!" — green bg */}
+        {/* 5. Welcome to the Olive Goose Club */}
         <WelcomeSection data={content.welcomeClub} />
 
-        {/* 6. Footer — white quick links + copyright */}
+        {/* 6. Videos */}
+        <VideosSection data={content.videos} />
+
+        {/* 7. Testimonials — cream bg, animated card stack */}
+        <TestimonialsSection data={content.testimonials} />
+
+        {/* 8. Footer — white quick links + copyright */}
         <FooterSection data={content.footer} />
       </div>
     </div>

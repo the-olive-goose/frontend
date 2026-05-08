@@ -14,8 +14,11 @@ export default {
     },
     extend: {
       fontFamily: {
-        serif: ['Cormorant Garamond', 'Georgia', 'serif'],
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        serif:    ['Cormorant Garamond', 'Georgia', 'serif'],
+        sans:     ['Inter', 'system-ui', 'sans-serif'],
+        display:  ['More Sugar', 'Chewy', 'cursive'],
+        sketch:   ['Permanent Marker', 'cursive'],
+        rounded:  ['Fredoka', 'Inter', 'sans-serif'],
       },
       colors: {
         border: "hsl(var(--border))",

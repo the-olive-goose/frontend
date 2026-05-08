@@ -36,6 +36,7 @@ export interface Testimonial {
   author: string;
   location: string;
   rating: number;
+  avatarUrl?: string;
 }
 
 export interface NavbarContent {
@@ -178,9 +179,9 @@ export const DEFAULT_CONTENT: SiteContent = {
 
   momentPill: {
     text1: "Live in the moment.",
-    image1_url: "",
+    image1_url: "hero-bg.jpg",
     text2: "Because after all,",
-    image2_url: "",
+    image2_url: "logo.jpg",
     text3: "isn't it the most important?",
   },
 
@@ -287,7 +288,7 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   testimonials: {
-    label: "LOVE NOTES",
+    label: "RATE THE VIBES",
     headline: "What our customers say",
     items: [
       {
@@ -353,23 +354,36 @@ export const DEFAULT_CONTENT: SiteContent = {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** Convert any YouTube/Vimeo URL to an embeddable src */
+/** Convert any YouTube/Vimeo/Instagram URL to an embeddable src */
 export const toEmbedUrl = (url: string): string => {
   if (!url) return "";
   // Already an embed
-  if (url.includes("youtube.com/embed/") || url.includes("player.vimeo.com")) return url;
+  if (
+    url.includes("youtube.com/embed/") ||
+    url.includes("player.vimeo.com") ||
+    url.includes("instagram.com/reel/") && url.endsWith("/embed/") ||
+    url.includes("instagram.com/p/") && url.endsWith("/embed/")
+  ) return url;
   // YouTube watch or short URL
   const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?/\s]+)/);
   if (ytMatch) return `https://www.youtube.com/embed/${ytMatch[1]}?rel=0`;
   // Vimeo
   const vimeoMatch = url.match(/vimeo\.com\/(\d+)/);
   if (vimeoMatch) return `https://player.vimeo.com/video/${vimeoMatch[1]}`;
+  // Instagram Reel
+  const igReelMatch = url.match(/instagram\.com\/reel\/([^/?#\s]+)/);
+  if (igReelMatch) return `https://www.instagram.com/reel/${igReelMatch[1]}/embed/`;
+  // Instagram Post
+  const igPostMatch = url.match(/instagram\.com\/p\/([^/?#\s]+)/);
+  if (igPostMatch) return `https://www.instagram.com/p/${igPostMatch[1]}/embed/`;
   // Fallback — treat as direct src
   return url;
 };
 
 export const isEmbedUrl = (url: string) =>
-  url.includes("youtube.com/embed") || url.includes("player.vimeo.com");
+  url.includes("youtube.com/embed") ||
+  url.includes("player.vimeo.com") ||
+  (url.includes("instagram.com") && url.includes("/embed/"));
 
 export const isDirectVideo = (url: string) =>
   /\.(mp4|webm|ogg)(\?.*)?$/i.test(url);

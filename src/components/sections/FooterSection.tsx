@@ -28,7 +28,7 @@ const SocialIcon = ({ platform, href }: { platform: string; href: string }) => {
 
   return (
     <a href={href} target="_blank" rel="noopener noreferrer"
-      className="transition-opacity hover:opacity-60" style={{ color: "#1D2B1B" }} aria-label={platform}>
+      className="transition-opacity hover:opacity-60" style={{ color: "var(--text-primary)" }} aria-label={platform}>
       {icons[platform] ?? <span className="font-sans text-sm">{platform}</span>}
     </a>
   );
@@ -40,8 +40,10 @@ const PaymentBadge = ({ label, children }: { label: string; children: ReactEleme
     title={label}
     className="inline-flex items-center justify-center"
     style={{
-      width: 46, height: 30, borderRadius: 6,
-      border: "1px solid #e0d8ce", background: "#fff",
+      width: 46, height: 30,
+      borderRadius: "var(--radius-payment)",
+      border: "1px solid var(--color-border)",
+      background: "var(--color-white)",
       overflow: "hidden", flexShrink: 0,
     }}
   >
@@ -138,18 +140,24 @@ const FooterSection = ({ data }: Props) => {
 
   return (
     <footer>
-      {/* ── Quick Links — white ───────────────────────────────── */}
-      <div className="w-full bg-white py-12 px-6">
+      {/* ── Quick Links ──────────────────────────────────────── */}
+      <div className="w-full py-12 px-6" style={{ background: "var(--bg-footer)" }}>
         <div className="max-w-4xl mx-auto text-center space-y-6">
-          <h3 className="font-rounded font-bold" style={{ fontSize: "1.3rem", color: "#1D2B1B" }}>
+          <h3
+            className="h-rounded"
+            style={{ fontSize: "1.3rem", color: "var(--text-primary)" }}
+          >
             Quick links
           </h3>
           {links.length > 0 && (
             <nav className="flex flex-wrap items-center justify-center gap-x-8 gap-y-2">
               {links.map((link, i) => (
-                <a key={i} href={link.href}
+                <a
+                  key={i}
+                  href={link.href}
                   className="font-sans text-sm transition-opacity hover:opacity-60"
-                  style={{ color: "#1D2B1B" }}>
+                  style={{ color: "var(--text-primary)" }}
+                >
                   {link.label}
                 </a>
               ))}
@@ -165,25 +173,33 @@ const FooterSection = ({ data }: Props) => {
         </div>
       </div>
 
-      {/* ── Payment icons — white ────────────────────────────── */}
-      <div className="w-full bg-white py-6 px-6 border-t" style={{ borderColor: "#ede5d8" }}>
+      {/* ── Payment icons ────────────────────────────────────── */}
+      <div
+        className="w-full py-6 px-6 border-t"
+        style={{ background: "var(--bg-footer)", borderColor: "var(--color-border)" }}
+      >
         <div className="max-w-2xl mx-auto">
           <PaymentIcons />
         </div>
       </div>
 
-      {/* ── Policy links + copyright — white ─────────────────── */}
-      <div className="w-full bg-white py-4 px-6 border-t" style={{ borderColor: "#ede5d8" }}>
+      {/* ── Policy links + copyright ──────────────────────────── */}
+      <div
+        className="w-full py-4 px-6 border-t"
+        style={{ background: "var(--bg-footer)", borderColor: "var(--color-border)" }}
+      >
         <div className="max-w-4xl mx-auto flex flex-wrap items-center justify-center gap-x-1 gap-y-1">
-          <span className="font-sans text-xs" style={{ color: "rgba(29,43,27,0.5)" }}>
+          <span className="font-sans text-xs" style={{ color: "var(--text-muted)" }}>
             {data.copyright}
           </span>
           {policyLinks.map((link, i) => (
             <React.Fragment key={i}>
               <span className="font-sans text-xs" style={{ color: "rgba(29,43,27,0.3)" }}> · </span>
-              <a href={link.href}
+              <a
+                href={link.href}
                 className="font-sans text-xs transition-opacity hover:opacity-60"
-                style={{ color: "rgba(29,43,27,0.5)" }}>
+                style={{ color: "var(--text-muted)" }}
+              >
                 {link.label}
               </a>
             </React.Fragment>
