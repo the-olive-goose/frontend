@@ -1,5 +1,5 @@
 [phases.install]
-cmds = ["npm install", "cd .. && npm install"]
+cmds = ["npm install", "cd .. && npm install --no-workspaces --legacy-peer-deps"]
 
 [phases.build]
 cmds = ["cd .. && npm run build"]
