@@ -1,8 +1,8 @@
 [phases.install]
-cmds = ["npm install", "cd .. && npm install --no-workspaces --legacy-peer-deps"]
+cmds = ["npm install"]
 
 [phases.build]
-cmds = ["cd .. && npm run build"]
+cmds = ["cd .. && npm install --include=dev --legacy-peer-deps", "cd .. && npm run build"]
 
 [start]
 cmd = "node index.js"
