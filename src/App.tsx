@@ -11,6 +11,8 @@ import Index from "./pages/Index.tsx";
 import AdminDashboard from "./pages/AdminDashboard.tsx";
 import CandleCarePage from "./pages/CandleCarePage.tsx";
 import ShopPage from "./pages/ShopPage.tsx";
+import BasketPage from "./pages/BasketPage.tsx";
+import DealsPage from "./pages/DealsPage.tsx";
 import AboutPage from "./pages/AboutPage.tsx";
 import AuthCallback from "./pages/AuthCallback.tsx";
 import NotFound from "./pages/NotFound.tsx";
@@ -28,6 +30,8 @@ const App = () => (
             <Routes>
               <Route path="/" element={<Index />} />
               <Route path="/shop" element={<ShopPage />} />
+              <Route path="/basket" element={<BasketPage />} />
+              <Route path="/deals" element={<DealsPage />} />
               <Route path="/about" element={<AboutPage />} />
               <Route path="/candle-care" element={<CandleCarePage />} />
               <Route path="/admin" element={<AdminDashboard />} />

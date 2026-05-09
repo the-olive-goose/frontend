@@ -1,10 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { NavbarContent, AnnouncementBarContent } from "@/lib/defaults";
-import { getShopCategories, type ShopCategory } from "@/lib/api";
+import { useNavigate, useLocation } from "react-router-dom";
+import { NavbarContent, AnnouncementBarContent, type Product } from "@/lib/defaults";
+import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
+import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCart } from "@/contexts/CartContext";
 import CartDrawer from "@/components/CartDrawer";
 import logo from "@/assets/logo.jpg";
+import m1 from "@/assets/M1.png";
+import m2 from "@/assets/M2.png";
+
+const FALLBACK_IMGS = [m1, m2];
 
 interface Props {
   data: NavbarContent;
@@ -41,7 +48,6 @@ const AnnouncementBar = ({ data }: { data: AnnouncementBarContent }) => {
   }, [messages.length, interval]);
 
   const cls = phase === "enter" ? "announce-enter" : phase === "exit" ? "announce-exit" : "";
-
   return (
     <div className="w-full py-2 px-4 flex items-center justify-center overflow-hidden"
       style={{ background: "var(--bg-announce)", minHeight: "34px" }}>
@@ -55,10 +61,7 @@ const AnnouncementBar = ({ data }: { data: AnnouncementBarContent }) => {
 
 // ── Shop dropdown ──────────────────────────────────────────────────────────────
 
-const ShopDropdown = ({ categories, onClose }: {
-  categories: ShopCategory[];
-  onClose: () => void;
-}) => (
+const ShopDropdown = ({ categories, onClose }: { categories: ShopCategory[]; onClose: () => void }) => (
   <motion.div
     initial={{ opacity: 0, y: 8, scale: 0.97 }}
     animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -67,45 +70,25 @@ const ShopDropdown = ({ categories, onClose }: {
     className="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-50"
     style={{ minWidth: 220 }}
   >
-    {/* Arrow */}
     <div className="flex justify-center mb-1">
       <div className="w-3 h-3 rotate-45" style={{ background: "var(--color-cream-card)", border: "1px solid var(--color-border)", marginBottom: -8, position: "relative", zIndex: 0 }} />
     </div>
-    <div
-      className="rounded-xl overflow-hidden py-2"
-      style={{ background: "var(--color-cream-card)", border: "1px solid var(--color-border)", boxShadow: "0 12px 36px rgba(0,0,0,0.14)" }}
-    >
-      {/* All candles link */}
-      <a
-        href="/shop"
-        onClick={onClose}
-        className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/60 transition-colors group"
-      >
+    <div className="rounded-xl overflow-hidden py-2"
+      style={{ background: "var(--color-cream-card)", border: "1px solid var(--color-border)", boxShadow: "0 12px 36px rgba(0,0,0,0.14)" }}>
+      <a href="/shop" onClick={onClose}
+        className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/60 transition-colors group">
         <div className="w-3 h-3 rounded-full shrink-0" style={{ background: "var(--color-forest-dark)" }} />
         <span className="font-display text-sm" style={{ color: "var(--color-forest-dark)" }}>All candles</span>
       </a>
-
-      {categories.length > 0 && (
-        <div className="my-1.5 mx-4" style={{ height: 1, background: "var(--color-border)" }} />
-      )}
-
-      {/* Category links */}
+      {categories.length > 0 && <div className="my-1.5 mx-4" style={{ height: 1, background: "var(--color-border)" }} />}
       {categories.map(cat => (
-        <a
-          key={cat.id}
-          href={`/shop?category=${cat.slug}`}
-          onClick={onClose}
-          className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/60 transition-colors"
-        >
+        <a key={cat.id} href={`/shop?category=${cat.slug}`} onClick={onClose}
+          className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/60 transition-colors">
           <div className="w-3 h-3 rounded-full shrink-0" style={{ background: cat.accent_color }} />
           <div className="min-w-0">
-            <span className="font-display text-sm block truncate" style={{ color: "var(--color-forest-dark)" }}>
-              {cat.name}
-            </span>
+            <span className="font-display text-sm block truncate" style={{ color: "var(--color-forest-dark)" }}>{cat.name}</span>
             {cat.mood_description && (
-              <span className="font-sans text-xs block truncate" style={{ color: "rgba(30,41,24,0.5)" }}>
-                {cat.mood_description}
-              </span>
+              <span className="font-sans text-xs block truncate" style={{ color: "rgba(30,41,24,0.5)" }}>{cat.mood_description}</span>
             )}
           </div>
         </a>
@@ -117,133 +100,203 @@ const ShopDropdown = ({ categories, onClose }: {
 // ── Main Navbar ────────────────────────────────────────────────────────────────
 
 const NavbarSection = ({ data, announcement }: Props) => {
-  const [mobileOpen, setMobileOpen]   = useState(false);
-  const [shopOpen, setShopOpen]       = useState(false);
+  const [mobileOpen, setMobileOpen]         = useState(false);
+  const [shopOpen, setShopOpen]             = useState(false);
   const [mobileShopOpen, setMobileShopOpen] = useState(false);
-  const [categories, setCategories]   = useState<ShopCategory[]>([]);
+  const [categories, setCategories]         = useState<ShopCategory[]>([]);
+  const [allProducts, setAllProducts]       = useState<Product[]>([]);
+  const [searchQuery, setSearchQuery]       = useState("");
+  const [searchOpen, setSearchOpen]         = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
   const links = data.links ?? [];
   const shopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { user, signOut, openAuthModal } = useAuth();
+  const { user, signOut, openAuthModal }    = useAuth();
+  const { count }                           = useCart();
+  const navigate   = useNavigate();
+  const location   = useLocation();
 
   useEffect(() => {
     getShopCategories().then(cats => setCategories(cats)).catch(() => {});
+    getContent<{ items: Product[] }>("products", DEFAULT_CONTENT.products)
+      .then(d => setAllProducts(d?.items ?? []));
   }, []);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setSearchOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  // Live search results — top 6 closest matches
+  const searchResults = searchQuery.trim().length >= 1
+    ? allProducts.filter(p => {
+        const q = searchQuery.toLowerCase();
+        return p.name.toLowerCase().includes(q) ||
+               p.description?.toLowerCase().includes(q) ||
+               p.tag?.toLowerCase().includes(q);
+      }).slice(0, 6)
+    : [];
 
   const openShop  = () => { if (shopTimerRef.current) clearTimeout(shopTimerRef.current); setShopOpen(true); };
   const closeShop = () => { shopTimerRef.current = setTimeout(() => setShopOpen(false), 120); };
-
-  // Detect if a link is the Shop link
   const isShopLink = (href: string) => href === "/shop" || href.startsWith("/shop?");
 
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    navigate(`/shop?search=${encodeURIComponent(searchQuery.trim())}`);
+    setMobileOpen(false);
+  };
+
+  const scrollToScrapbook = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const el = document.getElementById("shop-by-category");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    else window.location.href = "/#shop-by-category";
+  };
+
+  const firstName = user?.user_metadata?.full_name?.split(" ")[0] ?? user?.email?.split("@")[0] ?? null;
+
   return (
-    <div className="fixed top-0 left-0 right-0 z-50">
+    <div id="site-navbar" className="fixed top-0 left-0 right-0 z-50">
       <AnnouncementBar data={announcement} />
 
       <nav style={{ background: "var(--bg-nav)" }}>
-        <div className="max-w-7xl mx-auto px-6 sm:px-8 py-2 flex items-center justify-between gap-6">
+
+        {/* ── Row 1: Logo · Search · Account · Basket ── */}
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center gap-4">
 
           {/* Logo */}
-          <a href="/" className="shrink-0 group">
+          <a href="/" className="shrink-0 group" onClick={location.pathname === "/" ? scrollToScrapbook : undefined}>
             <img src={logo} alt="The Olive Goose"
               className="transition-transform group-hover:scale-105 duration-300"
               style={{ height: 40, width: "auto", objectFit: "contain" }} />
           </a>
 
-          {/* Desktop links */}
-          <div className="hidden md:flex items-center gap-8">
-            {links.map((link, i) => {
-              if (isShopLink(link.href)) {
-                return (
-                  <div
-                    key={`shop-${i}`}
-                    className="relative"
-                    onMouseEnter={openShop}
-                    onMouseLeave={closeShop}
-                  >
-                    {/* Shop link + dots trigger */}
-                    <a
-                      href="/shop"
-                      className="flex items-center gap-1.5 font-display text-base transition-all hover:opacity-80 relative group"
-                      style={{ color: "var(--color-white)", letterSpacing: "var(--tracking-nav)" }}
-                    >
-                      {link.label}
-                      {/* Three dots indicator */}
-                      <span
-                        className="flex items-center gap-[3px] opacity-70 group-hover:opacity-100 transition-opacity"
-                        style={{ transform: "translateY(1px)" }}
-                      >
-                        {[0,1,2].map(d => (
-                          <span key={d} className="block rounded-full" style={{ width: 3, height: 3, background: "var(--color-white)", opacity: shopOpen ? 1 : 0.75 }} />
-                        ))}
-                      </span>
-                      <span className="absolute -bottom-0.5 left-0 w-0 h-px transition-all duration-300 group-hover:w-full"
-                        style={{ background: "var(--color-white)" }} />
-                    </a>
+          {/* Search bar with live dropdown */}
+          <div ref={searchRef} className="flex-1 relative">
+            <form onSubmit={handleSearch} className="flex">
+              <div className="flex w-full rounded-lg overflow-hidden" style={{ border: "2px solid var(--color-gold)" }}>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+                  onFocus={() => setSearchOpen(true)}
+                  placeholder="Search fragrances..."
+                  className="flex-1 px-4 py-2 font-sans text-sm outline-none"
+                  style={{ background: "rgba(255,255,255,0.96)", color: "#111", minWidth: 0 }}
+                />
+                <button type="submit"
+                  className="px-4 flex items-center justify-center transition-opacity hover:opacity-80"
+                  style={{ background: "var(--color-gold)" }}>
+                  <svg width="18" height="18" fill="none" stroke="#1D2B1B" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24">
+                    <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+                  </svg>
+                </button>
+              </div>
+            </form>
 
-                    {/* Dropdown */}
-                    <AnimatePresence>
-                      {shopOpen && (
-                        <ShopDropdown categories={categories} onClose={() => setShopOpen(false)} />
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              }
-
-              return (
-                <a
-                  key={`${link.label}-${i}`}
-                  href={link.href}
-                  className="font-display text-base transition-all hover:opacity-70 relative group"
-                  style={{ color: "var(--color-white)", letterSpacing: "var(--tracking-nav)" }}
+            {/* Live results dropdown */}
+            <AnimatePresence>
+              {searchOpen && searchResults.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 4 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute top-full left-0 right-0 mt-1 rounded-xl overflow-hidden z-50"
+                  style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}
                 >
-                  {link.label}
-                  <span className="absolute -bottom-0.5 left-0 w-0 h-px transition-all duration-300 group-hover:w-full"
-                    style={{ background: "var(--color-white)" }} />
-                </a>
-              );
-            })}
-          </div>
-
-          {/* Desktop right controls */}
-          <div className="hidden md:flex items-center gap-3 shrink-0">
-            {user ? (
-              <>
-                {/* Cart drawer trigger */}
-                <CartDrawer />
-
-                {/* User avatar + logout */}
-                <div className="flex items-center gap-2">
-                  <div
-                    className="w-8 h-8 rounded-full flex items-center justify-center font-display text-xs font-semibold shrink-0"
-                    style={{ background: "var(--btn-primary-bg)", color: "var(--color-forest-dark)" }}
-                    title={user.email ?? ""}
-                  >
-                    {(user.user_metadata?.full_name?.[0] ?? user.email?.[0] ?? "U").toUpperCase()}
-                  </div>
+                  {searchResults.map((p, i) => {
+                    const img = p.image_url || FALLBACK_IMGS[i % 2];
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          navigate(`/shop?search=${encodeURIComponent(p.name)}`);
+                          setSearchQuery(p.name);
+                          setSearchOpen(false);
+                        }}
+                        className="flex items-center gap-3 w-full px-4 py-2.5 text-left transition-colors hover:bg-gray-50"
+                        style={{ borderBottom: i < searchResults.length - 1 ? "1px solid #f3f4f6" : "none" }}
+                      >
+                        <img src={img} alt={p.name}
+                          className="rounded-md object-cover shrink-0"
+                          style={{ width: 38, height: 38, mixBlendMode: "multiply" }} />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-sans text-sm font-medium truncate" style={{ color: "#111" }}>{p.name}</p>
+                          {p.description && (
+                            <p className="font-sans text-xs truncate" style={{ color: "#666" }}>{p.description}</p>
+                          )}
+                        </div>
+                        <span className="font-sans text-sm font-semibold shrink-0" style={{ color: "#6b3520" }}>{p.price}</span>
+                      </button>
+                    );
+                  })}
+                  {/* "See all results" footer */}
                   <button
-                    onClick={() => signOut()}
-                    className="font-display text-sm transition-all hover:opacity-70"
-                    style={{ color: "var(--color-white)" }}
+                    onClick={() => { handleSearch({ preventDefault: () => {} } as React.FormEvent); setSearchOpen(false); }}
+                    className="flex items-center justify-center w-full px-4 py-2.5 font-sans text-sm font-semibold transition-colors hover:bg-gray-50"
+                    style={{ color: "#6b3520", borderTop: "1px solid #f3f4f6" }}
                   >
-                    Sign out
+                    See all results for "{searchQuery}" →
                   </button>
-                </div>
-              </>
-            ) : (
-              <button
-                onClick={openAuthModal}
-                className="inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-semibold transition-all hover:scale-105 active:scale-95 font-display"
-                style={{ background: "var(--btn-primary-bg)", color: "var(--btn-primary-text)", borderRadius: "var(--radius-pill)" }}
-              >
-                Sign In
-              </button>
-            )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
+
+          {/* Account & Lists */}
+          <button
+            onClick={user ? undefined : openAuthModal}
+            className="hidden sm:flex flex-col items-start shrink-0 transition-opacity hover:opacity-80 group"
+            style={{ color: "var(--color-white)" }}
+          >
+            <span className="font-sans text-xs" style={{ color: "rgba(245,239,230,0.75)" }}>
+              Hello, {firstName ?? "sign in"}
+            </span>
+            <span className="font-display text-sm font-semibold leading-tight flex items-center gap-1">
+              Account &amp; Lists
+              {user && (
+                <button onClick={(e) => { e.stopPropagation(); signOut(); }}
+                  className="font-sans text-[10px] opacity-50 hover:opacity-100 ml-1 transition-opacity"
+                  style={{ color: "var(--color-white)" }}>
+                  (sign out)
+                </button>
+              )}
+            </span>
+          </button>
+
+          {/* Basket */}
+          <button
+            onClick={() => { if (user) navigate("/basket"); else openAuthModal(); }}
+            className="hidden sm:flex items-center gap-2 shrink-0 transition-opacity hover:opacity-80"
+            style={{ color: "var(--color-white)" }}
+          >
+            <div className="relative">
+              <svg width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+                <line x1="3" y1="6" x2="21" y2="6"/>
+                <path d="M16 10a4 4 0 01-8 0"/>
+              </svg>
+              {count > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center font-sans text-[10px] font-bold"
+                  style={{ background: "var(--btn-primary-bg)", color: "var(--color-forest-dark)" }}>
+                  {count > 9 ? "9+" : count}
+                </span>
+              )}
+            </div>
+            <span className="font-display text-sm font-semibold">Basket</span>
+          </button>
 
           {/* Mobile hamburger */}
           <button onClick={() => setMobileOpen(!mobileOpen)}
-            className="md:hidden p-1 rounded transition-opacity hover:opacity-60"
+            className="sm:hidden p-1 rounded transition-opacity hover:opacity-60 ml-auto"
             style={{ color: "var(--color-white)" }} aria-label="Toggle menu">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
@@ -252,18 +305,65 @@ const NavbarSection = ({ data, announcement }: Props) => {
           </button>
         </div>
 
-        {/* Mobile menu */}
+        {/* ── Row 2: Nav links (desktop) — centered ── */}
+        <div className="hidden sm:block border-t" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-1.5 flex items-center justify-center gap-6">
+            {links.map((link, i) => {
+              if (isShopLink(link.href)) {
+                return (
+                  <div key={`shop-${i}`} className="relative" onMouseEnter={openShop} onMouseLeave={closeShop}>
+                    <a href="/shop"
+                      className="flex items-center gap-1.5 font-display text-sm transition-all hover:opacity-80 relative group py-0.5"
+                      style={{ color: "var(--color-white)", letterSpacing: "var(--tracking-nav)" }}>
+                      {link.label}
+                      <span className="flex items-center gap-[3px] opacity-70 group-hover:opacity-100 transition-opacity" style={{ transform: "translateY(1px)" }}>
+                        {[0,1,2].map(d => <span key={d} className="block rounded-full" style={{ width: 3, height: 3, background: "var(--color-white)" }} />)}
+                      </span>
+                      <span className="absolute -bottom-0.5 left-0 w-0 h-px transition-all duration-300 group-hover:w-full" style={{ background: "var(--color-white)" }} />
+                    </a>
+                    <AnimatePresence>
+                      {shopOpen && <ShopDropdown categories={categories} onClose={() => setShopOpen(false)} />}
+                    </AnimatePresence>
+                  </div>
+                );
+              }
+              return (
+                <a key={`${link.label}-${i}`}
+                  href={link.href === "/" ? "/#shop-by-category" : link.href}
+                  onClick={link.href === "/" ? scrollToScrapbook : undefined}
+                  className="font-display text-sm transition-all hover:opacity-70 relative group py-0.5"
+                  style={{ color: "var(--color-white)", letterSpacing: "var(--tracking-nav)" }}>
+                  {link.label}
+                  <span className="absolute -bottom-0.5 left-0 w-0 h-px transition-all duration-300 group-hover:w-full" style={{ background: "var(--color-white)" }} />
+                </a>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── Mobile menu ── */}
         <AnimatePresence>
           {mobileOpen && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.22 }}
-              className="md:hidden border-t overflow-hidden"
-              style={{ background: "var(--bg-nav)", borderColor: "rgba(255,255,255,0.18)" }}
-            >
-              <div className="px-6 py-5 space-y-1">
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.22 }} className="sm:hidden border-t overflow-hidden"
+              style={{ background: "var(--bg-nav)", borderColor: "rgba(255,255,255,0.18)" }}>
+              <div className="px-6 py-4 space-y-1">
+
+                {/* Mobile search */}
+                <form onSubmit={handleSearch} className="flex mb-4">
+                  <div className="flex w-full rounded-lg overflow-hidden" style={{ border: "1.5px solid var(--color-gold)" }}>
+                    <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Search fragrances..."
+                      className="flex-1 px-3 py-2 font-sans text-sm outline-none"
+                      style={{ background: "rgba(255,255,255,0.96)", color: "#111" }} />
+                    <button type="submit" className="px-3 flex items-center" style={{ background: "var(--color-gold)" }}>
+                      <svg width="16" height="16" fill="none" stroke="#1D2B1B" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24">
+                        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+                      </svg>
+                    </button>
+                  </div>
+                </form>
+
                 {links.map((link, i) => {
                   if (isShopLink(link.href)) {
                     return (
@@ -271,26 +371,17 @@ const NavbarSection = ({ data, announcement }: Props) => {
                         <div className="flex items-center justify-between py-2">
                           <a href="/shop" onClick={() => setMobileOpen(false)}
                             className="font-display text-base transition-opacity hover:opacity-70"
-                            style={{ color: "var(--color-white)" }}>
-                            {link.label}
-                          </a>
+                            style={{ color: "var(--color-white)" }}>{link.label}</a>
                           <button onClick={() => setMobileShopOpen(o => !o)}
                             className="font-sans text-xs px-2 py-1 rounded opacity-70 hover:opacity-100"
                             style={{ color: "var(--color-white)", border: "1px solid rgba(255,255,255,0.3)" }}>
                             {mobileShopOpen ? "▲" : "▼"} Categories
                           </button>
                         </div>
-
-                        {/* Mobile category list */}
                         <AnimatePresence>
                           {mobileShopOpen && (
-                            <motion.div
-                              initial={{ opacity: 0, height: 0 }}
-                              animate={{ opacity: 1, height: "auto" }}
-                              exit={{ opacity: 0, height: 0 }}
-                              transition={{ duration: 0.18 }}
-                              className="overflow-hidden pl-4 space-y-1 pb-2"
-                            >
+                            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+                              transition={{ duration: 0.18 }} className="overflow-hidden pl-4 space-y-1 pb-2">
                               <a href="/shop" onClick={() => setMobileOpen(false)}
                                 className="flex items-center gap-2 py-1.5 font-sans text-sm transition-opacity hover:opacity-70"
                                 style={{ color: "rgba(245,239,230,0.8)" }}>
@@ -298,8 +389,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
                                 All candles
                               </a>
                               {categories.map(cat => (
-                                <a key={cat.id} href={`/shop?category=${cat.slug}`}
-                                  onClick={() => setMobileOpen(false)}
+                                <a key={cat.id} href={`/shop?category=${cat.slug}`} onClick={() => setMobileOpen(false)}
                                   className="flex items-center gap-2 py-1.5 font-sans text-sm transition-opacity hover:opacity-70"
                                   style={{ color: "rgba(245,239,230,0.8)" }}>
                                   <span className="block w-2 h-2 rounded-full shrink-0" style={{ background: cat.accent_color }} />
@@ -312,10 +402,10 @@ const NavbarSection = ({ data, announcement }: Props) => {
                       </div>
                     );
                   }
-
                   return (
-                    <a key={`m-${link.label}-${i}`} href={link.href}
-                      onClick={() => setMobileOpen(false)}
+                    <a key={`m-${link.label}-${i}`}
+                      href={link.href === "/" ? "/#shop-by-category" : link.href}
+                      onClick={(e) => { setMobileOpen(false); if (link.href === "/") scrollToScrapbook(e); }}
                       className="font-display block py-2 text-base transition-opacity hover:opacity-70"
                       style={{ color: "var(--color-white)" }}>
                       {link.label}
@@ -323,26 +413,22 @@ const NavbarSection = ({ data, announcement }: Props) => {
                   );
                 })}
 
-                <div className="pt-3">
+                <div className="pt-3 flex items-center justify-between gap-3">
                   {user ? (
-                    <div className="flex items-center justify-between">
+                    <>
                       <span className="font-sans text-sm" style={{ color: "rgba(245,239,230,0.7)" }}>
-                        {user.user_metadata?.full_name ?? user.email}
+                        Hello, {firstName}
                       </span>
-                      <button
-                        onClick={() => { signOut(); setMobileOpen(false); }}
+                      <button onClick={() => { signOut(); setMobileOpen(false); }}
                         className="font-display text-sm px-4 py-2 rounded-full"
-                        style={{ border: "1px solid rgba(255,255,255,0.3)", color: "var(--color-white)" }}
-                      >
+                        style={{ border: "1px solid rgba(255,255,255,0.3)", color: "var(--color-white)" }}>
                         Sign out
                       </button>
-                    </div>
+                    </>
                   ) : (
-                    <button
-                      onClick={() => { openAuthModal(); setMobileOpen(false); }}
-                      className="font-display block w-full text-center px-5 py-2.5 rounded-full text-sm font-semibold"
-                      style={{ background: "var(--btn-primary-bg)", color: "var(--btn-primary-text)", borderRadius: "var(--radius-pill)" }}
-                    >
+                    <button onClick={() => { openAuthModal(); setMobileOpen(false); }}
+                      className="font-display w-full text-center px-5 py-2.5 rounded-full text-sm font-semibold"
+                      style={{ background: "var(--btn-primary-bg)", color: "var(--btn-primary-text)", borderRadius: "var(--radius-pill)" }}>
                       Sign In / Sign Up
                     </button>
                   )}
@@ -352,6 +438,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
           )}
         </AnimatePresence>
       </nav>
+
     </div>
   );
 };

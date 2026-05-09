@@ -33,6 +33,22 @@ const upload = multer({
   },
 });
 
+const imageStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `image-${Date.now()}${ext}`);
+  },
+});
+const uploadImage = multer({
+  storage: imageStorage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'));
+  },
+});
+
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -500,6 +516,49 @@ app.post('/api/subscribers', async (req, res) => {
   }
 });
 
+// ── GET /api/admin/users (admin only) ────────────────────────────────────────
+app.get('/api/admin/users', requireAuth, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, email, full_name, provider, avatar_url, created_at
+       FROM users ORDER BY created_at DESC`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── POST /api/feedback (public) ───────────────────────────────────────────────
+app.post('/api/feedback', async (req, res) => {
+  const { name = '', email = '', rating = 5, message, photo_url = '' } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: 'Feedback message is required' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO feedback (name, email, rating, message, photo_url)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [name.trim(), email.trim(), rating, message.trim(), photo_url]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── GET /api/admin/feedback (admin only) ──────────────────────────────────────
+app.get('/api/admin/feedback', requireAuth, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM feedback ORDER BY created_at DESC`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── DELETE /api/admin/feedback/:id (admin only) ───────────────────────────────
+app.delete('/api/admin/feedback/:id', requireAuth, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM feedback WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/subscribers', requireAuth, async (_req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM subscribers ORDER BY subscribed_at DESC');
@@ -603,6 +662,14 @@ app.post('/api/upload/video', requireAuth, upload.single('video'), (req, res) =>
   res.json({ url });
 });
 
+// ── POST /api/upload/image (admin only) ───────────────────────────────────────
+app.post('/api/upload/image', requireAuth, uploadImage.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file received' });
+  // Return a relative path — the frontend prepends its own API_URL so the URL
+  // works correctly regardless of whether pointing at localhost or Railway.
+  res.json({ path: `/uploads/${req.file.filename}` });
+});
+
 app.use('/uploads', express.static(uploadDir));
 
 // ── Serve React frontend (SPA catch-all) ──────────────────────────────────────
@@ -647,6 +714,16 @@ async function initDb() {
     );
 
     ALTER TABLE shop_categories ADD COLUMN IF NOT EXISTS product_ids JSONB DEFAULT '[]';
+
+    CREATE TABLE IF NOT EXISTS feedback (
+      id         UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      name       TEXT        DEFAULT '',
+      email      TEXT        DEFAULT '',
+      rating     INT         DEFAULT 5 CHECK (rating BETWEEN 1 AND 5),
+      message    TEXT        NOT NULL,
+      photo_url  TEXT        DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
 
     CREATE TABLE IF NOT EXISTS shop_candles (
       id            UUID  DEFAULT gen_random_uuid() PRIMARY KEY,

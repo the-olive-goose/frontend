@@ -1,11 +1,15 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   isLoggedIn,
   logout,
   getContent,
   saveContent,
+  uploadImage,
   getSubscribers,
   deleteSubscriber,
+  getAdminUsers,
+  getAdminFeedback,
+  deleteAdminFeedback,
   getShopCategories,
   saveShopCategory,
   deleteShopCategory,
@@ -13,13 +17,18 @@ import {
   deleteShopCandle,
   SessionExpiredError,
   type Subscriber,
+  type AppUserRecord,
+  type FeedbackRecord,
   type ShopCategory,
   type ShopCandle,
 } from "@/lib/api";
 import {
   DEFAULT_CONTENT,
+  DEFAULT_DEALS,
   type SiteContent,
   type Product,
+  type Bundle,
+  type DealsContent,
   type AnnouncementBarContent,
   type NavbarContent,
   type HeroContent,
@@ -32,7 +41,6 @@ import {
   type TestimonialsContent,
   type NewsletterContent,
   type FooterContent,
-  type Product,
   type CandleCareCard,
   type VideoItem,
   type Testimonial,
@@ -42,6 +50,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
 import logo from "@/assets/logo.jpg";
+import { DEFAULT_SCRAPBOOK_SETTINGS, type ScrapbookSettings } from "@/components/sections/ScrapbookSection";
 
 // ── Shared UI helpers ──────────────────────────────────────────────────────────
 
@@ -266,62 +275,170 @@ const HeroEditor = ({
   onChange: (d: HeroContent) => void;
   onSave: () => void;
   saving: boolean;
-}) => (
-  <div className="space-y-6">
-    <SectionHeading title="Hero Section" desc="The full-screen banner at the top of the page." />
-    <Field label="Headline">
-      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
-    </Field>
-    <Field label="Subtext">
-      <Textarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
-    </Field>
-    <div className="grid grid-cols-2 gap-4">
-      <Field label="CTA Button Text">
-        <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+}) => {
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const url = await uploadImage(file);
+      onChange({ ...data, bg_image_url: url });
+      toast({ title: "Image uploaded!" });
+    } catch {
+      toast({ title: "Upload failed", description: "Check file type (jpg/png/webp) and size (max 20 MB)", variant: "destructive" });
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Home Page" desc="The full-screen hero banner at the top of the homepage." />
+
+      <Field label="Headline">
+        <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
       </Field>
-      <Field label="CTA Button Link">
-        <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+      <Field label="Subtext">
+        <Textarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
       </Field>
-    </div>
-    <Field label="Background Image URL" hint="Paste a direct image URL (jpg, png, webp)">
-      <Input
-        placeholder="https://…"
-        value={data.bg_image_url}
-        onChange={(e) => onChange({ ...data, bg_image_url: e.target.value })}
-      />
-    </Field>
-    <Field label={`Overlay Opacity: ${Math.round(data.overlay_opacity * 100)}%`}>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={Math.round(data.overlay_opacity * 100)}
-        onChange={(e) => onChange({ ...data, overlay_opacity: Number(e.target.value) / 100 })}
-        className="w-full accent-primary"
-      />
-    </Field>
-    <div className="flex items-center gap-3">
-      <input
-        type="checkbox"
-        id="countdown"
-        checked={data.show_countdown}
-        onChange={(e) => onChange({ ...data, show_countdown: e.target.checked })}
-        className="w-4 h-4 rounded border-border text-primary"
-      />
-      <label htmlFor="countdown" className="text-sm font-sans text-foreground">Show Countdown Timer</label>
-    </div>
-    {data.show_countdown && (
-      <Field label="Launch Date">
-        <Input
-          type="datetime-local"
-          value={data.launch_date || ""}
-          onChange={(e) => onChange({ ...data, launch_date: e.target.value })}
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="CTA Button Text">
+          <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+        </Field>
+        <Field label="CTA Button Link">
+          <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+        </Field>
+      </div>
+
+      {/* Background image — upload or URL */}
+      <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-4">
+        <p className="font-sans text-sm font-semibold text-foreground">Background Image</p>
+
+        {/* Live preview */}
+        {data.bg_image_url && (
+          <div className="relative rounded-lg overflow-hidden" style={{ aspectRatio: "16/5" }}>
+            <img src={data.bg_image_url} alt="Hero background preview"
+              className="w-full h-full object-cover"
+              style={{ opacity: data.overlay_opacity ?? 0.55 }} />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="font-sans text-xs text-white bg-black/50 px-2 py-1 rounded">
+                Preview at {Math.round((data.overlay_opacity ?? 0.55) * 100)}% opacity
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Upload button */}
+        <div className="flex gap-3 items-center">
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary text-primary font-sans text-sm font-medium hover:bg-primary/5 transition-colors disabled:opacity-50"
+          >
+            {uploading ? (
+              <>
+                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                </svg>
+                Uploading…
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                </svg>
+                Upload image
+              </>
+            )}
+          </button>
+          <span className="font-sans text-xs text-muted-foreground">or paste a URL below</span>
+          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+        </div>
+
+        <Field label="Image URL" hint="Direct URL to jpg, png, or webp image">
+          <Input
+            placeholder="https://…"
+            value={data.bg_image_url}
+            onChange={(e) => onChange({ ...data, bg_image_url: e.target.value })}
+          />
+        </Field>
+      </div>
+
+      {/* Image brightness */}
+      <Field
+        label={`Image brightness: ${Math.round((data.bg_opacity ?? 1.0) * 100)}%`}
+        hint="100% = original photo, no fading. Lower = more faded."
+      >
+        <input type="range" min={10} max={100}
+          value={Math.round((data.bg_opacity ?? 1.0) * 100)}
+          onChange={e => onChange({ ...data, bg_opacity: Number(e.target.value) / 100 })}
+          className="w-full accent-primary"
         />
+        <div className="flex justify-between text-xs text-muted-foreground font-sans mt-1">
+          <span>10% (very faded)</span><span>100% (original)</span>
+        </div>
       </Field>
-    )}
-    <SaveButton onClick={onSave} saving={saving} />
-  </div>
-);
+
+      {/* Tint overlay */}
+      <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-4">
+        <p className="font-sans text-sm font-semibold text-foreground">Colour Tint Overlay</p>
+        <p className="font-sans text-xs text-muted-foreground">Sits over the photo to make text readable. Set strength to 0% to remove.</p>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Tint colour">
+            <div className="flex gap-2 items-center">
+              <input type="color"
+                value={data.tint_color ?? "#1e2918"}
+                onChange={e => onChange({ ...data, tint_color: e.target.value })}
+                className="w-10 h-9 rounded border border-border cursor-pointer shrink-0"
+              />
+              <Input value={data.tint_color ?? "#1e2918"}
+                onChange={e => onChange({ ...data, tint_color: e.target.value })} />
+            </div>
+          </Field>
+          <Field label={`Tint strength: ${Math.round((data.tint_opacity ?? 0.45) * 100)}%`}
+            hint="0% = no tint, transparent">
+            <input type="range" min={0} max={90}
+              value={Math.round((data.tint_opacity ?? 0.45) * 100)}
+              onChange={e => onChange({ ...data, tint_opacity: Number(e.target.value) / 100 })}
+              className="w-full accent-primary mt-2"
+            />
+            <div className="flex justify-between text-xs text-muted-foreground font-sans mt-1">
+              <span>0% (none)</span><span>90% (heavy)</span>
+            </div>
+          </Field>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <input
+          type="checkbox"
+          id="countdown"
+          checked={data.show_countdown}
+          onChange={(e) => onChange({ ...data, show_countdown: e.target.checked })}
+          className="w-4 h-4 rounded border-border text-primary"
+        />
+        <label htmlFor="countdown" className="text-sm font-sans text-foreground">Show Countdown Timer</label>
+      </div>
+      {data.show_countdown && (
+        <Field label="Launch Date">
+          <Input
+            type="datetime-local"
+            value={data.launch_date || ""}
+            onChange={(e) => onChange({ ...data, launch_date: e.target.value })}
+          />
+        </Field>
+      )}
+      <SaveButton onClick={onSave} saving={saving} />
+    </div>
+  );
+};
 
 const BrandStoryEditor = ({
   data,
@@ -893,6 +1010,139 @@ const FooterEditor = ({
   </div>
 );
 
+// ── Deals / Bundle & Save editor ──────────────────────────────────────────────
+
+const EMPTY_BUNDLE = (): Bundle => ({
+  id: Date.now().toString(),
+  name: "",
+  description: "",
+  product_ids: [],
+  discount_type: "percentage",
+  discount_value: 10,
+  is_active: true,
+  display_order: 0,
+});
+
+const DealsEditor = ({
+  allProducts,
+  saving,
+  setSaving,
+  onError,
+}: {
+  allProducts: Product[];
+  saving: boolean;
+  setSaving: (v: boolean) => void;
+  onError: (err: unknown, msg?: string) => void;
+}) => {
+  const [deals, setDeals] = useState<DealsContent>(DEFAULT_DEALS);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    getContent<DealsContent>("deals", DEFAULT_DEALS).then(d => { if (d) setDeals(d); });
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveContent("deals", deals);
+      toast({ title: "Deals saved!" });
+    } catch (e) { onError(e, "Failed to save deals"); }
+    finally { setSaving(false); }
+  };
+
+  const addBundle = () => setDeals(d => ({ ...d, bundles: [...d.bundles, EMPTY_BUNDLE()] }));
+  const removeBundle = (id: string) => setDeals(d => ({ ...d, bundles: d.bundles.filter(b => b.id !== id) }));
+  const updateBundle = (id: string, patch: Partial<Bundle>) =>
+    setDeals(d => ({ ...d, bundles: d.bundles.map(b => b.id === id ? { ...b, ...patch } : b) }));
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Today's Deals" desc="Create Bundle & Save offers. Discounts apply automatically when all bundle products are in the basket." />
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Page Title">
+          <Input value={deals.page_title} onChange={e => setDeals(d => ({ ...d, page_title: e.target.value }))} />
+        </Field>
+        <Field label="Page Subtitle">
+          <Input value={deals.page_subtitle} onChange={e => setDeals(d => ({ ...d, page_subtitle: e.target.value }))} />
+        </Field>
+      </div>
+
+      <div className="space-y-4">
+        {deals.bundles.map((bundle, bi) => (
+          <div key={bundle.id} className="border border-border rounded-xl p-5 space-y-4 bg-muted/30">
+            <div className="flex items-center justify-between">
+              <h3 className="font-sans text-sm font-semibold text-foreground">Bundle {bi + 1}</h3>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 font-sans text-sm text-foreground">
+                  <input type="checkbox" checked={bundle.is_active} onChange={e => updateBundle(bundle.id, { is_active: e.target.checked })} className="accent-primary" />
+                  Active
+                </label>
+                <RemoveButton onClick={() => removeBundle(bundle.id)} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Bundle Name" hint='e.g. "Café Duo"'>
+                <Input value={bundle.name} onChange={e => updateBundle(bundle.id, { name: e.target.value })} />
+              </Field>
+              <Field label="Display Order">
+                <Input type="number" value={bundle.display_order} onChange={e => updateBundle(bundle.id, { display_order: Number(e.target.value) })} />
+              </Field>
+            </div>
+
+            <Field label="Description" hint='e.g. "morning ritual starter pack"'>
+              <Input value={bundle.description} onChange={e => updateBundle(bundle.id, { description: e.target.value })} />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Discount Type">
+                <select
+                  className="w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  value={bundle.discount_type}
+                  onChange={e => updateBundle(bundle.id, { discount_type: e.target.value as "percentage" | "fixed" })}
+                >
+                  <option value="percentage">Percentage (%)</option>
+                  <option value="fixed">Fixed amount (€)</option>
+                </select>
+              </Field>
+              <Field label={`Discount Value (${bundle.discount_type === "percentage" ? "%" : "€"})`}>
+                <Input type="number" min={0} step={bundle.discount_type === "percentage" ? 1 : 0.5}
+                  value={bundle.discount_value} onChange={e => updateBundle(bundle.id, { discount_value: Number(e.target.value) })} />
+              </Field>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-sm font-sans font-medium text-foreground">Products in this bundle</label>
+              <select className="w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                value="" onChange={e => { const id = e.target.value; if (id && !bundle.product_ids.includes(id)) updateBundle(bundle.id, { product_ids: [...bundle.product_ids, id] }); e.currentTarget.value = ""; }}>
+                <option value="">+ add a product →</option>
+                {allProducts.filter(p => !bundle.product_ids.includes(p.id)).map(p => (
+                  <option key={p.id} value={p.id}>{p.name} — {p.price}</option>
+                ))}
+              </select>
+              <div className="flex flex-wrap gap-2">
+                {bundle.product_ids.map(pid => {
+                  const p = allProducts.find(x => x.id === pid);
+                  return p ? (
+                    <div key={pid} className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-border bg-card text-sm font-sans text-foreground">
+                      {p.name}
+                      <button onClick={() => updateBundle(bundle.id, { product_ids: bundle.product_ids.filter(x => x !== pid) })} className="text-destructive hover:text-destructive/80 ml-1 font-bold">×</button>
+                    </div>
+                  ) : null;
+                })}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <AddButton onClick={addBundle} label="Add bundle" />
+      <SaveButton onClick={save} saving={saving} />
+    </div>
+  );
+};
+
 const SubscribersPanel = ({
   subscribers,
   onDelete,
@@ -965,6 +1215,101 @@ const SubscribersPanel = ({
   );
 };
 
+// ── Signed Up Users panel ─────────────────────────────────────────────────────
+
+const UsersPanel = () => {
+  const [users, setUsers] = useState<AppUserRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    getAdminUsers().then(u => { setUsers(u); setLoading(false); }).catch(() => setLoading(false));
+  }, []);
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Signed Up Users" desc="All users who have registered via email or OAuth." />
+      <p className="text-sm text-muted-foreground font-sans">{users.length} user{users.length !== 1 ? "s" : ""} registered</p>
+      <div className="border border-border rounded-xl overflow-hidden">
+        <table className="w-full">
+          <thead>
+            <tr className="bg-muted/50">
+              <th className="text-left px-4 py-3 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Name</th>
+              <th className="text-left px-4 py-3 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Email</th>
+              <th className="text-left px-4 py-3 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Provider</th>
+              <th className="text-left px-4 py-3 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Joined</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-muted-foreground font-sans">Loading…</td></tr>}
+            {!loading && users.length === 0 && <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-muted-foreground font-sans">No users yet</td></tr>}
+            {users.map(u => (
+              <tr key={u.id} className="border-t border-border hover:bg-muted/30 transition-colors">
+                <td className="px-4 py-3 text-sm font-sans text-foreground flex items-center gap-2">
+                  {u.avatar_url
+                    ? <img src={u.avatar_url} className="w-7 h-7 rounded-full object-cover shrink-0" />
+                    : <div className="w-7 h-7 rounded-full bg-primary/20 flex items-center justify-center text-xs font-semibold text-primary shrink-0">{(u.full_name?.[0] ?? u.email?.[0] ?? "?").toUpperCase()}</div>}
+                  {u.full_name || "—"}
+                </td>
+                <td className="px-4 py-3 text-sm font-sans text-muted-foreground">{u.email}</td>
+                <td className="px-4 py-3 text-sm font-sans text-muted-foreground capitalize">{u.provider}</td>
+                <td className="px-4 py-3 text-sm font-sans text-muted-foreground">{new Date(u.created_at).toLocaleDateString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ── Customer Feedback panel ───────────────────────────────────────────────────
+
+const FeedbackPanel = () => {
+  const [items, setItems] = useState<FeedbackRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
+
+  const load = () => {
+    setLoading(true);
+    getAdminFeedback().then(f => { setItems(f); setLoading(false); }).catch(() => setLoading(false));
+  };
+  useEffect(load, []);
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this feedback?")) return;
+    try { await deleteAdminFeedback(id); toast({ title: "Deleted" }); load(); }
+    catch { toast({ title: "Error", variant: "destructive" }); }
+  };
+
+  const stars = (n: number) => "★".repeat(n) + "☆".repeat(5 - n);
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Customer Feedback" desc="Reviews and feedback submitted by customers on the homepage." />
+      <p className="text-sm text-muted-foreground font-sans">{items.length} review{items.length !== 1 ? "s" : ""}</p>
+      {loading && <p className="text-sm text-muted-foreground font-sans">Loading…</p>}
+      {!loading && items.length === 0 && <p className="text-sm text-muted-foreground font-sans">No feedback yet.</p>}
+      <div className="space-y-4">
+        {items.map(f => (
+          <div key={f.id} className="rounded-xl border border-border bg-card p-5 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1 flex-1 min-w-0">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="font-sans text-sm font-semibold text-foreground">{f.name || "Anonymous"}</span>
+                  {f.email && <span className="font-sans text-xs text-muted-foreground">{f.email}</span>}
+                  <span className="text-amber-500 text-sm tracking-tighter">{stars(f.rating)}</span>
+                </div>
+                <p className="font-sans text-sm text-foreground leading-relaxed">{f.message}</p>
+                {f.photo_url && <img src={f.photo_url} alt="Customer photo" className="mt-2 h-24 rounded-lg object-cover" />}
+                <p className="font-sans text-xs text-muted-foreground">{new Date(f.created_at).toLocaleString()}</p>
+              </div>
+              <button onClick={() => handleDelete(f.id)} className="text-destructive hover:text-destructive/80 text-xs font-sans shrink-0">Delete</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 // ── Shop By Category editor ────────────────────────────────────────────────────
 
 const EMPTY_CATEGORY: Partial<ShopCategory> = {
@@ -991,9 +1336,26 @@ const ShopEditor = ({
 }) => {
   const [cats, setCats]           = useState<ShopCategory[]>(initCats);
   const [editingCat, setEditingCat] = useState<Partial<ShopCategory> | null>(null);
+  const [scrapSettings, setScrapSettings] = useState<ScrapbookSettings>(DEFAULT_SCRAPBOOK_SETTINGS);
   const { toast } = useToast();
 
   useEffect(() => { setCats(initCats); }, [initCats]);
+
+  useEffect(() => {
+    getContent<ScrapbookSettings>("scrapbookSettings", DEFAULT_SCRAPBOOK_SETTINGS)
+      .then(s => { if (s) setScrapSettings(s); });
+  }, []);
+
+  const saveScrapSettings = async () => {
+    setSaving(true);
+    try {
+      await saveContent("scrapbookSettings", scrapSettings);
+      toast({ title: "Scrapbook settings saved!" });
+    } catch (e: unknown) {
+      onError(e, "Failed to save scrapbook settings");
+    } finally { setSaving(false); }
+  };
+
 
   // ── Category CRUD ──────────────────────────────────────────────────────────
   const saveCat = async () => {
@@ -1062,6 +1424,65 @@ const ShopEditor = ({
         </p>
       </div>
 
+      {/* ── Scrapbook animation settings ── */}
+      <div className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <p className="font-sans text-sm font-semibold text-foreground">Scrapbook Settings</p>
+
+        <Field
+          label="New Arrivals category"
+          hint="This category will appear as a dedicated section above the scrapbook on the homepage."
+        >
+          <select
+            className="w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+            value={scrapSettings.newArrivalsCategoryId}
+            onChange={e => setScrapSettings(s => ({ ...s, newArrivalsCategoryId: e.target.value }))}
+          >
+            <option value="">— none (hide the section) —</option>
+            {cats.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </Field>
+
+        <Field
+          label={`Page flip duration: ${scrapSettings.flipDuration.toFixed(2)}s`}
+          hint="How long the page-turn animation takes"
+        >
+          <input
+            type="range"
+            min={0.2}
+            max={2.0}
+            step={0.05}
+            value={scrapSettings.flipDuration}
+            onChange={e => setScrapSettings(s => ({ ...s, flipDuration: Number(e.target.value) }))}
+            className="w-full accent-primary"
+          />
+          <div className="flex justify-between text-xs text-muted-foreground font-sans mt-1">
+            <span>0.2 s (fast)</span><span>2.0 s (slow)</span>
+          </div>
+        </Field>
+
+        <Field
+          label={`Auto-flip interval: ${(scrapSettings.autoFlipInterval / 1000).toFixed(1)}s`}
+          hint="How long each category page stays before auto-flipping"
+        >
+          <input
+            type="range"
+            min={2000}
+            max={15000}
+            step={500}
+            value={scrapSettings.autoFlipInterval}
+            onChange={e => setScrapSettings(s => ({ ...s, autoFlipInterval: Number(e.target.value) }))}
+            className="w-full accent-primary"
+          />
+          <div className="flex justify-between text-xs text-muted-foreground font-sans mt-1">
+            <span>2 s</span><span>15 s</span>
+          </div>
+        </Field>
+
+        <SaveButton onClick={saveScrapSettings} saving={saving} />
+      </div>
+
       {allProducts.length === 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-sans text-amber-800">
           ⚠️ No products yet — go to the <strong>Products</strong> tab first and add your candles, then come back here.
@@ -1077,10 +1498,18 @@ const ShopEditor = ({
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Category Name" hint='e.g. "Coffee Shop Chaos"'>
-              <Input value={editingCat.name ?? ""} onChange={e => setEditingCat(p => ({ ...p!, name: e.target.value }))} />
+              <Input value={editingCat.name ?? ""} onChange={e => {
+                const name = e.target.value;
+                const autoSlug = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+                setEditingCat(p => ({
+                  ...p!,
+                  name,
+                  slug: !p?.id ? autoSlug : (p?.slug ?? autoSlug),
+                }));
+              }} />
             </Field>
-            <Field label="Slug" hint='e.g. "coffee-shop-chaos"'>
-              <Input value={editingCat.slug ?? ""} onChange={e => setEditingCat(p => ({ ...p!, slug: e.target.value }))} />
+            <Field label="Slug" hint="Auto-generated from name — URL-friendly, no spaces">
+              <Input value={editingCat.slug ?? ""} onChange={e => setEditingCat(p => ({ ...p!, slug: e.target.value.toLowerCase().replace(/\s+/g, '-') }))} />
             </Field>
           </div>
 
@@ -1334,6 +1763,7 @@ type TabId =
   | "navbar"
   | "hero"
   | "shopCategories"
+  | "deals"
   | "momentPill"
   | "welcomeClub"
   | "brandStory"
@@ -1343,13 +1773,16 @@ type TabId =
   | "testimonials"
   | "newsletter"
   | "footer"
-  | "subscribers";
+  | "subscribers"
+  | "users"
+  | "feedback";
 
 const NAV_ITEMS: { id: TabId; label: string; icon: string }[] = [
   { id: "announcementBar", label: "Announcement Bar", icon: "📢" },
   { id: "navbar",          label: "Navbar",           icon: "☰" },
-  { id: "hero",            label: "Hero",             icon: "★" },
+  { id: "hero",            label: "Home Page",         icon: "🏠" },
   { id: "shopCategories",  label: "Shop By Category", icon: "📖" },
+  { id: "deals",           label: "Today's Deals",    icon: "🏷️" },
   { id: "products",        label: "Products",         icon: "◈" },
   { id: "momentPill",      label: "Moment Pill",      icon: "💊" },
   { id: "welcomeClub",     label: "Welcome Club",     icon: "🫶" },
@@ -1360,6 +1793,8 @@ const NAV_ITEMS: { id: TabId; label: string; icon: string }[] = [
   { id: "newsletter",      label: "Newsletter",       icon: "✉" },
   { id: "footer",          label: "Footer",           icon: "⊘" },
   { id: "subscribers",     label: "Subscribers",      icon: "◉" },
+  { id: "users",           label: "Signed Up Users",  icon: "👤" },
+  { id: "feedback",        label: "Customer Feedback", icon: "💬" },
 ];
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
@@ -1511,6 +1946,7 @@ const AdminDashboard = () => {
         <main className="flex-1 overflow-y-auto p-8">
           <div className="max-w-2xl mx-auto">
             {activeTab === "shopCategories" && <ShopEditor categories={shopCategories} allProducts={content.products.items} onRefresh={loadData} saving={saving} setSaving={setSaving} onError={handleError} />}
+            {activeTab === "deals"         && <DealsEditor allProducts={content.products.items} saving={saving} setSaving={setSaving} onError={handleError} />}
             {activeTab === "announcementBar" && <AnnouncementBarEditor data={content.announcementBar} onChange={update("announcementBar")} onSave={() => handleSave("announcementBar")} saving={saving} />}
             {activeTab === "momentPill"   && <MomentPillEditor   data={content.momentPill}   onChange={update("momentPill")}   onSave={() => handleSave("momentPill")}   saving={saving} />}
             {activeTab === "welcomeClub"  && <WelcomeClubEditor  data={content.welcomeClub}  onChange={update("welcomeClub")}  onSave={() => handleSave("welcomeClub")}  saving={saving} />}
@@ -1524,6 +1960,8 @@ const AdminDashboard = () => {
             {activeTab === "newsletter"   && <NewsletterEditor   data={content.newsletter}   onChange={update("newsletter")}   onSave={() => handleSave("newsletter")}   saving={saving} />}
             {activeTab === "footer"       && <FooterEditor       data={content.footer}       onChange={update("footer")}       onSave={() => handleSave("footer")}       saving={saving} />}
             {activeTab === "subscribers"  && <SubscribersPanel   subscribers={subscribers}   onDelete={handleDeleteSubscriber} />}
+            {activeTab === "users"        && <UsersPanel />}
+            {activeTab === "feedback"     && <FeedbackPanel />}
           </div>
         </main>
       </div>

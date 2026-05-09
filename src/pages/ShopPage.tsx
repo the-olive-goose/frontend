@@ -55,8 +55,8 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
         />
         {product.tag && (
           <span
-            className="absolute top-3 left-3 font-display text-xs font-semibold tracking-wider uppercase px-3 py-1 rounded-full"
-            style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
+            className="absolute top-3 left-3 text-xs font-semibold tracking-wider uppercase px-3 py-1 rounded-full"
+            style={{ fontFamily: "'Fredoka',sans-serif", background: accent || "var(--color-forest-dark)", color: "#fff" }}
           >
             {product.tag}
           </span>
@@ -64,17 +64,17 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
       </div>
 
       {/* Info */}
-      <div className="flex flex-col flex-1 p-5 gap-3">
+      <div className="flex flex-col flex-1 p-4 gap-2">
         <div className="flex-1">
           <h3
-            className="font-display text-xl leading-tight mb-1"
-            style={{ color: "var(--color-forest-dark)" }}
+            className="leading-tight mb-1"
+            style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(1rem,1.6vw,1.25rem)", color: accent || "var(--color-forest-dark)" }}
           >
             {product.name}
           </h3>
           <p
-            className="font-sans text-sm leading-relaxed"
-            style={{ color: "rgba(30,41,24,0.62)" }}
+            className="text-sm leading-relaxed"
+            style={{ fontFamily: "'Inter',sans-serif", color: "rgba(30,41,24,0.62)" }}
           >
             {product.description}
           </p>
@@ -82,8 +82,8 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
 
         <div className="flex items-center justify-between pt-3" style={{ borderTop: "1px solid var(--color-border)" }}>
           <span
-            className="font-display text-2xl font-semibold"
-            style={{ color: accent || "var(--color-forest-dark)" }}
+            className="font-semibold"
+            style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1.05rem,1.7vw,1.3rem)", color: accent || "var(--color-forest-dark)" }}
           >
             {product.price}
           </span>
@@ -91,11 +91,11 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.96 }}
             onClick={handleAddToCart}
-            className="font-display text-sm font-semibold px-5 py-2.5 rounded-full transition-all"
-            style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
+            className="text-sm font-semibold px-5 py-2 rounded-full transition-all"
+            style={{ fontFamily: "'Fredoka',sans-serif", background: accent || "var(--color-forest-dark)", color: "#fff" }}
             title={!user ? "Sign in to add to cart" : undefined}
           >
-            {user ? "Add to Cart" : "Sign in to Buy"}
+            {user ? "Add to Cart" : "Buy Now"}
           </motion.button>
         </div>
       </div>
@@ -112,7 +112,8 @@ const ShopPage = () => {
   const [content, setContent]         = useState(DEFAULT_CONTENT);
   const [loading, setLoading]         = useState(true);
 
-  const activeSlug = searchParams.get("category") ?? "all";
+  const activeSlug   = searchParams.get("category") ?? "all";
+  const searchTerm   = searchParams.get("search") ?? "";
 
   useEffect(() => {
     Promise.all([
@@ -128,14 +129,23 @@ const ShopPage = () => {
     }).finally(() => setLoading(false));
   }, []);
 
-  // Resolve products for the active category
+  // Resolve products for the active category / search
   const visibleProducts: Product[] = (() => {
-    if (activeSlug === "all") return allProducts;
-    const cat = categories.find(c => c.slug === activeSlug);
-    if (!cat || !cat.product_ids?.length) return [];
-    return cat.product_ids
-      .map(id => allProducts.find(p => p.id === id))
-      .filter((p): p is Product => !!p);
+    let base = allProducts;
+    if (activeSlug !== "all") {
+      const cat = categories.find(c => c.slug === activeSlug);
+      if (!cat || !cat.product_ids?.length) return [];
+      base = cat.product_ids.map(id => allProducts.find(p => p.id === id)).filter((p): p is Product => !!p);
+    }
+    if (searchTerm) {
+      const q = searchTerm.toLowerCase();
+      base = base.filter(p =>
+        p.name.toLowerCase().includes(q) ||
+        p.description?.toLowerCase().includes(q) ||
+        p.tag?.toLowerCase().includes(q)
+      );
+    }
+    return base;
   })();
 
   const activeCat = categories.find(c => c.slug === activeSlug);
@@ -155,7 +165,7 @@ const ShopPage = () => {
         className="w-full pt-[94px]"
         style={{ background: "var(--color-forest-dark)" }}
       >
-        <div className="max-w-7xl mx-auto px-6 sm:px-12 py-16 sm:py-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 py-10 sm:py-16 lg:py-20">
           <motion.p
             initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
             className="font-display text-xs tracking-[0.2em] uppercase mb-4"
@@ -168,7 +178,7 @@ const ShopPage = () => {
             className="font-serif font-semibold mb-4"
             style={{ fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05 }}
           >
-            {activeSlug === "all" ? "All Candles" : (activeCat?.name ?? "Shop")}
+            {searchTerm ? `"${searchTerm}"` : activeSlug === "all" ? "All Candles" : (activeCat?.name ?? "Shop")}
           </motion.h1>
           <motion.p
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.18 }}
@@ -218,7 +228,7 @@ const ShopPage = () => {
       )}
 
       {/* ── Product grid ── */}
-      <div className="max-w-7xl mx-auto px-6 sm:px-12 py-14">
+      <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 py-8 sm:py-14">
 
         {/* Category mood bar (when filtered) */}
         {activeCat && activeSlug !== "all" && (

@@ -3,36 +3,40 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
 
-const CartDrawer = () => {
+const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean; onExternalClose?: () => void } = {}) => {
   const { items, removeFromCart, updateQuantity, count, total, clearCart } = useCart();
   const { user } = useAuth();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = externalOpen ?? internalOpen;
+  const setOpen = (v: boolean) => { setInternalOpen(v); if (!v) onExternalClose?.(); };
 
   if (!user) return null;
 
   return (
     <>
-      {/* Cart trigger button (rendered inline — parent can position it) */}
-      <button
-        onClick={() => setOpen(true)}
-        className="relative flex items-center gap-1.5 transition-opacity hover:opacity-70"
-        style={{ color: "var(--color-white)" }}
-        aria-label="Open cart"
-      >
-        <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-          <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
-          <line x1="3" y1="6" x2="21" y2="6"/>
-          <path d="M16 10a4 4 0 01-8 0"/>
-        </svg>
-        {count > 0 && (
-          <span
-            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center font-sans text-[10px] font-bold"
-            style={{ background: "var(--btn-primary-bg)", color: "var(--color-forest-dark)" }}
-          >
-            {count > 9 ? "9+" : count}
-          </span>
-        )}
-      </button>
+      {/* Cart trigger button — only shown when not using external trigger */}
+      {externalOpen === undefined && (
+        <button
+          onClick={() => setOpen(true)}
+          className="relative flex items-center gap-1.5 transition-opacity hover:opacity-70"
+          style={{ color: "var(--color-white)" }}
+          aria-label="Open cart"
+        >
+          <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+            <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <path d="M16 10a4 4 0 01-8 0"/>
+          </svg>
+          {count > 0 && (
+            <span
+              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center font-sans text-[10px] font-bold"
+              style={{ background: "var(--btn-primary-bg)", color: "var(--color-forest-dark)" }}
+            >
+              {count > 9 ? "9+" : count}
+            </span>
+          )}
+        </button>
+      )}
 
       <AnimatePresence>
         {open && (

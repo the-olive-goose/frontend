@@ -91,6 +91,27 @@ export const saveContent = async <T>(section: string, data: T): Promise<void> =>
   }
 };
 
+export const uploadImage = async (file: File): Promise<string> => {
+  const form = new FormData();
+  form.append('image', file);
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await checkStatus(await fetch(`${API_URL}/api/upload/image`, {
+    method: 'POST',
+    headers,
+    body: form,
+  }));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Upload failed');
+  }
+  const json = await res.json();
+  // Backend returns a relative path; prepend API_URL so the image always loads
+  // from the same origin as the API (localhost in dev, Railway in production).
+  return `${API_URL}${json.path}`;
+};
+
 // ── Legacy settings API ────────────────────────────────────────────────────────
 export const getSettings = async (): Promise<HeroSettings> => {
   const res = await fetch(`${API_URL}/api/settings`);
@@ -194,6 +215,45 @@ export const saveShopCandle = async (candle: Partial<ShopCandle> & { id?: string
 export const deleteShopCandle = async (id: string): Promise<void> => {
   const res = await checkStatus(await fetch(`${API_URL}/api/shop/candles/${id}`, { method: 'DELETE', headers: authHeaders(true) }));
   if (!res.ok) throw new Error('Failed to delete candle');
+};
+
+export interface AppUserRecord {
+  id: string;
+  email: string;
+  full_name: string;
+  provider: string;
+  avatar_url: string;
+  created_at: string;
+}
+
+export interface FeedbackRecord {
+  id: string;
+  name: string;
+  email: string;
+  rating: number;
+  message: string;
+  photo_url: string;
+  created_at: string;
+}
+
+export const getAdminUsers = async (): Promise<AppUserRecord[]> => {
+  const res = await checkStatus(await fetch(`${API_URL}/api/admin/users`, { headers: authHeaders(true) }));
+  return res.json();
+};
+
+export const submitFeedback = async (data: { name: string; email: string; rating: number; message: string; photo_url: string }): Promise<void> => {
+  await fetch(`${API_URL}/api/feedback`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify(data),
+  });
+};
+
+export const getAdminFeedback = async (): Promise<FeedbackRecord[]> => {
+  const res = await checkStatus(await fetch(`${API_URL}/api/admin/feedback`, { headers: authHeaders(true) }));
+  return res.json();
+};
+
+export const deleteAdminFeedback = async (id: string): Promise<void> => {
+  await checkStatus(await fetch(`${API_URL}/api/admin/feedback/${id}`, { method: 'DELETE', headers: authHeaders(true) }));
 };
 
 export const deleteSubscriber = async (id: string): Promise<void> => {

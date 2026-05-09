@@ -1,5 +1,28 @@
 // ── Interfaces ─────────────────────────────────────────────────────────────────
 
+export interface Bundle {
+  id: string;
+  name: string;
+  description: string;
+  product_ids: string[];
+  discount_type: "percentage" | "fixed";
+  discount_value: number;
+  is_active: boolean;
+  display_order: number;
+}
+
+export interface DealsContent {
+  page_title: string;
+  page_subtitle: string;
+  bundles: Bundle[];
+}
+
+export const DEFAULT_DEALS: DealsContent = {
+  page_title: "Today's Deals",
+  page_subtitle: "Bundle & Save — handpicked combos at a special price",
+  bundles: [],
+};
+
 export interface AnnouncementBarContent {
   messages: string[];
   interval_ms: number; // how long each message shows (ms)
@@ -52,7 +75,10 @@ export interface HeroContent {
   cta_text: string;
   cta_href: string;
   bg_image_url: string;
-  overlay_opacity: number;
+  bg_opacity: number;       // background image opacity 0–1 (default 1.0 = original)
+  tint_color: string;       // hex colour of the overlay tint
+  tint_opacity: number;     // opacity of the tint overlay 0–1
+  overlay_opacity?: number; // legacy — ignored, kept for DB back-compat
   show_countdown: boolean;
   launch_date: string | null;
 }
@@ -172,7 +198,9 @@ export const DEFAULT_CONTENT: SiteContent = {
     cta_text: "Shop the Collection",
     cta_href: "#collection",
     bg_image_url: "",
-    overlay_opacity: 0.65,
+    bg_opacity: 1.0,
+    tint_color: "#1e2918",
+    tint_opacity: 0.45,
     show_countdown: false,
     launch_date: null,
   },

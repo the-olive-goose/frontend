@@ -1,9 +1,24 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
+import useIsMobile from "@/hooks/useIsMobile";
 import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
 import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
+import { useAuth } from "@/contexts/AuthContext";
+import { useCart } from "@/contexts/CartContext";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
+
+export interface ScrapbookSettings {
+  flipDuration: number;
+  autoFlipInterval: number;
+  newArrivalsCategoryId: string;
+}
+export const DEFAULT_SCRAPBOOK_SETTINGS: ScrapbookSettings = {
+  flipDuration: 0.76,
+  autoFlipInterval: 5000,
+  newArrivalsCategoryId: "",
+};
 
 // ── Fallback categories (shown when DB is empty) ───────────────────────────────
 // Product data comes from the Products admin section; fallback uses placeholder cards.
@@ -21,14 +36,22 @@ const FALLBACK_IMGS = [m1, m2];
 
 // ── Candle card ────────────────────────────────────────────────────────────────
 
-const CandleCard = ({ product, accent, isDark, idx }: {
+export const CandleCard = ({ product, accent, isDark, idx }: {
   product: Product; accent: string; isDark: boolean; idx: number;
 }) => {
-  const img = product.image_url || FALLBACK_IMGS[idx % 2];
+  const img      = product.image_url || FALLBACK_IMGS[idx % 2];
   const cardBg   = isDark ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.93)";
   const border   = isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.07)";
-  const dimText  = isDark ? "rgba(220,210,255,0.52)" : "rgba(30,20,10,0.48)";
-  const bodyText = isDark ? "rgba(230,225,255,0.82)" : "rgba(30,20,10,0.72)";
+  const bodyText = isDark ? "rgba(230,225,255,0.78)" : "rgba(30,20,10,0.65)";
+  const { user, openAuthModal } = useAuth();
+  const { addToCart } = useCart();
+
+  const handleAddToCart = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!user) { openAuthModal(); return; }
+    addToCart(product);
+    toast.success(`${product.name} added to basket`, { description: product.price, duration: 2000 });
+  };
 
   return (
     <motion.div
@@ -38,56 +61,42 @@ const CandleCard = ({ product, accent, isDark, idx }: {
       exit={{ opacity: 0, y: -10 }}
       transition={{ duration: 0.28 }}
       whileHover={{ y: -5, transition: { duration: 0.18 } }}
-      style={{
-        flex: "1 1 0", minWidth: 0,
-        background: cardBg,
-        border: `1px solid ${border}`,
-        borderRadius: 14,
-        overflow: "hidden",
-        display: "flex",
-        flexDirection: "column",
-        boxShadow: isDark
-          ? "0 8px 28px rgba(0,0,0,0.45)"
-          : "0 6px 22px rgba(0,0,0,0.1)",
-        cursor: "pointer",
-      }}
+      style={{ flex: "1 1 0", minWidth: 0, background: cardBg, border: `1px solid ${border}`, borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: isDark ? "0 8px 28px rgba(0,0,0,0.45)" : "0 6px 22px rgba(0,0,0,0.1)", cursor: "pointer" }}
     >
-      {/* Image */}
-      <div style={{ aspectRatio: "4/3", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)", flexShrink: 0 }}>
+      {/* Image — 3/4 ratio matches ShopPage */}
+      <div style={{ aspectRatio: "3/4", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)", flexShrink: 0, position: "relative" }}>
         <img src={img} alt={product.name} style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: isDark ? "lighten" : "multiply", opacity: 0.9 }} />
-      </div>
-
-      <div style={{ padding: "clamp(10px,1.4vw,14px) clamp(11px,1.6vw,15px) clamp(12px,1.6vw,15px)", flex: 1, display: "flex", flexDirection: "column" }}>
-        {/* Badge */}
         {product.tag && (
-          <span style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.5rem,0.78vw,0.62rem)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: accent, background: `${accent}18`, border: `1px solid ${accent}35`, borderRadius: 20, padding: "2px 8px", alignSelf: "flex-start", marginBottom: 6 }}>
+          <span style={{ position: "absolute", top: 8, left: 8, fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.48rem,0.72vw,0.6rem)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: isDark ? "#0a0a18" : "#fff", background: accent, borderRadius: 20, padding: "2px 8px" }}>
             {product.tag}
           </span>
         )}
+      </div>
 
-        {/* Name */}
-        <p style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(0.98rem,1.55vw,1.2rem)", color: accent, lineHeight: 1.1, marginBottom: 5 }}>
+      <div style={{ padding: "clamp(8px,1.2vw,12px) clamp(10px,1.4vw,14px) clamp(10px,1.4vw,14px)", flex: 1, display: "flex", flexDirection: "column" }}>
+        {/* Name — Chewy, same as ShopPage uses font-display (which is Chewy) */}
+        <p style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(0.92rem,1.45vw,1.1rem)", color: accent, lineHeight: 1.15, marginBottom: 4 }}>
           {product.name}
         </p>
 
-        {/* Description (scent notes) */}
+        {/* Description */}
         {product.description && (
-          <p style={{ fontFamily: "'Inter',sans-serif", fontSize: "clamp(0.58rem,0.9vw,0.7rem)", color: bodyText, lineHeight: 1.5, flex: 1, marginBottom: 10 }}>
+          <p style={{ fontFamily: "'Inter',sans-serif", fontSize: "clamp(0.56rem,0.85vw,0.68rem)", color: bodyText, lineHeight: 1.45, flex: 1, marginBottom: 8 }}>
             {product.description}
           </p>
         )}
 
         {/* Price + Add to Cart */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: "auto" }}>
-          <span style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 700, fontSize: "clamp(1.05rem,1.7vw,1.25rem)", color: accent }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: "auto", paddingTop: 8, borderTop: `1px solid ${isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)"}` }}>
+          <span style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 700, fontSize: "clamp(0.95rem,1.5vw,1.15rem)", color: accent }}>
             {product.price}
           </span>
           <motion.button
             whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.94 }}
-            onClick={e => e.stopPropagation()}
-            style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(0.66rem,1vw,0.8rem)", letterSpacing: "0.03em", background: accent, color: isDark ? "#0a0a18" : "#fff", border: "none", borderRadius: 30, padding: "clamp(5px,0.8vw,7px) clamp(11px,1.6vw,16px)", cursor: "pointer", whiteSpace: "nowrap", boxShadow: `0 3px 10px ${accent}50` }}
+            onClick={handleAddToCart}
+            style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 600, fontSize: "clamp(0.6rem,0.9vw,0.74rem)", letterSpacing: "0.02em", background: accent, color: isDark ? "#0a0a18" : "#fff", border: "none", borderRadius: 30, padding: "clamp(4px,0.7vw,6px) clamp(9px,1.3vw,14px)", cursor: "pointer", whiteSpace: "nowrap", boxShadow: `0 3px 10px ${accent}50` }}
           >
-            Add to Cart +
+            {user ? "Add to Cart" : "Buy Now"}
           </motion.button>
         </div>
       </div>
@@ -97,7 +106,7 @@ const CandleCard = ({ product, accent, isDark, idx }: {
 
 // ── Placeholder card (when category has no products assigned yet) ──────────────
 
-const PlaceholderCard = ({ accent, isDark, label }: { accent: string; isDark: boolean; label: string }) => (
+export const PlaceholderCard = ({ accent, isDark, label }: { accent: string; isDark: boolean; label: string }) => (
   <div style={{ flex: "1 1 0", minWidth: 0, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.5)", border: `1.5px dashed ${accent}40`, borderRadius: 14, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, padding: 20, opacity: 0.65 }}>
     <span style={{ fontSize: "1.8rem" }}>🕯️</span>
     <p style={{ fontFamily: "'Permanent Marker',cursive", fontSize: "0.68rem", color: isDark ? "rgba(220,210,255,0.5)" : `${accent}80`, textAlign: "center", lineHeight: 1.4 }}>{label}</p>
@@ -107,98 +116,139 @@ const PlaceholderCard = ({ accent, isDark, label }: { accent: string; isDark: bo
 // ── Cover page ─────────────────────────────────────────────────────────────────
 
 const CoverPage = ({ totalCategories }: { totalCategories: number }) => (
-  <div style={{ width: "100%", height: "100%", background: "linear-gradient(135deg,#f0e8d6 0%,#e8dcc8 100%)", position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-    <div style={{ position: "absolute", inset: 0, backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.78' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.038'/%3E%3C/svg%3E")`, pointerEvents: "none" }} />
-    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-      <p style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(10rem,22vw,22rem)", color: "rgba(30,41,24,0.04)", lineHeight: 1, userSelect: "none", transform: "rotate(-8deg)" }}>🕯️</p>
-    </div>
-    {[{ e:"✨", t:"5%", l:"4%", r:-12, s:2.2 },{ e:"🎀", t:"5%", l:"88%", r:14, s:1.8 },{ e:"🕯️", t:"87%", l:"4%", r:8, s:2.0 },{ e:"🌿", t:"87%", l:"88%", r:-10, s:1.9 },{ e:"☕", t:"44%", l:"3%", r:-6, s:1.5 },{ e:"🌸", t:"44%", l:"93%", r:10, s:1.4 }].map((s, i) => (
-      <motion.span key={i} initial={{ scale:0, opacity:0 }} animate={{ scale:1, opacity:1 }} transition={{ delay:0.1+i*0.07, ease:"backOut", duration:0.5 }}
-        style={{ position:"absolute", top:s.t, left:s.l, fontSize:`${s.s}rem`, transform:`rotate(${s.r}deg)`, zIndex:3, filter:"drop-shadow(0 2px 6px rgba(0,0,0,0.18))", userSelect:"none" }}>
+  <div style={{ width:"100%", height:"100%", background:"#f0e8d6", position:"relative", overflow:"hidden", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
+    {/* Paper grain */}
+    <div style={{ position:"absolute", inset:0, backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E")`, pointerEvents:"none" }} />
+
+    {/* Corner stickers — same as New Arrivals card */}
+    {[{e:"🕯️",t:"5%",l:"4%",r:-12,s:1.6},{e:"✨",t:"5%",l:"88%",r:14,s:1.3},{e:"🌿",t:"87%",l:"88%",r:-10,s:1.4},{e:"☕",t:"87%",l:"4%",r:8,s:1.4}].map((s,i) => (
+      <motion.span key={i} initial={{scale:0,opacity:0}} animate={{scale:1,opacity:1}} transition={{delay:0.1+i*0.07,ease:"backOut",duration:0.45}}
+        style={{position:"absolute",top:s.t,left:s.l,fontSize:`${s.s}rem`,transform:`rotate(${s.r}deg)`,zIndex:3,filter:"drop-shadow(0 2px 5px rgba(0,0,0,0.18))",userSelect:"none"}}>
         {s.e}
       </motion.span>
     ))}
-    <div style={{ position:"relative", zIndex:10, textAlign:"center", padding:"0 8%" }}>
-      <motion.p initial={{ opacity:0, y:-10 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.1 }}
-        style={{ fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.68rem,1.05vw,0.85rem)", color:"#899d6b", letterSpacing:"0.14em", marginBottom:14, transform:"rotate(-1.5deg)", display:"inline-block" }}>
-        ✦ the olive goose ✦
-      </motion.p>
-      <motion.h2 initial={{ opacity:0, scale:0.88 }} animate={{ opacity:1, scale:1 }} transition={{ delay:0.18, ease:"backOut", duration:0.55 }}
-        style={{ fontFamily:"'Chewy',cursive", fontSize:"clamp(3rem,7vw,7rem)", color:"#1D2B1B", lineHeight:0.92, marginBottom:16 }}>
-        Shop<br /><span style={{ color:"#6b3520" }}>By</span><br />Category
+
+    {/* Tape at top — same as New Arrivals card */}
+    <div style={{position:"absolute",top:0,left:"50%",transform:"translateX(-50%) rotate(-2deg)",width:72,height:26,background:"rgba(255,220,120,0.6)",borderRadius:"0 0 3px 3px",boxShadow:"0 2px 6px rgba(0,0,0,0.12)",border:"1px solid rgba(255,255,255,0.4)",zIndex:10}} />
+
+    <div style={{position:"relative",zIndex:10,textAlign:"center",padding:"0 8%"}}>
+      {/* Heading — identical font/size to New Arrivals cat.name */}
+      <motion.h2 initial={{opacity:0,scale:0.92}} animate={{opacity:1,scale:1}} transition={{delay:0.18,ease:"backOut",duration:0.45}}
+        style={{fontFamily:"'Chewy',cursive",fontSize:"clamp(1.8rem,4vw,3.4rem)",color:"#6b3520",lineHeight:0.95,marginBottom:10}}>
+        Shop By Category
       </motion.h2>
-      <motion.div initial={{ scaleX:0 }} animate={{ scaleX:1 }} transition={{ delay:0.4, duration:0.5 }} style={{ transformOrigin:"center", display:"flex", justifyContent:"center", marginBottom:18 }}>
-        <svg width="160" height="14" viewBox="0 0 160 14"><path d="M4 10 Q18 2 32 10 Q46 18 60 10 Q74 2 88 10 Q102 18 116 10 Q130 2 144 10 Q152 14 156 10" fill="none" stroke="#c9b26d" strokeWidth="2.5" strokeLinecap="round"/></svg>
+
+      {/* Wavy underline — identical to New Arrivals */}
+      <motion.div initial={{scaleX:0}} animate={{scaleX:1}} transition={{delay:0.28,duration:0.45}}
+        style={{transformOrigin:"center",display:"flex",justifyContent:"center",marginBottom:12}}>
+        <svg width="120" height="12" viewBox="0 0 120 12">
+          <path d="M4 8 Q16 2 28 8 Q40 14 52 8 Q64 2 76 8 Q88 14 100 8 Q110 3 116 8" fill="none" stroke="#6b3520" strokeWidth="2.2" strokeLinecap="round" opacity="0.7"/>
+        </svg>
       </motion.div>
-      <motion.p initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:0.45 }}
-        style={{ fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.62rem,0.95vw,0.78rem)", color:"rgba(30,41,24,0.52)", marginBottom:28, transform:"rotate(-0.8deg)" }}>
-        {totalCategories} mood{totalCategories !== 1 ? "s" : ""} · handmade · all vibes welcome
+
+      {/* Mood line — identical Permanent Marker style to New Arrivals mood_description */}
+      <motion.p initial={{opacity:0}} animate={{opacity:1}} transition={{delay:0.22}}
+        style={{fontFamily:"'Permanent Marker',cursive",fontSize:"clamp(0.6rem,0.92vw,0.75rem)",color:"rgba(30,41,24,0.55)",marginBottom:14,transform:"rotate(-1deg)"}}>
+        {totalCategories} mood{totalCategories!==1?"s":""} · handmade · all vibes welcome
       </motion.p>
-      <motion.p initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.6, ease:"backOut" }}
-        style={{ fontFamily:"'Chewy',cursive", fontSize:"clamp(0.88rem,1.35vw,1.05rem)", color:"#6b3520", background:"rgba(107,53,32,0.09)", border:"1.5px dashed rgba(107,53,32,0.3)", borderRadius:30, padding:"8px 22px", display:"inline-block", transform:"rotate(-1.5deg)" }}>
-        flip the page → explore
-      </motion.p>
+
+      {/* Tags — identical pill style to New Arrivals */}
+      <motion.div initial={{opacity:0}} animate={{opacity:1}} transition={{delay:0.3}}
+        style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center",marginBottom:22}}>
+        {["#handmade","#smallbatch","#moodcandles"].map(tag=>(
+          <span key={tag} style={{fontFamily:"'Fredoka',sans-serif",fontSize:"clamp(0.6rem,0.9vw,0.72rem)",background:"rgba(107,53,32,0.1)",color:"#6b3520",border:"1px solid rgba(107,53,32,0.28)",borderRadius:20,padding:"3px 10px",fontWeight:500}}>
+            {tag}
+          </span>
+        ))}
+      </motion.div>
+
+      {/* CTA — styled like New Arrivals "Shop All →" */}
+      <motion.button initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{delay:0.38,ease:"backOut"}}
+        style={{fontFamily:"'Chewy',cursive",fontSize:"clamp(0.88rem,1.4vw,1.08rem)",background:"#6b3520",color:"#fff",borderRadius:50,padding:"8px 22px",border:"none",cursor:"pointer",boxShadow:"0 4px 16px rgba(107,53,32,0.44)"}}>
+        flip the page →
+      </motion.button>
     </div>
-    <motion.p initial={{ opacity:0 }} animate={{ opacity:0.4 }} transition={{ delay:0.85 }}
-      style={{ position:"absolute", bottom:"4%", right:"4%", fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.52rem,0.82vw,0.65rem)", color:"rgba(30,41,24,0.5)", transform:"rotate(2deg)", textAlign:"right" }}>
-      handmade with love<br />small batch · crafted for you
-    </motion.p>
+
+    {/* Watermark — same as category pages */}
+    <div style={{position:"absolute",bottom:"4%",right:"3%",fontFamily:"'Permanent Marker',cursive",fontSize:"clamp(0.48rem,0.72vw,0.58rem)",color:"rgba(107,53,32,0.12)",transform:"rotate(-3deg)",pointerEvents:"none",userSelect:"none",lineHeight:2}}>
+      handmade · small batch · crafted for you
+    </div>
   </div>
 );
 
 // ── Category page ──────────────────────────────────────────────────────────────
 
-const CANDLES_PER_VIEW = 2;
+export const CANDLES_PER_VIEW = 3;
 
-const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, interactive }: {
+export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, interactive }: {
   cat: ShopCategory;
-  products: Product[];         // resolved from cat.product_ids
+  products: Product[];
   candleOffset: number;
   setCandleOffset: (n: number) => void;
   interactive: boolean;
 }) => {
-  const isDark   = cat.bg_color.startsWith("#1") || cat.bg_color.startsWith("#17");
-  const maxOffset = Math.max(0, products.length - CANDLES_PER_VIEW);
-  const visible   = products.slice(candleOffset, candleOffset + CANDLES_PER_VIEW);
+  const isMobile  = useIsMobile();
+  const perView   = isMobile ? 1 : CANDLES_PER_VIEW;
+  const isDark    = cat.bg_color.startsWith("#1") || cat.bg_color.startsWith("#17");
+  const maxOffset = Math.max(0, products.length - perView);
+  const visible   = products.slice(candleOffset, candleOffset + perView);
   const canPrev   = candleOffset > 0;
   const canNext   = candleOffset < maxOffset;
   const dimText   = isDark ? "rgba(220,210,255,0.55)" : `${cat.text_color}88`;
 
   return (
-    <div style={{ width:"100%", height:"100%", background:cat.bg_color, position:"relative", overflow:"hidden", display:"flex" }}>
+    <div style={{ width:"100%", height:"100%", background:cat.bg_color, position:"relative", overflow:"hidden", display:"flex", flexDirection: isMobile ? "column" : "row" }}>
       {/* Paper grain */}
       <div style={{ position:"absolute", inset:0, backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.78' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E")`, pointerEvents:"none", zIndex:1 }} />
 
-      {/* Stickers */}
-      {(cat.stickers || []).map((s, i) => (
+      {/* Stickers — desktop only */}
+      {!isMobile && (cat.stickers || []).map((s, i) => (
         <motion.span key={i} initial={{ scale:0.6, opacity:0 }} animate={{ scale:1, opacity:1 }} transition={{ delay:0.06+i*0.06, ease:"backOut", duration:0.4 }}
           style={{ position:"absolute", top:s.top, left:s.left, fontSize:`${s.size}rem`, transform:`rotate(${s.rotate}deg)`, zIndex:3, pointerEvents:"none", filter:"drop-shadow(0 2px 5px rgba(0,0,0,0.18))", userSelect:"none" }}>
           {s.emoji}
         </motion.span>
       ))}
 
-      {/* LEFT PANEL */}
-      <div style={{ width:"36%", minWidth:180, padding:"clamp(18px,3.5vw,40px) clamp(14px,2.5vw,28px)", display:"flex", flexDirection:"column", justifyContent:"center", position:"relative", zIndex:10, borderRight:`1.5px solid ${isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)"}` }}>
-        <motion.h2 initial={{ x:-20, opacity:0 }} animate={{ x:0, opacity:1 }} transition={{ delay:0.1, duration:0.45 }}
-          style={{ fontFamily:"'Chewy',cursive", fontSize:"clamp(1.6rem,3.5vw,3.2rem)", lineHeight:0.95, color:cat.accent_color, marginBottom:12 }}>
-          {cat.name}
-        </motion.h2>
-        <motion.p initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:0.2 }}
-          style={{ fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.6rem,0.95vw,0.78rem)", color:dimText, marginBottom:14, transform:"rotate(-1.5deg)", transformOrigin:"left" }}>
-          {cat.mood_description}
-        </motion.p>
-        <motion.div initial={{ scaleX:0 }} animate={{ scaleX:1 }} transition={{ delay:0.25, duration:0.4 }} style={{ transformOrigin:"left", marginBottom:14 }}>
-          <svg width="65" height="11" viewBox="0 0 65 11"><path d="M2 7 Q10 2 18 7 Q26 12 34 7 Q42 2 50 7 Q57 12 63 7" fill="none" stroke={cat.accent_color} strokeWidth="2" strokeLinecap="round"/></svg>
-        </motion.div>
-        <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:0.28 }}
-          style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:22 }}>
-          {(cat.tags || []).map(tag => (
-            <span key={tag} style={{ fontFamily:"'Fredoka',sans-serif", fontSize:"clamp(0.55rem,0.88vw,0.7rem)", background: isDark ? "rgba(255,255,255,0.1)" : `${cat.accent_color}18`, color:cat.accent_color, border:`1px solid ${cat.accent_color}40`, borderRadius:20, padding:"3px 8px", fontWeight:500 }}>
-              {tag}
-            </span>
-          ))}
-        </motion.div>
-        {products.length > 0 && (
+      {/* LEFT PANEL — full width compact strip on mobile, sidebar on desktop */}
+      <div style={{
+        width: isMobile ? "100%" : "26%",
+        minWidth: isMobile ? 0 : 150,
+        padding: isMobile ? "10px 14px 8px" : "clamp(14px,2.5vw,28px) clamp(12px,2vw,22px)",
+        display:"flex",
+        flexDirection: isMobile ? "row" : "column",
+        alignItems: isMobile ? "center" : undefined,
+        justifyContent: isMobile ? "space-between" : "center",
+        flexShrink: 0,
+        position:"relative", zIndex:10,
+        borderRight: isMobile ? "none" : `1.5px solid ${isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)"}`,
+        borderBottom: isMobile ? `1.5px solid ${isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)"}` : "none",
+        gap: isMobile ? 8 : 0,
+      }}>
+        {/* Name + tags row on mobile */}
+        <div style={{ display:"flex", flexDirection: isMobile ? "column" : "column", flex: isMobile ? 1 : undefined, minWidth:0 }}>
+          <motion.h2 initial={{ x:-20, opacity:0 }} animate={{ x:0, opacity:1 }} transition={{ delay:0.1, duration:0.45 }}
+            style={{ fontFamily:"'Chewy',cursive", fontSize: isMobile ? "1.1rem" : "clamp(1.2rem,2.4vw,2.2rem)", lineHeight:1, color:cat.accent_color, marginBottom: isMobile ? 4 : 10 }}>
+            {cat.name}
+          </motion.h2>
+          {!isMobile && <>
+            <motion.p initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:0.2 }}
+              style={{ fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.6rem,0.95vw,0.78rem)", color:dimText, marginBottom:14, transform:"rotate(-1.5deg)", transformOrigin:"left" }}>
+              {cat.mood_description}
+            </motion.p>
+            <motion.div initial={{ scaleX:0 }} animate={{ scaleX:1 }} transition={{ delay:0.25, duration:0.4 }} style={{ transformOrigin:"left", marginBottom:14 }}>
+              <svg width="65" height="11" viewBox="0 0 65 11"><path d="M2 7 Q10 2 18 7 Q26 12 34 7 Q42 2 50 7 Q57 12 63 7" fill="none" stroke={cat.accent_color} strokeWidth="2" strokeLinecap="round"/></svg>
+            </motion.div>
+          </>}
+          <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:0.28 }}
+            style={{ display:"flex", flexWrap:"wrap", gap:4, marginBottom: isMobile ? 0 : 22 }}>
+            {(cat.tags || []).map(tag => (
+              <span key={tag} style={{ fontFamily:"'Fredoka',sans-serif", fontSize: isMobile ? "0.6rem" : "clamp(0.55rem,0.88vw,0.7rem)", background: isDark ? "rgba(255,255,255,0.1)" : `${cat.accent_color}18`, color:cat.accent_color, border:`1px solid ${cat.accent_color}40`, borderRadius:20, padding:"2px 7px", fontWeight:500 }}>
+                {tag}
+              </span>
+            ))}
+          </motion.div>
+        </div>
+        {!isMobile && products.length > 0 && (
           <motion.p initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:0.32 }}
             style={{ fontFamily:"'Inter',sans-serif", fontSize:"clamp(0.58rem,0.88vw,0.7rem)", color:dimText, marginBottom:16 }}>
             {products.length} product{products.length !== 1 ? "s" : ""} in this collection
@@ -206,30 +256,30 @@ const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, interactiv
         )}
         <motion.a href={`/shop?category=${cat.slug}`} initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.36, ease:"backOut" }}
           whileHover={{ scale:1.06, transition:{ duration:0.18 } }} whileTap={{ scale:0.95 }}
-          style={{ display:"inline-flex", alignItems:"center", gap:6, fontFamily:"'Chewy',cursive", fontSize:"clamp(0.88rem,1.4vw,1.08rem)", background:cat.accent_color, color: isDark ? "#0a0a18" : "#fff", borderRadius:50, padding:"9px 20px", alignSelf:"flex-start", textDecoration:"none", boxShadow:`0 4px 16px ${cat.accent_color}44`, transform:"rotate(-2deg)", transformOrigin:"left center" }}>
+          style={{ display:"inline-flex", alignItems:"center", gap:6, fontFamily:"'Chewy',cursive", fontSize: isMobile ? "0.82rem" : "clamp(0.88rem,1.4vw,1.08rem)", background:cat.accent_color, color: isDark ? "#0a0a18" : "#fff", borderRadius:50, padding: isMobile ? "6px 14px" : "9px 20px", alignSelf:"flex-start", textDecoration:"none", boxShadow:`0 4px 16px ${cat.accent_color}44`, transform: isMobile ? "none" : "rotate(-2deg)", transformOrigin:"left center", whiteSpace:"nowrap", flexShrink:0 }}>
           Shop All →
         </motion.a>
       </div>
 
       {/* RIGHT PANEL */}
-      <div style={{ flex:1, background:cat.page_bg_color, position:"relative", display:"flex", flexDirection:"column", padding:"clamp(14px,2.5vw,26px) clamp(12px,2vw,22px)", overflow:"hidden", zIndex:10 }}>
+      <div style={{ flex:1, background:cat.page_bg_color, position:"relative", display:"flex", flexDirection:"column", padding:"clamp(10px,2vw,26px) clamp(10px,2vw,22px)", overflow:"hidden", zIndex:10 }}>
         {/* Row header + nav arrows */}
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"clamp(10px,1.6vw,16px)", flexShrink:0 }}>
-          <p style={{ fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.58rem,0.9vw,0.7rem)", color: isDark ? "rgba(220,210,255,0.45)" : `${cat.text_color}55`, transform:"rotate(-1deg)" }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"clamp(8px,1.2vw,16px)", flexShrink:0 }}>
+          <p style={{ fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.55rem,0.9vw,0.7rem)", color: isDark ? "rgba(220,210,255,0.45)" : `${cat.text_color}55`, transform:"rotate(-1deg)" }}>
             {products.length === 0
               ? "no products added yet"
-              : products.length > CANDLES_PER_VIEW
-                ? `${candleOffset+1}–${Math.min(candleOffset+CANDLES_PER_VIEW, products.length)} of ${products.length}`
+              : products.length > perView
+                ? `${candleOffset+1}–${Math.min(candleOffset+perView, products.length)} of ${products.length}`
                 : `${products.length} product${products.length !== 1 ? "s" : ""}`}
           </p>
-          {products.length > CANDLES_PER_VIEW && (
+          {products.length > perView && (
             <div style={{ display:"flex", gap:6 }}>
               {[{ dir:-1, active:canPrev, label:"←" }, { dir:1, active:canNext, label:"→" }].map(({ dir, active, label }) => (
                 <motion.button key={label}
                   onClick={e => { e.stopPropagation(); if (interactive && active) setCandleOffset(candleOffset + dir); }}
                   whileHover={active ? { scale:1.12 } : {}}
                   whileTap={active ? { scale:0.9 } : {}}
-                  style={{ width:30, height:30, borderRadius:"50%", border:`1.5px solid ${active ? cat.accent_color : cat.accent_color+"40"}`, background: active ? `${cat.accent_color}18` : "transparent", color: active ? cat.accent_color : cat.accent_color+"40", cursor: active ? "pointer" : "default", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"0.9rem", fontWeight:600 }}>
+                  style={{ width:34, height:34, borderRadius:"50%", border:`1.5px solid ${active ? cat.accent_color : cat.accent_color+"40"}`, background: active ? `${cat.accent_color}18` : "transparent", color: active ? cat.accent_color : cat.accent_color+"40", cursor: active ? "pointer" : "default", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"1rem", fontWeight:600 }}>
                   {label}
                 </motion.button>
               ))}
@@ -238,27 +288,26 @@ const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, interactiv
         </div>
 
         {/* Cards row */}
-        <div style={{ flex:1, display:"flex", gap:"clamp(8px,1.4vw,14px)", alignItems:"stretch", minHeight:0 }}>
+        <div style={{ flex:1, display:"flex", gap:"clamp(6px,1.4vw,14px)", alignItems:"stretch", minHeight:0 }}>
           {products.length === 0 ? (
             <>
               <PlaceholderCard accent={cat.accent_color} isDark={isDark} label={"add products via\nAdmin → Shop By Category"} />
-              <PlaceholderCard accent={cat.accent_color} isDark={isDark} label={"they'll appear\nhere automatically"} />
+              {!isMobile && <PlaceholderCard accent={cat.accent_color} isDark={isDark} label={"they'll appear\nhere automatically"} />}
             </>
           ) : (
             <AnimatePresence mode="sync">
               {visible.map((p, i) => (
                 <CandleCard key={p.id} product={p} accent={cat.accent_color} isDark={isDark} idx={candleOffset + i} />
               ))}
-              {/* If only 1 visible, render a placeholder to keep even layout */}
-              {visible.length === 1 && (
-                <div key="spacer" style={{ flex:"1 1 0", minWidth:0 }} />
-              )}
+              {Array.from({ length: perView - visible.length }).map((_, i) => (
+                <div key={`spacer-${i}`} style={{ flex:"1 1 0", minWidth:0 }} />
+              ))}
             </AnimatePresence>
           )}
         </div>
 
         {/* Dots */}
-        {products.length > CANDLES_PER_VIEW && (
+        {products.length > perView && (
           <div style={{ display:"flex", justifyContent:"center", gap:5, marginTop:10, flexShrink:0 }}>
             {Array.from({ length: maxOffset+1 }).map((_, i) => (
               <motion.button key={i} onClick={e => { e.stopPropagation(); if (interactive) setCandleOffset(i); }}
@@ -283,6 +332,7 @@ const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, interactiv
 const ScrapbookSection = () => {
   const [categories, setCategories]   = useState<ShopCategory[]>(FALLBACK_CATS);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
+  const [settings, setSettings]       = useState<ScrapbookSettings>(DEFAULT_SCRAPBOOK_SETTINGS);
 
   // page: 0=cover, 1..N=categories
   const [currentPage, setCurrentPage]   = useState(0);
@@ -296,11 +346,13 @@ const ScrapbookSection = () => {
 
   const totalPages = categories.length + 1;
 
-  // Fetch categories + products
+  // Fetch categories + products + scrapbook settings
   useEffect(() => {
     getShopCategories().then(cats => { if (cats.length > 0) setCategories(cats); });
     getContent<{ label: string; headline: string; subtext: string; items: Product[] }>("products", DEFAULT_CONTENT.products)
       .then(data => setAllProducts(data?.items ?? []));
+    getContent<ScrapbookSettings>("scrapbookSettings", DEFAULT_SCRAPBOOK_SETTINGS)
+      .then(s => { if (s) setSettings(s); });
   }, []);
 
   // Resolve product_ids → actual Product objects for a category
@@ -340,9 +392,9 @@ const ScrapbookSection = () => {
 
   useEffect(() => {
     if (paused) return;
-    const id = setInterval(flipNext, 5000);
+    const id = setInterval(flipNext, settings.autoFlipInterval);
     return () => clearInterval(id);
-  }, [paused, flipNext]);
+  }, [paused, flipNext, settings.autoFlipInterval]);
 
   const renderPage = (pageIdx: number, live = false) => {
     if (pageIdx === 0) return <CoverPage totalCategories={categories.length} />;
@@ -363,24 +415,13 @@ const ScrapbookSection = () => {
 
   return (
     <section
+      id="shop-by-category"
       style={{ background:"var(--color-cream-section)", padding:"clamp(44px,7vw,84px) 0" }}
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
-      {/* Header */}
-      <div style={{ textAlign:"center", marginBottom:"clamp(24px,3.8vw,44px)", padding:"0 24px" }}>
-        <motion.h2 initial={{ opacity:0, y:12 }} whileInView={{ opacity:1, y:0 }} viewport={{ once:true }}
-          style={{ fontFamily:"'Chewy',cursive", fontSize:"clamp(2rem,4.2vw,3.8rem)", color:"var(--color-forest-dark)", lineHeight:0.95, marginBottom:10 }}>
-          Shop By Category
-        </motion.h2>
-        <motion.p initial={{ opacity:0 }} whileInView={{ opacity:1 }} viewport={{ once:true }} transition={{ delay:0.15 }}
-          style={{ fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.62rem,0.96vw,0.78rem)", color:"var(--color-sage-light)", transform:"rotate(-0.8deg)", display:"inline-block" }}>
-          flip through the vibes ✦ find your scent era
-        </motion.p>
-      </div>
-
       {/* Book */}
-      <div style={{ maxWidth:"min(94vw,1040px)", margin:"0 auto", padding:"0 clamp(14px,3.5vw,44px)", position:"relative" }}>
+      <div style={{ maxWidth:"min(96vw,1240px)", margin:"0 auto", padding:"0 clamp(14px,3.5vw,44px)", position:"relative" }}>
 
         <motion.button onClick={flipPrev} whileHover={{ scale:1.12 }} whileTap={{ scale:0.9 }} aria-label="Previous page"
           style={{ position:"absolute", left:-4, top:"48%", transform:"translateY(-50%)", zIndex:30, background:"rgba(255,255,255,0.92)", border:"1.5px solid rgba(0,0,0,0.1)", borderRadius:"50%", width:40, height:40, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", backdropFilter:"blur(8px)", boxShadow:"0 4px 14px rgba(0,0,0,0.1)", fontSize:"1rem", color:"var(--color-forest-dark)" }}>←</motion.button>
@@ -390,7 +431,7 @@ const ScrapbookSection = () => {
           <div style={{ position:"absolute", inset:0, borderRadius:"clamp(10px,1.6vw,18px)", background:"#e8dcc8", transform:"translateX(3px) translateY(-2px)", zIndex:0 }} />
           <div style={{ position:"absolute", inset:0, borderRadius:"clamp(10px,1.6vw,18px)", background:"#f0e4cc", transform:"translateX(6px) translateY(-4px)", zIndex:-1 }} />
 
-          <div style={{ height:"clamp(400px,56vw,540px)", borderRadius:"clamp(10px,1.6vw,18px)", overflow:"hidden", boxShadow:"0 24px 70px rgba(0,0,0,0.2),0 8px 20px rgba(0,0,0,0.1)", position:"relative", zIndex:1 }}>
+          <div style={{ height:"clamp(400px,62vw,620px)", borderRadius:"clamp(8px,1.6vw,18px)", overflow:"hidden", boxShadow:"0 24px 70px rgba(0,0,0,0.2),0 8px 20px rgba(0,0,0,0.1)", position:"relative", zIndex:1 }}>
             <div style={{ position:"absolute", inset:0, perspective:"2200px" }}>
 
               {/* Incoming page (sits behind) */}
@@ -401,7 +442,7 @@ const ScrapbookSection = () => {
               {/* Flipping layer */}
               <motion.div
                 animate={{ rotateY: isFlipping ? flipEndAngle : 0 }}
-                transition={isFlipping ? { duration:0.76, ease:[0.42,0,0.28,1] } : { duration:0, type:"tween" }}
+                transition={isFlipping ? { duration:settings.flipDuration, ease:[0.42,0,0.28,1] } : { duration:0, type:"tween" }}
                 onAnimationComplete={() => { if (flipLock.current && incomingPage !== null) onFlipDone(); }}
                 style={{ position:"absolute", inset:0, zIndex:2, transformStyle:"preserve-3d", transformOrigin:flipOrigin, willChange:"transform", borderRadius:"inherit" }}
               >
@@ -409,7 +450,7 @@ const ScrapbookSection = () => {
                 <div style={{ position:"absolute", inset:0, backfaceVisibility:"hidden", WebkitBackfaceVisibility:"hidden", overflow:"hidden", borderRadius:"inherit" }}>
                   {renderPage(currentPage, true)}
                   {isFlipping && (
-                    <motion.div initial={{ opacity:0 }} animate={{ opacity:[0,0.35,0] }} transition={{ duration:0.76 }}
+                    <motion.div initial={{ opacity:0 }} animate={{ opacity:[0,0.35,0] }} transition={{ duration:settings.flipDuration }}
                       style={{ position:"absolute", inset:0, pointerEvents:"none", zIndex:20, background: flipEndAngle < 0 ? "linear-gradient(to right,transparent 50%,rgba(0,0,0,0.28) 100%)" : "linear-gradient(to left,transparent 50%,rgba(0,0,0,0.28) 100%)" }} />
                   )}
                 </div>
@@ -420,7 +461,7 @@ const ScrapbookSection = () => {
               </motion.div>
 
               {/* Spine */}
-              <div style={{ position:"absolute", left:"36%", top:0, bottom:0, width:4, background:"linear-gradient(to right,rgba(0,0,0,0.14),rgba(0,0,0,0.04),transparent)", zIndex:15, pointerEvents:"none" }} />
+              <div style={{ position:"absolute", left:"26%", top:0, bottom:0, width:4, background:"linear-gradient(to right,rgba(0,0,0,0.14),rgba(0,0,0,0.04),transparent)", zIndex:15, pointerEvents:"none" }} />
             </div>
 
             {/* Page-curl corner hint */}
