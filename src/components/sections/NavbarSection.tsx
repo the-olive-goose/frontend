@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { NavbarContent, AnnouncementBarContent } from "@/lib/defaults";
 import { getShopCategories, type ShopCategory } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import CartDrawer from "@/components/CartDrawer";
 import logo from "@/assets/logo.jpg";
 
 interface Props {
@@ -121,6 +123,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
   const [categories, setCategories]   = useState<ShopCategory[]>([]);
   const links = data.links ?? [];
   const shopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { user, signOut, openAuthModal } = useAuth();
 
   useEffect(() => {
     getShopCategories().then(cats => setCategories(cats)).catch(() => {});
@@ -202,18 +205,41 @@ const NavbarSection = ({ data, announcement }: Props) => {
             })}
           </div>
 
-          {/* Cart pill */}
-          <a
-            href={data.cta_href || "#"}
-            className="hidden md:inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-semibold transition-all hover:scale-105 active:scale-95 shrink-0 font-display"
-            style={{ background: "var(--btn-primary-bg)", color: "var(--btn-primary-text)", borderRadius: "var(--radius-pill)" }}
-          >
-            <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M1.5 1.5h1.3l1.7 7.8h7.2l1.3-5.6H4.7"/>
-              <circle cx="7.5" cy="13" r="1"/><circle cx="11.2" cy="13" r="1"/>
-            </svg>
-            {data.cta_text}
-          </a>
+          {/* Desktop right controls */}
+          <div className="hidden md:flex items-center gap-3 shrink-0">
+            {user ? (
+              <>
+                {/* Cart drawer trigger */}
+                <CartDrawer />
+
+                {/* User avatar + logout */}
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-8 h-8 rounded-full flex items-center justify-center font-display text-xs font-semibold shrink-0"
+                    style={{ background: "var(--btn-primary-bg)", color: "var(--color-forest-dark)" }}
+                    title={user.email ?? ""}
+                  >
+                    {(user.user_metadata?.full_name?.[0] ?? user.email?.[0] ?? "U").toUpperCase()}
+                  </div>
+                  <button
+                    onClick={() => signOut()}
+                    className="font-display text-sm transition-all hover:opacity-70"
+                    style={{ color: "var(--color-white)" }}
+                  >
+                    Sign out
+                  </button>
+                </div>
+              </>
+            ) : (
+              <button
+                onClick={openAuthModal}
+                className="inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-semibold transition-all hover:scale-105 active:scale-95 font-display"
+                style={{ background: "var(--btn-primary-bg)", color: "var(--btn-primary-text)", borderRadius: "var(--radius-pill)" }}
+              >
+                Sign In
+              </button>
+            )}
+          </div>
 
           {/* Mobile hamburger */}
           <button onClick={() => setMobileOpen(!mobileOpen)}
@@ -298,11 +324,28 @@ const NavbarSection = ({ data, announcement }: Props) => {
                 })}
 
                 <div className="pt-3">
-                  <a href={data.cta_href || "#"} onClick={() => setMobileOpen(false)}
-                    className="font-display block text-center px-5 py-2.5 rounded-full text-sm font-semibold"
-                    style={{ background: "var(--btn-primary-bg)", color: "var(--btn-primary-text)", borderRadius: "var(--radius-pill)" }}>
-                    {data.cta_text}
-                  </a>
+                  {user ? (
+                    <div className="flex items-center justify-between">
+                      <span className="font-sans text-sm" style={{ color: "rgba(245,239,230,0.7)" }}>
+                        {user.user_metadata?.full_name ?? user.email}
+                      </span>
+                      <button
+                        onClick={() => { signOut(); setMobileOpen(false); }}
+                        className="font-display text-sm px-4 py-2 rounded-full"
+                        style={{ border: "1px solid rgba(255,255,255,0.3)", color: "var(--color-white)" }}
+                      >
+                        Sign out
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => { openAuthModal(); setMobileOpen(false); }}
+                      className="font-display block w-full text-center px-5 py-2.5 rounded-full text-sm font-semibold"
+                      style={{ background: "var(--btn-primary-bg)", color: "var(--btn-primary-text)", borderRadius: "var(--radius-pill)" }}
+                    >
+                      Sign In / Sign Up
+                    </button>
+                  )}
                 </div>
               </div>
             </motion.div>

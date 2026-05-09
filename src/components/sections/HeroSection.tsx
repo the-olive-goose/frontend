@@ -1,11 +1,13 @@
 import { HeroContent } from "@/lib/defaults";
 import CountdownTimer from "@/components/CountdownTimer";
+import { useAuth } from "@/contexts/AuthContext";
 import heroBg from "@/assets/hero-bg.jpg";
 
 interface Props { data: HeroContent }
 
 const HeroSection = ({ data }: Props) => {
   const bgImage = data.bg_image_url || heroBg;
+  const { user, openAuthModal } = useAuth();
 
   return (
     <section
@@ -102,20 +104,36 @@ const HeroSection = ({ data }: Props) => {
 
           {/* CTAs */}
           <div className="flex items-center gap-3 flex-wrap animate-fade-up-delay-2">
-            {/* Primary — cream pill */}
-            <a
-              href={data.cta_href}
-              className="inline-flex items-center gap-2 font-sans text-sm font-medium transition-all hover:opacity-90 hover:-translate-y-0.5"
-              style={{
-                background: "var(--btn-primary-bg)",
-                color: "var(--btn-primary-text)",
-                borderRadius: "var(--radius-pill)",
-                padding: "14px 28px",
-                letterSpacing: "var(--tracking-cta)",
-              }}
-            >
-              {data.cta_text} &nbsp;→
-            </a>
+            {/* Primary — cream pill (gated: requires login) */}
+            {user ? (
+              <a
+                href={data.cta_href}
+                className="inline-flex items-center gap-2 font-sans text-sm font-medium transition-all hover:opacity-90 hover:-translate-y-0.5"
+                style={{
+                  background: "var(--btn-primary-bg)",
+                  color: "var(--btn-primary-text)",
+                  borderRadius: "var(--radius-pill)",
+                  padding: "14px 28px",
+                  letterSpacing: "var(--tracking-cta)",
+                }}
+              >
+                {data.cta_text} &nbsp;→
+              </a>
+            ) : (
+              <button
+                onClick={openAuthModal}
+                className="inline-flex items-center gap-2 font-sans text-sm font-medium transition-all hover:opacity-90 hover:-translate-y-0.5"
+                style={{
+                  background: "var(--btn-primary-bg)",
+                  color: "var(--btn-primary-text)",
+                  borderRadius: "var(--radius-pill)",
+                  padding: "14px 28px",
+                  letterSpacing: "var(--tracking-cta)",
+                }}
+              >
+                {data.cta_text} &nbsp;→
+              </button>
+            )}
             {/* Secondary — ghost pill */}
             <a
               href="#story"

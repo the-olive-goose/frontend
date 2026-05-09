@@ -1,8 +1,11 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 import { getContent, getShopCategories, type ShopCategory } from "@/lib/api";
 import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
+import { useAuth } from "@/contexts/AuthContext";
+import { useCart } from "@/contexts/CartContext";
 import NavbarSection from "@/components/sections/NavbarSection";
 import FooterSection from "@/components/sections/FooterSection";
 import m1 from "@/assets/M1.png";
@@ -16,6 +19,20 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
   product: Product; idx: number; accent?: string;
 }) => {
   const img = product.image_url || FALLBACK_IMGS[idx % 2];
+  const { user, openAuthModal } = useAuth();
+  const { addToCart } = useCart();
+
+  const handleAddToCart = () => {
+    if (!user) {
+      openAuthModal();
+      return;
+    }
+    addToCart(product);
+    toast.success(`${product.name} added to cart`, {
+      description: product.price,
+      duration: 2500,
+    });
+  };
 
   return (
     <motion.div
@@ -73,10 +90,12 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.96 }}
+            onClick={handleAddToCart}
             className="font-display text-sm font-semibold px-5 py-2.5 rounded-full transition-all"
             style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
+            title={!user ? "Sign in to add to cart" : undefined}
           >
-            Add to Cart
+            {user ? "Add to Cart" : "Sign in to Buy"}
           </motion.button>
         </div>
       </div>
