@@ -19,7 +19,7 @@ const Star = ({ filled, onClick }: { filled: boolean; onClick: () => void }) => 
 const FeedbackModal = ({ open, onClose }: Props) => {
   const { user } = useAuth();
   const [rating,    setRating]    = useState(5);
-  const [name,      setName]      = useState(user?.user_metadata?.full_name ?? user?.email?.split("@")[0] ?? "");
+  const [name,      setName]      = useState(user?.full_name?.trim() || user?.email?.split("@")[0] || "");
   const [email,     setEmail]     = useState(user?.email ?? "");
   const [message,   setMessage]   = useState("");
   const [photoUrl,  setPhotoUrl]  = useState("");

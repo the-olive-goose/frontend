@@ -160,7 +160,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
     else window.location.href = "/#shop-by-category";
   };
 
-  const firstName = user?.user_metadata?.full_name?.split(" ")[0] ?? user?.email?.split("@")[0] ?? null;
+  const firstName = user?.full_name?.trim().split(" ")[0] || user?.email?.split("@")[0] || null;
 
   return (
     <div id="site-navbar" className="fixed top-0 left-0 right-0 z-50">
