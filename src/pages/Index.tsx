@@ -3,7 +3,6 @@ import { motion } from "framer-motion";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
 import logo from "@/assets/logo.jpg";
-import NavbarSection      from "@/components/sections/NavbarSection";
 import FeedbackModal      from "@/components/FeedbackModal";
 import HeroSection        from "@/components/sections/HeroSection";
 import SmellsLikeSection  from "@/components/sections/SmellsLikeSection";
@@ -74,7 +73,6 @@ const Index = () => {
   return (
     <div className="w-full">
       {/* Fixed header: announcement bar (38px) + nav (~56px) = 94px */}
-      <NavbarSection data={content.navbar} announcement={content.announcementBar} />
 
       <div style={{ marginTop: 0, paddingTop: 0 }}>
         {/* 1. Hero — full-width image, flush from top of viewport behind navbar */}
@@ -112,7 +110,7 @@ const Index = () => {
                 onClick={() => setFeedbackOpen(true)}
                 whileHover={{ scale: 1.05, y: -2 }}
                 whileTap={{ scale: 0.96 }}
-                style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(1rem,1.6vw,1.2rem)", background: "var(--color-forest-dark)", color: "var(--color-cream-text)", border: "none", borderRadius: 50, padding: "clamp(10px,1.5vw,14px) clamp(24px,3.5vw,40px)", cursor: "pointer", boxShadow: "0 8px 28px rgba(30,41,24,0.22)", display: "inline-flex", alignItems: "center", gap: 10 }}>
+                style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1rem,1.6vw,1.2rem)", background: "var(--color-forest-dark)", color: "var(--color-cream-text)", border: "none", borderRadius: 50, padding: "clamp(10px,1.5vw,14px) clamp(24px,3.5vw,40px)", cursor: "pointer", boxShadow: "0 8px 28px rgba(30,41,24,0.22)", display: "inline-flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: "1.2rem" }}>✍️</span>
                 Share Your Experience
               </motion.button>

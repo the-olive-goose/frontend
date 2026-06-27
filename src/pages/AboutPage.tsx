@@ -2,13 +2,20 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
-import NavbarSection from "@/components/sections/NavbarSection";
 import FooterSection from "@/components/sections/FooterSection";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 24 },
   whileInView: { opacity: 1, y: 0 },
   viewport: { once: true },
+  transition: { duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94], delay },
+});
+
+// Above-the-fold hero content: animate immediately on mount (not on scroll),
+// otherwise the in-view observer may never fire for content already visible.
+const fadeIn = (delay = 0) => ({
+  initial: { opacity: 0, y: 24 },
+  animate: { opacity: 1, y: 0 },
   transition: { duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94], delay },
 });
 
@@ -32,24 +39,23 @@ const AboutPage = () => {
 
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
-      <NavbarSection data={content.navbar} announcement={content.announcementBar} />
 
       {/* ── Hero ── */}
-      <div className="w-full pt-[94px]" style={{ background: "var(--color-forest-dark)" }}>
-        <div className="max-w-6xl mx-auto px-6 sm:px-12 py-20 sm:py-28 text-center">
-          <motion.p {...fadeUp(0)}
+      <div className="w-full pt-[112px]" style={{ background: "var(--color-forest-dark)" }}>
+        <div className="max-w-6xl mx-auto px-6 sm:px-12 py-16 sm:py-20 text-center">
+          <motion.p {...fadeIn(0)}
             className="font-display text-xs tracking-[0.2em] uppercase mb-5"
             style={{ color: "var(--color-gold)" }}
           >
             ✦ &nbsp; Our Story
           </motion.p>
-          <motion.h1 {...fadeUp(0.1)}
-            className="font-serif font-semibold mb-6"
-            style={{ fontSize: "clamp(2.8rem,6vw,5rem)", color: "var(--color-cream-text)", lineHeight: 1.05 }}
+          <motion.h1 {...fadeIn(0.1)}
+            className="font-display font-semibold mb-6"
+            style={{ fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05 }}
           >
             {story.headline}
           </motion.h1>
-          <motion.p {...fadeUp(0.2)}
+          <motion.p {...fadeIn(0.2)}
             className="font-sans text-base leading-relaxed max-w-xl mx-auto"
             style={{ color: "rgba(245,239,230,0.65)" }}
           >
@@ -80,7 +86,7 @@ const AboutPage = () => {
           {/* Text */}
           <div className="order-1 md:order-2 space-y-6">
             <motion.p {...fadeUp(0)}
-              className="font-display text-xs tracking-[0.18em] uppercase"
+              className="font-display text-xs tracking-[0.2em] uppercase"
               style={{ color: "var(--color-sage-light)" }}
             >
               {story.label}
@@ -145,7 +151,7 @@ const AboutPage = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-16 items-center">
           <div className="space-y-6">
             <motion.p {...fadeUp(0)}
-              className="font-display text-xs tracking-[0.18em] uppercase"
+              className="font-display text-xs tracking-[0.2em] uppercase"
               style={{ color: "var(--color-sage-light)" }}
             >
               Meet the maker

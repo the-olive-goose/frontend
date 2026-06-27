@@ -106,7 +106,7 @@ const NewArrivalsSection = () => {
               <motion.h2
                 initial={{opacity:0, scale:0.92}} whileInView={{opacity:1, scale:1}} viewport={{once:true}}
                 transition={{delay:0.12, ease:"backOut", duration:0.45}}
-                style={{fontFamily:"'Chewy',cursive", fontSize:"clamp(1.8rem,4vw,3.4rem)", color:cat.accent_color, lineHeight:0.95, marginBottom:10}}>
+                style={{fontFamily:"'Fredoka',sans-serif", fontSize:"clamp(1.8rem,4vw,3.4rem)", color:cat.accent_color, lineHeight:0.95, marginBottom:10}}>
                 {cat.name}
               </motion.h2>
 
@@ -165,7 +165,7 @@ const NewArrivalsSection = () => {
                     </div>
                   )}
                   <a href={`/shop?category=${cat.slug}`}
-                    style={{fontFamily:"'Chewy',cursive", fontSize:"clamp(0.82rem,1.2vw,0.95rem)", color:cat.accent_color, textDecoration:"none", opacity:0.8}}>
+                    style={{fontFamily:"'Fredoka',sans-serif", fontSize:"clamp(0.82rem,1.2vw,0.95rem)", color:cat.accent_color, textDecoration:"none", opacity:0.8}}>
                     Shop All →
                   </a>
                 </div>

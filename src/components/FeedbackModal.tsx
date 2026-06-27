@@ -92,7 +92,7 @@ const FeedbackModal = ({ open, onClose }: Props) => {
               {done ? (
                 <div className="text-center py-6 space-y-4">
                   <div style={{ fontSize: "3rem" }}>🕯️</div>
-                  <h2 style={{ fontFamily: "'Chewy',cursive", fontSize: "2rem", color: "#6b3520" }}>Thank you!</h2>
+                  <h2 style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "2rem", color: "#6b3520" }}>Thank you!</h2>
                   <p style={{ fontFamily: "'Permanent Marker',cursive", fontSize: "0.82rem", color: "rgba(30,20,10,0.55)", transform: "rotate(-0.8deg)" }}>
                     Your feedback lights up our day ✨
                   </p>
@@ -106,7 +106,7 @@ const FeedbackModal = ({ open, onClose }: Props) => {
                 <form onSubmit={handleSubmit} className="space-y-5">
                   {/* Heading */}
                   <div className="text-center mb-2">
-                    <h2 style={{ fontFamily: "'Chewy',cursive", fontSize: "1.9rem", color: "#6b3520", lineHeight: 1, marginBottom: 4 }}>
+                    <h2 style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "1.9rem", color: "#6b3520", lineHeight: 1, marginBottom: 4 }}>
                       Share Your Experience
                     </h2>
                     <p style={{ fontFamily: "'Permanent Marker',cursive", fontSize: "0.72rem", color: "rgba(30,20,10,0.5)", transform: "rotate(-0.8deg)" }}>

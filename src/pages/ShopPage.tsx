@@ -6,7 +6,6 @@ import { getContent, getShopCategories, type ShopCategory } from "@/lib/api";
 import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
-import NavbarSection from "@/components/sections/NavbarSection";
 import FooterSection from "@/components/sections/FooterSection";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -68,7 +67,7 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
         <div className="flex-1">
           <h3
             className="leading-tight mb-1"
-            style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(1rem,1.6vw,1.25rem)", color: accent || "var(--color-forest-dark)" }}
+            style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1rem,1.6vw,1.25rem)", color: accent || "var(--color-forest-dark)" }}
           >
             {product.name}
           </h3>
@@ -158,14 +157,13 @@ const ShopPage = () => {
 
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
-      <NavbarSection data={content.navbar} announcement={content.announcementBar} />
 
       {/* ── Hero ── */}
       <div
-        className="w-full pt-[94px]"
+        className="w-full pt-[112px]"
         style={{ background: "var(--color-forest-dark)" }}
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 py-10 sm:py-16 lg:py-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 py-10 sm:py-16 lg:py-20 text-center">
           <motion.p
             initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
             className="font-display text-xs tracking-[0.2em] uppercase mb-4"
@@ -175,15 +173,15 @@ const ShopPage = () => {
           </motion.p>
           <motion.h1
             initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-            className="font-serif font-semibold mb-4"
+            className="font-display font-semibold mb-4"
             style={{ fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05 }}
           >
             {searchTerm ? `"${searchTerm}"` : activeSlug === "all" ? "All Candles" : (activeCat?.name ?? "Shop")}
           </motion.h1>
           <motion.p
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.18 }}
-            className="font-sans text-sm max-w-md leading-relaxed"
-            style={{ color: "rgba(245,239,230,0.65)" }}
+            className="font-sans text-base max-w-md mx-auto leading-relaxed"
+            style={{ color: "rgba(245,239,230,0.7)" }}
           >
             {activeSlug === "all"
               ? "Handpoured small-batch candles crafted for every mood, moment and era."

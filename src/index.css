@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=More+Sugar&family=Chewy&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&family=Inter:wght@300;400;500;600&family=Pacifico&family=Permanent+Marker&family=Fredoka:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Permanent+Marker&family=Fredoka:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -64,10 +64,12 @@
 
     /* ── Typography Families ────────────────────────────────────── */
 
-    --font-display:  'More Sugar', 'Chewy', cursive;
+    /* Unified type system: Fredoka for all headings/display, Inter for body,
+       Permanent Marker for small handwritten accents only. */
+    --font-display:  'Fredoka', 'Inter', sans-serif;
     --font-sketch:   'Permanent Marker', cursive;
     --font-rounded:  'Fredoka', 'Inter', sans-serif;
-    --font-serif:    'Cormorant Garamond', Georgia, serif;
+    --font-serif:    'Fredoka', 'Inter', sans-serif;
     --font-sans:     'Inter', system-ui, sans-serif;
 
     /* ── Type Scale ─────────────────────────────────────────────── */

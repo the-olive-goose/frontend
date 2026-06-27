@@ -115,6 +115,16 @@ const NavbarSection = ({ data, announcement }: Props) => {
   const navigate   = useNavigate();
   const location   = useLocation();
 
+  // Which nav link matches the current page. Route hrefs match by path; hash/anchor
+  // links (e.g. Home → "#shop-by-category") belong to the homepage.
+  const isLinkActive = (href: string) => {
+    if (href.startsWith("/")) {
+      return href === "/" ? location.pathname === "/" : location.pathname.startsWith(href);
+    }
+    if (href.startsWith("#")) return location.pathname === "/";
+    return false;
+  };
+
   useEffect(() => {
     getShopCategories().then(cats => setCategories(cats)).catch(() => {});
     getContent<{ items: Product[] }>("products", DEFAULT_CONTENT.products)
@@ -307,19 +317,19 @@ const NavbarSection = ({ data, announcement }: Props) => {
 
         {/* ── Row 2: Nav links (desktop) — centered ── */}
         <div className="hidden sm:block border-t" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-1.5 flex items-center justify-center gap-6">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2 flex items-center justify-center gap-1.5">
             {links.map((link, i) => {
+              const active = isShopLink(link.href) ? location.pathname.startsWith("/shop") : isLinkActive(link.href);
               if (isShopLink(link.href)) {
                 return (
                   <div key={`shop-${i}`} className="relative" onMouseEnter={openShop} onMouseLeave={closeShop}>
                     <a href="/shop"
-                      className="flex items-center gap-1.5 font-display text-sm transition-all hover:opacity-80 relative group py-0.5"
-                      style={{ color: "var(--color-white)", letterSpacing: "var(--tracking-nav)" }}>
+                      className={`flex items-center gap-1.5 font-display text-[15px] px-4 py-2 rounded-full transition-all group ${active ? "font-semibold" : "hover:bg-white/10"}`}
+                      style={{ color: active ? "var(--color-forest-dark)" : "rgba(255,255,255,0.85)", background: active ? "var(--color-gold)" : "transparent", letterSpacing: "var(--tracking-nav)" }}>
                       {link.label}
-                      <span className="flex items-center gap-[3px] opacity-70 group-hover:opacity-100 transition-opacity" style={{ transform: "translateY(1px)" }}>
-                        {[0,1,2].map(d => <span key={d} className="block rounded-full" style={{ width: 3, height: 3, background: "var(--color-white)" }} />)}
+                      <span className="flex items-center gap-[3px] opacity-80 group-hover:opacity-100 transition-opacity" style={{ transform: "translateY(1px)" }}>
+                        {[0,1,2].map(d => <span key={d} className="block rounded-full" style={{ width: 3, height: 3, background: active ? "var(--color-forest-dark)" : "var(--color-white)" }} />)}
                       </span>
-                      <span className="absolute -bottom-0.5 left-0 w-0 h-px transition-all duration-300 group-hover:w-full" style={{ background: "var(--color-white)" }} />
                     </a>
                     <AnimatePresence>
                       {shopOpen && <ShopDropdown categories={categories} onClose={() => setShopOpen(false)} />}
@@ -331,10 +341,9 @@ const NavbarSection = ({ data, announcement }: Props) => {
                 <a key={`${link.label}-${i}`}
                   href={link.href === "/" ? "/#shop-by-category" : link.href}
                   onClick={link.href === "/" ? scrollToScrapbook : undefined}
-                  className="font-display text-sm transition-all hover:opacity-70 relative group py-0.5"
-                  style={{ color: "var(--color-white)", letterSpacing: "var(--tracking-nav)" }}>
+                  className={`font-display text-[15px] px-4 py-2 rounded-full transition-all whitespace-nowrap ${active ? "font-semibold" : "hover:bg-white/10"}`}
+                  style={{ color: active ? "var(--color-forest-dark)" : "rgba(255,255,255,0.85)", background: active ? "var(--color-gold)" : "transparent", letterSpacing: "var(--tracking-nav)" }}>
                   {link.label}
-                  <span className="absolute -bottom-0.5 left-0 w-0 h-px transition-all duration-300 group-hover:w-full" style={{ background: "var(--color-white)" }} />
                 </a>
               );
             })}
@@ -365,13 +374,14 @@ const NavbarSection = ({ data, announcement }: Props) => {
                 </form>
 
                 {links.map((link, i) => {
+                  const active = isShopLink(link.href) ? location.pathname.startsWith("/shop") : isLinkActive(link.href);
                   if (isShopLink(link.href)) {
                     return (
                       <div key={`m-shop-${i}`}>
                         <div className="flex items-center justify-between py-2">
                           <a href="/shop" onClick={() => setMobileOpen(false)}
-                            className="font-display text-base transition-opacity hover:opacity-70"
-                            style={{ color: "var(--color-white)" }}>{link.label}</a>
+                            className={`font-display text-base rounded-lg transition-all ${active ? "font-semibold px-3 py-1.5" : "hover:opacity-70"}`}
+                            style={{ color: active ? "var(--color-forest-dark)" : "var(--color-white)", background: active ? "var(--color-gold)" : "transparent" }}>{link.label}</a>
                           <button onClick={() => setMobileShopOpen(o => !o)}
                             className="font-sans text-xs px-2 py-1 rounded opacity-70 hover:opacity-100"
                             style={{ color: "var(--color-white)", border: "1px solid rgba(255,255,255,0.3)" }}>
@@ -406,8 +416,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
                     <a key={`m-${link.label}-${i}`}
                       href={link.href === "/" ? "/#shop-by-category" : link.href}
                       onClick={(e) => { setMobileOpen(false); if (link.href === "/") scrollToScrapbook(e); }}
-                      className="font-display block py-2 text-base transition-opacity hover:opacity-70"
-                      style={{ color: "var(--color-white)" }}>
+                      className={`font-display block text-base rounded-lg transition-all ${active ? "font-semibold px-3 py-2" : "py-2 hover:opacity-70"}`}
+                      style={{ color: active ? "var(--color-forest-dark)" : "var(--color-white)", background: active ? "var(--color-gold)" : "transparent" }}>
                       {link.label}
                     </a>
                   );

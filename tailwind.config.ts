@@ -14,9 +14,9 @@ export default {
     },
     extend: {
       fontFamily: {
-        serif:    ['Cormorant Garamond', 'Georgia', 'serif'],
+        serif:    ['Fredoka', 'Inter', 'sans-serif'],
         sans:     ['Inter', 'system-ui', 'sans-serif'],
-        display:  ['More Sugar', 'Chewy', 'cursive'],
+        display:  ['Fredoka', 'Inter', 'sans-serif'],
         sketch:   ['Permanent Marker', 'cursive'],
         rounded:  ['Fredoka', 'Inter', 'sans-serif'],
       },

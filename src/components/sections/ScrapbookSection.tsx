@@ -74,8 +74,8 @@ export const CandleCard = ({ product, accent, isDark, idx }: {
       </div>
 
       <div style={{ padding: "clamp(8px,1.2vw,12px) clamp(10px,1.4vw,14px) clamp(10px,1.4vw,14px)", flex: 1, display: "flex", flexDirection: "column" }}>
-        {/* Name — Chewy, same as ShopPage uses font-display (which is Chewy) */}
-        <p style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(0.92rem,1.45vw,1.1rem)", color: accent, lineHeight: 1.15, marginBottom: 4 }}>
+        {/* Name — Fredoka, the unified heading/display font */}
+        <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.92rem,1.45vw,1.1rem)", color: accent, lineHeight: 1.15, marginBottom: 4 }}>
           {product.name}
         </p>
 
@@ -115,7 +115,7 @@ export const PlaceholderCard = ({ accent, isDark, label }: { accent: string; isD
 
 // ── Cover page ─────────────────────────────────────────────────────────────────
 
-const CoverPage = ({ totalCategories }: { totalCategories: number }) => (
+const CoverPage = ({ totalCategories, onFlip }: { totalCategories: number; onFlip?: () => void }) => (
   <div style={{ width:"100%", height:"100%", background:"#f0e8d6", position:"relative", overflow:"hidden", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
     {/* Paper grain */}
     <div style={{ position:"absolute", inset:0, backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E")`, pointerEvents:"none" }} />
@@ -134,7 +134,7 @@ const CoverPage = ({ totalCategories }: { totalCategories: number }) => (
     <div style={{position:"relative",zIndex:10,textAlign:"center",padding:"0 8%"}}>
       {/* Heading — identical font/size to New Arrivals cat.name */}
       <motion.h2 initial={{opacity:0,scale:0.92}} animate={{opacity:1,scale:1}} transition={{delay:0.18,ease:"backOut",duration:0.45}}
-        style={{fontFamily:"'Chewy',cursive",fontSize:"clamp(1.8rem,4vw,3.4rem)",color:"#6b3520",lineHeight:0.95,marginBottom:10}}>
+        style={{fontFamily:"'Fredoka',sans-serif",fontSize:"clamp(1.8rem,4vw,3.4rem)",color:"#6b3520",lineHeight:0.95,marginBottom:10}}>
         Shop By Category
       </motion.h2>
 
@@ -163,8 +163,9 @@ const CoverPage = ({ totalCategories }: { totalCategories: number }) => (
       </motion.div>
 
       {/* CTA — styled like New Arrivals "Shop All →" */}
-      <motion.button initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{delay:0.38,ease:"backOut"}}
-        style={{fontFamily:"'Chewy',cursive",fontSize:"clamp(0.88rem,1.4vw,1.08rem)",background:"#6b3520",color:"#fff",borderRadius:50,padding:"8px 22px",border:"none",cursor:"pointer",boxShadow:"0 4px 16px rgba(107,53,32,0.44)"}}>
+      <motion.button onClick={onFlip} whileHover={{scale:1.06}} whileTap={{scale:0.95}}
+        initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{delay:0.38,ease:"backOut"}}
+        style={{fontFamily:"'Fredoka',sans-serif",fontSize:"clamp(0.88rem,1.4vw,1.08rem)",background:"#6b3520",color:"#fff",borderRadius:50,padding:"8px 22px",border:"none",cursor:"pointer",boxShadow:"0 4px 16px rgba(107,53,32,0.44)"}}>
         flip the page →
       </motion.button>
     </div>
@@ -227,7 +228,7 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
         {/* Name + tags row on mobile */}
         <div style={{ display:"flex", flexDirection: isMobile ? "column" : "column", flex: isMobile ? 1 : undefined, minWidth:0 }}>
           <motion.h2 initial={{ x:-20, opacity:0 }} animate={{ x:0, opacity:1 }} transition={{ delay:0.1, duration:0.45 }}
-            style={{ fontFamily:"'Chewy',cursive", fontSize: isMobile ? "1.1rem" : "clamp(1.2rem,2.4vw,2.2rem)", lineHeight:1, color:cat.accent_color, marginBottom: isMobile ? 4 : 10 }}>
+            style={{ fontFamily:"'Fredoka',sans-serif", fontSize: isMobile ? "1.1rem" : "clamp(1.2rem,2.4vw,2.2rem)", lineHeight:1, color:cat.accent_color, marginBottom: isMobile ? 4 : 10 }}>
             {cat.name}
           </motion.h2>
           {!isMobile && <>
@@ -256,7 +257,7 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
         )}
         <motion.a href={`/shop?category=${cat.slug}`} initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.36, ease:"backOut" }}
           whileHover={{ scale:1.06, transition:{ duration:0.18 } }} whileTap={{ scale:0.95 }}
-          style={{ display:"inline-flex", alignItems:"center", gap:6, fontFamily:"'Chewy',cursive", fontSize: isMobile ? "0.82rem" : "clamp(0.88rem,1.4vw,1.08rem)", background:cat.accent_color, color: isDark ? "#0a0a18" : "#fff", borderRadius:50, padding: isMobile ? "6px 14px" : "9px 20px", alignSelf:"flex-start", textDecoration:"none", boxShadow:`0 4px 16px ${cat.accent_color}44`, transform: isMobile ? "none" : "rotate(-2deg)", transformOrigin:"left center", whiteSpace:"nowrap", flexShrink:0 }}>
+          style={{ display:"inline-flex", alignItems:"center", gap:6, fontFamily:"'Fredoka',sans-serif", fontSize: isMobile ? "0.82rem" : "clamp(0.88rem,1.4vw,1.08rem)", background:cat.accent_color, color: isDark ? "#0a0a18" : "#fff", borderRadius:50, padding: isMobile ? "6px 14px" : "9px 20px", alignSelf:"flex-start", textDecoration:"none", boxShadow:`0 4px 16px ${cat.accent_color}44`, transform: isMobile ? "none" : "rotate(-2deg)", transformOrigin:"left center", whiteSpace:"nowrap", flexShrink:0 }}>
           Shop All →
         </motion.a>
       </div>
@@ -341,7 +342,9 @@ const ScrapbookSection = () => {
   const [flipEndAngle, setFlipEndAngle] = useState(-180);
   const [flipOrigin, setFlipOrigin]     = useState("0% 50%");
   const [candleOffsets, setCandleOffsets] = useState<Record<number, number>>({});
-  const [paused, setPaused]             = useState(false);
+  // Auto-flip runs until the visitor manually navigates; then it stops for the
+  // rest of the session (reset on page refresh).
+  const [autoPlay, setAutoPlay] = useState(true);
   const flipLock = useRef(false);
 
   const totalPages = categories.length + 1;
@@ -382,6 +385,11 @@ const ScrapbookSection = () => {
   const flipNext = useCallback(() => flipTo((currentPage + 1) % totalPages, 1), [currentPage, totalPages, flipTo]);
   const flipPrev = useCallback(() => flipTo((currentPage - 1 + totalPages) % totalPages, -1), [currentPage, totalPages, flipTo]);
 
+  // Manual navigation — permanently stops auto-flip for this session.
+  const manualNext = useCallback(() => { setAutoPlay(false); flipNext(); }, [flipNext]);
+  const manualPrev = useCallback(() => { setAutoPlay(false); flipPrev(); }, [flipPrev]);
+  const manualTo   = useCallback((t: number, dir: 1 | -1) => { setAutoPlay(false); flipTo(t, dir); }, [flipTo]);
+
   const onFlipDone = useCallback(() => {
     if (!flipLock.current || incomingPage === null) return;
     setCurrentPage(incomingPage);
@@ -390,14 +398,16 @@ const ScrapbookSection = () => {
     flipLock.current = false;
   }, [incomingPage]);
 
+  // Auto-advance the book on its own, until the visitor takes manual control.
+  // The timer resets after every auto-flip (flipNext changes with currentPage).
   useEffect(() => {
-    if (paused) return;
+    if (!autoPlay) return;
     const id = setInterval(flipNext, settings.autoFlipInterval);
     return () => clearInterval(id);
-  }, [paused, flipNext, settings.autoFlipInterval]);
+  }, [autoPlay, flipNext, settings.autoFlipInterval]);
 
   const renderPage = (pageIdx: number, live = false) => {
-    if (pageIdx === 0) return <CoverPage totalCategories={categories.length} />;
+    if (pageIdx === 0) return <CoverPage totalCategories={categories.length} onFlip={live ? manualNext : undefined} />;
     const cat = categories[pageIdx - 1];
     if (!cat) return null;
     const products = resolveProducts(cat);
@@ -417,13 +427,11 @@ const ScrapbookSection = () => {
     <section
       id="shop-by-category"
       style={{ background:"var(--color-cream-section)", padding:"clamp(44px,7vw,84px) 0" }}
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
     >
       {/* Book */}
       <div style={{ maxWidth:"min(96vw,1240px)", margin:"0 auto", padding:"0 clamp(14px,3.5vw,44px)", position:"relative" }}>
 
-        <motion.button onClick={flipPrev} whileHover={{ scale:1.12 }} whileTap={{ scale:0.9 }} aria-label="Previous page"
+        <motion.button onClick={manualPrev} whileHover={{ scale:1.12 }} whileTap={{ scale:0.9 }} aria-label="Previous page"
           style={{ position:"absolute", left:-4, top:"48%", transform:"translateY(-50%)", zIndex:30, background:"rgba(255,255,255,0.92)", border:"1.5px solid rgba(0,0,0,0.1)", borderRadius:"50%", width:40, height:40, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", backdropFilter:"blur(8px)", boxShadow:"0 4px 14px rgba(0,0,0,0.1)", fontSize:"1rem", color:"var(--color-forest-dark)" }}>←</motion.button>
 
         {/* Book with page-stack depth */}
@@ -442,7 +450,7 @@ const ScrapbookSection = () => {
               {/* Flipping layer */}
               <motion.div
                 animate={{ rotateY: isFlipping ? flipEndAngle : 0 }}
-                transition={isFlipping ? { duration:settings.flipDuration, ease:[0.42,0,0.28,1] } : { duration:0, type:"tween" }}
+                transition={isFlipping ? { duration:settings.flipDuration, ease:[0.65,0,0.35,1] } : { duration:0, type:"tween" }}
                 onAnimationComplete={() => { if (flipLock.current && incomingPage !== null) onFlipDone(); }}
                 style={{ position:"absolute", inset:0, zIndex:2, transformStyle:"preserve-3d", transformOrigin:flipOrigin, willChange:"transform", borderRadius:"inherit" }}
               >
@@ -466,7 +474,7 @@ const ScrapbookSection = () => {
 
             {/* Page-curl corner hint */}
             {!isFlipping && (
-              <motion.div onClick={flipNext} animate={{ opacity:[0.35,0.65,0.35] }} transition={{ repeat:Infinity, duration:2.4 }}
+              <motion.div onClick={manualNext} animate={{ opacity:[0.35,0.65,0.35] }} transition={{ repeat:Infinity, duration:2.4 }}
                 style={{ position:"absolute", bottom:10, right:12, zIndex:25, cursor:"pointer", width:26, height:26 }}>
                 <svg viewBox="0 0 26 26" fill="none"><path d="M26 26 Q17 21 21 11 Q24 3 26 0" stroke="rgba(0,0,0,0.2)" strokeWidth="1.5" fill="rgba(255,255,255,0.45)"/></svg>
               </motion.div>
@@ -474,13 +482,13 @@ const ScrapbookSection = () => {
           </div>
         </div>
 
-        <motion.button onClick={flipNext} whileHover={{ scale:1.12 }} whileTap={{ scale:0.9 }} aria-label="Next page"
+        <motion.button onClick={manualNext} whileHover={{ scale:1.12 }} whileTap={{ scale:0.9 }} aria-label="Next page"
           style={{ position:"absolute", right:-4, top:"48%", transform:"translateY(-50%)", zIndex:30, background:"rgba(255,255,255,0.92)", border:"1.5px solid rgba(0,0,0,0.1)", borderRadius:"50%", width:40, height:40, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", backdropFilter:"blur(8px)", boxShadow:"0 4px 14px rgba(0,0,0,0.1)", fontSize:"1rem", color:"var(--color-forest-dark)" }}>→</motion.button>
 
         {/* Dots */}
         <div style={{ display:"flex", justifyContent:"center", gap:6, marginTop:20 }}>
           {Array.from({ length:totalPages }).map((_, i) => (
-            <motion.button key={i} onClick={() => flipTo(i, i>currentPage ? 1 : -1)}
+            <motion.button key={i} onClick={() => manualTo(i, i>currentPage ? 1 : -1)}
               animate={{ width: i===currentPage ? 20 : 7, background: i===currentPage ? "var(--color-forest-dark)" : "rgba(30,41,24,0.2)" }}
               style={{ height:7, borderRadius:4, border:"none", cursor:"pointer", padding:0 }}
               transition={{ duration:0.28 }} aria-label={`Page ${i}`} />

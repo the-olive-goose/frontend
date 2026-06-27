@@ -5,7 +5,6 @@ import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type Product, type Bundle, type DealsContent } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
-import NavbarSection from "@/components/sections/NavbarSection";
 import FooterSection from "@/components/sections/FooterSection";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -75,13 +74,13 @@ const BundleCard = ({ bundle, allProducts, idx }: { bundle: Bundle; allProducts:
       <div style={{ position: "absolute", inset: 0, borderRadius: "inherit", backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E")`, pointerEvents: "none" }} />
 
       {/* Discount badge */}
-      <div style={{ position: "absolute", top: 16, right: -10, background: accent, color: "#fff", fontFamily: "'Chewy',cursive", fontSize: "0.95rem", padding: "4px 14px 4px 10px", borderRadius: "4px 0 0 4px", boxShadow: "2px 2px 8px rgba(0,0,0,0.2)", zIndex: 5 }}>
+      <div style={{ position: "absolute", top: 16, right: -10, background: accent, color: "#fff", fontFamily: "'Fredoka',sans-serif", fontSize: "0.95rem", padding: "4px 14px 4px 10px", borderRadius: "4px 0 0 4px", boxShadow: "2px 2px 8px rgba(0,0,0,0.2)", zIndex: 5 }}>
         {bundle.discount_type === "percentage" ? `${bundle.discount_value}% OFF` : `€${bundle.discount_value} OFF`}
       </div>
 
       {/* Header */}
       <div style={{ padding: "clamp(24px,4vw,36px) clamp(20px,3.5vw,32px) clamp(16px,2.5vw,24px)", textAlign: "center", position: "relative", zIndex: 2 }}>
-        <h3 style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(1.5rem,3vw,2.2rem)", color: accent, lineHeight: 1, marginBottom: 8 }}>
+        <h3 style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1.5rem,3vw,2.2rem)", color: accent, lineHeight: 1, marginBottom: 8 }}>
           {bundle.name}
         </h3>
         {bundle.description && (
@@ -103,10 +102,10 @@ const BundleCard = ({ bundle, allProducts, idx }: { bundle: Bundle; allProducts:
               <div style={{ aspectRatio: "3/4", borderRadius: 10, overflow: "hidden", marginBottom: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
                 <img src={img} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: "multiply" }} />
               </div>
-              <p style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(0.82rem,1.3vw,1rem)", color: accent, lineHeight: 1.1, marginBottom: 2 }}>{p.name}</p>
+              <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.82rem,1.3vw,1rem)", color: accent, lineHeight: 1.1, marginBottom: 2 }}>{p.name}</p>
               <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.72rem,1.1vw,0.88rem)", color: "rgba(30,20,10,0.55)", textDecoration: "line-through" }}>{p.price}</p>
               {i < bundleProducts.length - 1 && (
-                <span style={{ position: "absolute", top: "50%", right: -14, transform: "translateY(-50%)", fontFamily: "'Chewy',cursive", fontSize: "1.2rem", color: accent, zIndex: 3 }}>+</span>
+                <span style={{ position: "absolute", top: "50%", right: -14, transform: "translateY(-50%)", fontFamily: "'Fredoka',sans-serif", fontSize: "1.2rem", color: accent, zIndex: 3 }}>+</span>
               )}
             </div>
           );
@@ -164,22 +163,23 @@ const DealsPage = () => {
 
   return (
     <div className="min-h-screen" style={{ background: "var(--color-cream-section)" }}>
-      <NavbarSection data={content.navbar} announcement={content.announcementBar} />
 
-      <div className="pt-[94px]">
+      <div className="pt-[112px]">
         {/* Hero */}
         <div style={{ background: "var(--color-forest-dark)", padding: "clamp(40px,6vw,72px) 0" }}>
           <div className="max-w-5xl mx-auto px-6 text-center">
             <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              style={{ fontFamily: "'Permanent Marker',cursive", fontSize: "clamp(0.65rem,1vw,0.82rem)", color: "var(--color-gold)", marginBottom: 10, letterSpacing: "0.1em" }}>
+              className="font-display text-xs tracking-[0.2em] uppercase mb-3"
+              style={{ color: "var(--color-gold)" }}>
               ✦ limited time offers
             </motion.p>
             <motion.h1 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}
-              style={{ fontFamily: "'Chewy',cursive", fontSize: "clamp(2.2rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1, marginBottom: 12 }}>
+              style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 600, fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05, marginBottom: 12 }}>
               {deals.page_title}
             </motion.h1>
             <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.18 }}
-              style={{ fontFamily: "'Permanent Marker',cursive", fontSize: "clamp(0.65rem,1vw,0.82rem)", color: "rgba(245,239,230,0.6)", transform: "rotate(-0.5deg)" }}>
+              className="font-sans text-base leading-relaxed max-w-xl mx-auto"
+              style={{ color: "rgba(245,239,230,0.7)" }}>
               {deals.page_subtitle}
             </motion.p>
           </div>
@@ -189,7 +189,7 @@ const DealsPage = () => {
         <div className="max-w-5xl mx-auto" style={{ padding: "clamp(32px,5vw,72px) clamp(12px,4vw,32px)" }}>
           {activeBundles.length === 0 ? (
             <div className="text-center py-20">
-              <p style={{ fontFamily: "'Chewy',cursive", fontSize: "2rem", color: "var(--color-forest-dark)", opacity: 0.4 }}>No deals right now</p>
+              <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "2rem", color: "var(--color-forest-dark)", opacity: 0.4 }}>No deals right now</p>
               <a href="/shop" style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "1rem", color: "#6b3520" }}>Browse all candles →</a>
             </div>
           ) : (

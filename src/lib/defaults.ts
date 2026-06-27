@@ -183,10 +183,11 @@ export const DEFAULT_CONTENT: SiteContent = {
   navbar: {
     brand_name: "The Olive Goose",
     links: [
-      { label: "Home",        href: "#shop by category" },
-      { label: "Shop",        href: "/shop" },
-      { label: "Candle Care", href: "/candle-care" },
-      { label: "About",       href: "/about" },
+      { label: "Home",         href: "#shop by category" },
+      { label: "Shop",         href: "/shop" },
+      { label: "Candle Care",  href: "/candle-care" },
+      { label: "Today's Deals", href: "/deals" },
+      { label: "About",        href: "/about" },
     ],
     cta_text: "Shop Now",
     cta_href: "#collection",

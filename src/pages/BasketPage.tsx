@@ -5,7 +5,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent } from "@/lib/defaults";
-import NavbarSection from "@/components/sections/NavbarSection";
 import FooterSection from "@/components/sections/FooterSection";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -55,10 +54,9 @@ const BasketPage = () => {
 
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
-      <NavbarSection data={DEFAULT_CONTENT.navbar} announcement={DEFAULT_CONTENT.announcementBar} />
 
       {/* Page header */}
-      <div className="pt-[94px]" style={{ background: "#f3f3f3" }}>
+      <div className="pt-[112px]" style={{ background: "#f3f3f3" }}>
         <div className="max-w-6xl mx-auto px-3 sm:px-8 pt-6 sm:pt-8 pb-3">
           <h1 className="font-serif text-3xl font-bold" style={{ color: "#0F1111" }}>
             Your Olive Goose Basket

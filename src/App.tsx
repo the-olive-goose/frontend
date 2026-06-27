@@ -7,6 +7,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { CartProvider } from "@/contexts/CartContext";
 import AuthModal from "@/components/AuthModal";
 import CookieConsent from "@/components/CookieConsent";
+import Layout from "@/components/Layout";
 import Index from "./pages/Index.tsx";
 import AdminDashboard from "./pages/AdminDashboard.tsx";
 import CandleCarePage from "./pages/CandleCarePage.tsx";
@@ -28,12 +29,15 @@ const App = () => (
         <AuthProvider>
           <CartProvider>
             <Routes>
-              <Route path="/" element={<Index />} />
-              <Route path="/shop" element={<ShopPage />} />
-              <Route path="/basket" element={<BasketPage />} />
-              <Route path="/deals" element={<DealsPage />} />
-              <Route path="/about" element={<AboutPage />} />
-              <Route path="/candle-care" element={<CandleCarePage />} />
+              {/* Public pages share one persistent navbar via Layout */}
+              <Route element={<Layout />}>
+                <Route path="/" element={<Index />} />
+                <Route path="/shop" element={<ShopPage />} />
+                <Route path="/basket" element={<BasketPage />} />
+                <Route path="/deals" element={<DealsPage />} />
+                <Route path="/about" element={<AboutPage />} />
+                <Route path="/candle-care" element={<CandleCarePage />} />
+              </Route>
               <Route path="/admin" element={<AdminDashboard />} />
               <Route path="/auth/callback" element={<AuthCallback />} />
               <Route path="*" element={<NotFound />} />
