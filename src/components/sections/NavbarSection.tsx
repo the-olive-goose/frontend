@@ -155,6 +155,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
   const openShop  = () => { if (shopTimerRef.current) clearTimeout(shopTimerRef.current); setShopOpen(true); };
   const closeShop = () => { shopTimerRef.current = setTimeout(() => setShopOpen(false), 120); };
   const isShopLink = (href: string) => href === "/shop" || href.startsWith("/shop?");
+  // Home link: a clean "/" or any legacy anchor value (e.g. "#shop by category").
+  const isHomeLink = (href: string) => href === "/" || href.startsWith("#");
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -163,11 +165,14 @@ const NavbarSection = ({ data, announcement }: Props) => {
     setMobileOpen(false);
   };
 
-  const scrollToScrapbook = (e: React.MouseEvent) => {
-    e.preventDefault();
-    const el = document.getElementById("shop-by-category");
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    else window.location.href = "/#shop-by-category";
+  // Home: when already on the homepage, smooth-scroll to the top; otherwise let
+  // the <a href="/"> navigate there normally.
+  const goHome = (e: React.MouseEvent) => {
+    setMobileOpen(false);
+    if (location.pathname === "/") {
+      e.preventDefault();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   };
 
   const firstName = user?.full_name?.trim().split(" ")[0] || user?.email?.split("@")[0] || null;
@@ -182,7 +187,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center gap-4">
 
           {/* Logo */}
-          <a href="/" className="shrink-0 group" onClick={location.pathname === "/" ? scrollToScrapbook : undefined}>
+          <a href="/" className="shrink-0 group" onClick={goHome}>
             <img src={logo} alt="The Olive Goose"
               className="transition-transform group-hover:scale-105 duration-300"
               style={{ height: 40, width: "auto", objectFit: "contain" }} />
@@ -339,8 +344,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
               }
               return (
                 <a key={`${link.label}-${i}`}
-                  href={link.href === "/" ? "/#shop-by-category" : link.href}
-                  onClick={link.href === "/" ? scrollToScrapbook : undefined}
+                  href={isHomeLink(link.href) ? "/" : link.href}
+                  onClick={isHomeLink(link.href) ? goHome : undefined}
                   className={`font-display text-[15px] px-4 py-2 rounded-full transition-all whitespace-nowrap ${active ? "font-semibold" : "hover:bg-white/10"}`}
                   style={{ color: active ? "var(--color-forest-dark)" : "rgba(255,255,255,0.85)", background: active ? "var(--color-gold)" : "transparent", letterSpacing: "var(--tracking-nav)" }}>
                   {link.label}
@@ -414,8 +419,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
                   }
                   return (
                     <a key={`m-${link.label}-${i}`}
-                      href={link.href === "/" ? "/#shop-by-category" : link.href}
-                      onClick={(e) => { setMobileOpen(false); if (link.href === "/") scrollToScrapbook(e); }}
+                      href={isHomeLink(link.href) ? "/" : link.href}
+                      onClick={(e) => { if (isHomeLink(link.href)) goHome(e); else setMobileOpen(false); }}
                       className={`font-display block text-base rounded-lg transition-all ${active ? "font-semibold px-3 py-2" : "py-2 hover:opacity-70"}`}
                       style={{ color: active ? "var(--color-forest-dark)" : "var(--color-white)", background: active ? "var(--color-gold)" : "transparent" }}>
                       {link.label}

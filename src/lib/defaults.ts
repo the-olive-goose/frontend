@@ -183,7 +183,7 @@ export const DEFAULT_CONTENT: SiteContent = {
   navbar: {
     brand_name: "The Olive Goose",
     links: [
-      { label: "Home",         href: "#shop by category" },
+      { label: "Home",         href: "/" },
       { label: "Shop",         href: "/shop" },
       { label: "Candle Care",  href: "/candle-care" },
       { label: "Today's Deals", href: "/deals" },
