@@ -8,10 +8,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
+import { sendOtpEmail } from './email.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+// Railway terminates TLS at a proxy — trust it so rate limiting sees real client IPs.
+app.set('trust proxy', 1);
 
 // ── Video upload (multer) ──────────────────────────────────────────────────────
 const uploadDir = path.join(__dirname, 'uploads');
@@ -77,6 +81,39 @@ const JWT_SECRET   = process.env.JWT_SECRET   || 'changeme-use-a-real-secret-in-
 const FRONTEND_URL = process.env.FRONTEND_URL  || 'http://localhost:8080';
 const BACKEND_URL  = process.env.BACKEND_URL   || 'http://localhost:3001';
 
+const BCRYPT_ROUNDS = 12;
+
+// ── Rate limiters ───────────────────────────────────────────────────────────────
+// General limiter for auth endpoints; a tighter one for code-sending endpoints.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
+});
+const otpSendLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many codes requested. Please wait a few minutes and try again.' },
+});
+
+// ── Validation helpers ──────────────────────────────────────────────────────────
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Returns an error string if invalid, or null if the password is acceptable.
+const validatePassword = (pw) => {
+  if (typeof pw !== 'string' || pw.length < 8)
+    return 'Password must be at least 8 characters long.';
+  if (!/[a-zA-Z]/.test(pw) || !/[0-9]/.test(pw))
+    return 'Password must include at least one letter and one number.';
+  return null;
+};
+
+const sixDigitCode = () => Math.floor(100000 + Math.random() * 900000).toString();
+
 // ── Admin auth middleware ──────────────────────────────────────────────────────
 const requireAuth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
@@ -107,7 +144,7 @@ const requireUserAuth = (req, res, next) => {
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 
 // ── Admin login ────────────────────────────────────────────────────────────────
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   const adminEmail        = process.env.ADMIN_EMAIL;
   const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH;
@@ -129,21 +166,96 @@ app.post('/api/auth/login', async (req, res) => {
 // USER AUTH
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── POST /api/user/register ────────────────────────────────────────────────────
-app.post('/api/user/register', async (req, res) => {
+// ── POST /api/user/register/start ────────────────────────────────────────────
+// Validates the signup, emails a 6-digit code, and stashes the pending account
+// (with already-hashed password) in email_otps. No users row is created until
+// the code is verified, so unverified accounts never exist.
+app.post('/api/user/register/start', otpSendLimiter, async (req, res) => {
   const { email, password, full_name = '' } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ error: 'Email and password required' });
+  const normEmail = (email || '').toLowerCase().trim();
+
+  if (!EMAIL_RE.test(normEmail))
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
+  const pwError = validatePassword(password);
+  if (pwError) return res.status(400).json({ error: pwError });
 
   try {
-    const hash    = await bcrypt.hash(password, 10);
-    const { rows } = await pool.query(
-      `INSERT INTO users (email, password_hash, full_name, provider)
-       VALUES ($1, $2, $3, 'email')
-       RETURNING id, email, full_name, provider, avatar_url`,
-      [email.toLowerCase().trim(), hash, full_name.trim()]
+    const { rows: existing } = await pool.query('SELECT 1 FROM users WHERE email = $1', [normEmail]);
+    if (existing.length) return res.status(409).json({ error: 'Email already in use' });
+
+    // 60s resend cooldown
+    const { rows: prior } = await pool.query(
+      `SELECT created_at FROM email_otps WHERE email = $1 AND purpose = 'signup'`,
+      [normEmail]
     );
-    const user  = rows[0];
+    if (prior.length && (Date.now() - new Date(prior[0].created_at).getTime()) < 60 * 1000)
+      return res.status(429).json({ error: 'Please wait a moment before requesting another code.' });
+
+    const code         = sixDigitCode();
+    const otpHash      = await bcrypt.hash(code, 8);
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    const expiresAt    = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    const payload      = { full_name: full_name.trim(), password_hash: passwordHash };
+
+    await pool.query(
+      `INSERT INTO email_otps (email, purpose, otp_hash, payload, attempts, expires_at, created_at)
+       VALUES ($1, 'signup', $2, $3, 0, $4, NOW())
+       ON CONFLICT (email, purpose)
+       DO UPDATE SET otp_hash = $2, payload = $3, attempts = 0, expires_at = $4, created_at = NOW()`,
+      [normEmail, otpHash, JSON.stringify(payload), expiresAt]
+    );
+
+    const { delivered } = await sendOtpEmail(normEmail, code);
+    // In dev mode (no email provider) return the code so the flow stays testable.
+    res.json(delivered ? { success: true } : { success: true, dev_otp: code });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/user/register/verify ───────────────────────────────────────────
+// Confirms the code and creates the verified account.
+app.post('/api/user/register/verify', authLimiter, async (req, res) => {
+  const { email, otp } = req.body;
+  const normEmail = (email || '').toLowerCase().trim();
+  if (!normEmail || !otp) return res.status(400).json({ error: 'Email and code required' });
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM email_otps WHERE email = $1 AND purpose = 'signup'`,
+      [normEmail]
+    );
+    if (!rows.length) return res.status(400).json({ error: 'No pending signup found. Please start again.' });
+
+    const record = rows[0];
+    if (new Date() > new Date(record.expires_at)) {
+      await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = 'signup'`, [normEmail]);
+      return res.status(400).json({ error: 'Code expired. Please request a new one.' });
+    }
+    if (record.attempts >= 5) {
+      await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = 'signup'`, [normEmail]);
+      return res.status(429).json({ error: 'Too many incorrect attempts. Please start again.' });
+    }
+
+    const valid = await bcrypt.compare(String(otp).trim(), record.otp_hash);
+    if (!valid) {
+      await pool.query(
+        `UPDATE email_otps SET attempts = attempts + 1 WHERE email = $1 AND purpose = 'signup'`,
+        [normEmail]
+      );
+      return res.status(400).json({ error: 'Invalid code. Please try again.' });
+    }
+
+    const { full_name = '', password_hash } = record.payload || {};
+    const { rows: userRows } = await pool.query(
+      `INSERT INTO users (email, password_hash, full_name, provider, email_verified)
+       VALUES ($1, $2, $3, 'email', true)
+       RETURNING id, email, full_name, provider, avatar_url`,
+      [normEmail, password_hash, full_name]
+    );
+    await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = 'signup'`, [normEmail]);
+
+    const user  = userRows[0];
     const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
     res.status(201).json({ token, user });
   } catch (err) {
@@ -153,7 +265,7 @@ app.post('/api/user/register', async (req, res) => {
 });
 
 // ── POST /api/user/login ───────────────────────────────────────────────────────
-app.post('/api/user/login', async (req, res) => {
+app.post('/api/user/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
     return res.status(400).json({ error: 'Email and password required' });
@@ -316,7 +428,7 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
 // PHONE OTP
 // ══════════════════════════════════════════════════════════════════════════════
 
-app.post('/api/auth/phone/send-otp', async (req, res) => {
+app.post('/api/auth/phone/send-otp', otpSendLimiter, async (req, res) => {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: 'Phone number required' });
 
@@ -350,7 +462,7 @@ app.post('/api/auth/phone/send-otp', async (req, res) => {
   }
 });
 
-app.post('/api/auth/phone/verify-otp', async (req, res) => {
+app.post('/api/auth/phone/verify-otp', authLimiter, async (req, res) => {
   const { phone, otp } = req.body;
   if (!phone || !otp) return res.status(400).json({ error: 'Phone and OTP required' });
 
@@ -757,6 +869,21 @@ async function initDb() {
       phone      TEXT PRIMARY KEY,
       otp        TEXT        NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL
+    );
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false;
+    -- Backfill existing accounts as verified so they aren't affected by the new flow.
+    UPDATE users SET email_verified = true WHERE email_verified = false;
+
+    CREATE TABLE IF NOT EXISTS email_otps (
+      email      TEXT        NOT NULL,
+      purpose    TEXT        NOT NULL DEFAULT 'signup',
+      otp_hash   TEXT        NOT NULL,
+      payload    JSONB       DEFAULT '{}',
+      attempts   INT         NOT NULL DEFAULT 0,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (email, purpose)
     );
 
     CREATE TABLE IF NOT EXISTS user_carts (

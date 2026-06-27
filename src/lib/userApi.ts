@@ -1,4 +1,5 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Same-origin in production (Railway serves SPA + API together); separate port in dev.
+const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
 const TOKEN_KEY = 'og_user_token';
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
@@ -19,14 +20,28 @@ export interface AppUser {
   provider: string;
 }
 
-export const userRegister = async (email: string, password: string, full_name: string) => {
-  const res = await fetch(`${API_URL}/api/user/register`, {
+// Step 1 of signup: validate + email a verification code. Returns dev_otp only
+// when the backend has no email provider configured (dev mode).
+export const registerStart = async (email: string, password: string, full_name: string) => {
+  const res = await fetch(`${API_URL}/api/user/register/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password, full_name }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Registration failed');
+  if (!res.ok) throw new Error(data.error || 'Could not start sign up');
+  return data as { success: true; dev_otp?: string };
+};
+
+// Step 2 of signup: confirm the code and create the verified account.
+export const registerVerify = async (email: string, otp: string) => {
+  const res = await fetch(`${API_URL}/api/user/register/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, otp }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Verification failed');
   return data as { token: string; user: AppUser };
 };
 

@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import {
   getToken, setToken, clearToken,
-  userLogin, userRegister, userMe, sendOtp, verifyOtp as apiVerifyOtp,
+  userLogin, registerStart, registerVerify, userMe, sendOtp, verifyOtp as apiVerifyOtp,
   googleOAuthUrl, facebookOAuthUrl,
   type AppUser,
 } from "@/lib/userApi";
@@ -10,7 +10,8 @@ interface AuthContextType {
   user: AppUser | null;
   loading: boolean;
   signInWithEmail: (email: string, password: string) => Promise<void>;
-  signUpWithEmail: (email: string, password: string, fullName: string) => Promise<void>;
+  startSignup: (email: string, password: string, fullName: string) => Promise<{ dev_otp?: string }>;
+  verifySignup: (email: string, otp: string) => Promise<void>;
   signInWithGoogle: () => void;
   signInWithFacebook: () => void;
   signInWithPhone: (phone: string) => Promise<{ dev_otp?: string }>;
@@ -52,8 +53,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setUser(user);
   };
 
-  const signUpWithEmail = async (email: string, password: string, fullName: string) => {
-    const { token, user } = await userRegister(email, password, fullName);
+  // Two-step signup: request a code, then verify it to create the account.
+  const startSignup = async (email: string, password: string, fullName: string) => {
+    return registerStart(email, password, fullName);
+  };
+
+  const verifySignup = async (email: string, otp: string) => {
+    const { token, user } = await registerVerify(email, otp);
     setToken(token);
     setUser(user);
   };
@@ -80,7 +86,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   return (
     <AuthContext.Provider value={{
       user, loading,
-      signInWithEmail, signUpWithEmail,
+      signInWithEmail, startSignup, verifySignup,
       signInWithGoogle, signInWithFacebook,
       signInWithPhone, verifyOtp,
       signOut, loginWithToken,

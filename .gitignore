@@ -44,3 +44,10 @@ AGENTS.md
 GEMINI.md
 backend/package-lock.json
 backend/uploads/
+# Added by code-review-graph
+.code-review-graph/
+
+# Local tooling / virtualenvs
+.venv/
+.gemini/
+.qoder/

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 
-type View = "signin" | "signup";
+type View = "signin" | "signup" | "verify";
 
 
 // ── Shared input ───────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ const GoogleIcon = () => (
 // ── Main Modal ─────────────────────────────────────────────────────────────────
 
 const AuthModal = () => {
-  const { showAuthModal, closeAuthModal, signInWithGoogle, signInWithEmail, signUpWithEmail } = useAuth();
+  const { showAuthModal, closeAuthModal, signInWithGoogle, signInWithEmail, startSignup, verifySignup } = useAuth();
 
   const [view,     setView]     = useState<View>("signin");
   const [loading,  setLoading]  = useState(false);
@@ -102,6 +102,9 @@ const AuthModal = () => {
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [fullName, setFullName] = useState("");
+  const [otp,      setOtp]      = useState("");
+  const [devOtp,   setDevOtp]   = useState("");   // shown only in dev mode (no email provider)
+  const [resendIn, setResendIn] = useState(0);    // seconds left on the resend cooldown
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -109,11 +112,27 @@ const AuthModal = () => {
       setTimeout(() => {
         setView("signin"); setError("");
         setEmail(""); setPassword(""); setFullName(""); setShowPass(false);
+        setOtp(""); setDevOtp(""); setResendIn(0);
       }, 300);
     }
   }, [showAuthModal]);
 
+  // Resend cooldown ticker
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn(s => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendIn]);
+
   const clear = () => setError("");
+
+  // Send (or resend) the signup verification code, then move to the verify view.
+  const sendSignupCode = async () => {
+    const { dev_otp } = await startSignup(email, password, fullName);
+    setDevOtp(dev_otp ?? "");
+    setResendIn(60);
+    setView("verify");
+  };
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault(); clear();
@@ -125,11 +144,32 @@ const AuthModal = () => {
         closeAuthModal();
       } else {
         if (!fullName.trim()) { setError("Please enter your name."); setLoading(false); return; }
-        await signUpWithEmail(email, password, fullName);
-        closeAuthModal();
+        await sendSignupCode();
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally { setLoading(false); }
+  };
+
+  const handleVerifySubmit = async (e: React.FormEvent) => {
+    e.preventDefault(); clear();
+    if (otp.trim().length !== 6) { setError("Enter the 6-digit code from your email."); return; }
+    setLoading(true);
+    try {
+      await verifySignup(email, otp.trim());
+      closeAuthModal();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Verification failed.");
+    } finally { setLoading(false); }
+  };
+
+  const handleResend = async () => {
+    if (resendIn > 0) return;
+    clear(); setLoading(true);
+    try {
+      await sendSignupCode();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not resend the code.");
     } finally { setLoading(false); }
   };
 
@@ -216,9 +256,12 @@ const AuthModal = () => {
                       <TextInput type="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" />
                     </Field>
                     <Field label="Password">
-                      <TextInput type={showPass ? "text" : "password"} placeholder="At least 6 characters" value={password}
+                      <TextInput type={showPass ? "text" : "password"} placeholder="At least 8 characters" value={password}
                         onChange={e => setPassword(e.target.value)} autoComplete="new-password"
                         showToggle show={showPass} onToggle={() => setShowPass(s => !s)} />
+                      <p className="font-sans text-xs mt-1" style={{ color: "#888" }}>
+                        At least 8 characters, with a letter and a number.
+                      </p>
                     </Field>
                     <PrimaryBtn type="submit" loading={loading}>Create your account</PrimaryBtn>
                   </form>
@@ -233,6 +276,48 @@ const AuthModal = () => {
                       Sign in
                     </button>
                   </p>
+                </>
+              )}
+
+              {/* ── Verify email view ── */}
+              {view === "verify" && (
+                <>
+                  <h1 className="font-sans text-2xl font-bold mb-0.5" style={{ color: "#0F1111" }}>Verify your email</h1>
+                  <p className="font-sans text-sm mb-5" style={{ color: "#555" }}>
+                    We sent a 6-digit code to <span className="font-semibold" style={{ color: "#0F1111" }}>{email}</span>.
+                  </p>
+
+                  {error && <div className="mb-4 px-3 py-2.5 rounded font-sans text-sm" style={{ background: "#fff3cd", border: "1px solid #e77600", color: "#111" }}>{error}</div>}
+
+                  {devOtp && (
+                    <div className="mb-4 px-3 py-2.5 rounded font-sans text-sm" style={{ background: "#eef6ee", border: "1px solid #8bbf8b", color: "#1e2918" }}>
+                      Dev mode (no email provider configured): your code is <span className="font-bold tracking-widest">{devOtp}</span>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleVerifySubmit} className="space-y-4">
+                    <Field label="Verification code">
+                      <TextInput
+                        type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                        placeholder="123456" value={otp}
+                        onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        style={{ letterSpacing: "0.4em", textAlign: "center", fontSize: 18 }}
+                      />
+                    </Field>
+                    <PrimaryBtn type="submit" loading={loading}>Verify &amp; create account</PrimaryBtn>
+                  </form>
+
+                  <div className="flex items-center justify-between mt-4">
+                    <button onClick={() => { clear(); setOtp(""); setView("signup"); }}
+                      className="font-sans text-sm hover:underline" style={{ color: "#C7511F" }}>
+                      ← Change email
+                    </button>
+                    <button onClick={handleResend} disabled={resendIn > 0 || loading}
+                      className="font-sans text-sm hover:underline disabled:opacity-50 disabled:no-underline"
+                      style={{ color: resendIn > 0 ? "#888" : "#C7511F" }}>
+                      {resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}
+                    </button>
+                  </div>
                 </>
               )}
 

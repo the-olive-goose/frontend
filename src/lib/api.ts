@@ -1,4 +1,7 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// In dev the backend runs on a separate port; in production the same Railway
+// service serves both the SPA and the API, so use a same-origin relative URL.
+// VITE_API_URL can override either (e.g. split frontend/backend deployments).
+const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
 
 // ── Token helpers ──────────────────────────────────────────────────────────────
 const getToken = () => localStorage.getItem('admin_token');
