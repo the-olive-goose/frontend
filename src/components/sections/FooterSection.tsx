@@ -60,26 +60,6 @@ const PaymentIcons = () => (
         <text x="23" y="20" textAnchor="middle" fill="white" fontSize="9" fontWeight="bold" fontFamily="Arial">AMEX</text>
       </svg>
     </PaymentBadge>
-    {/* Apple Pay */}
-    <PaymentBadge label="Apple Pay">
-      <svg viewBox="0 0 46 30" width="46" height="30">
-        <rect width="46" height="30" rx="4" fill="#000"/>
-        <text x="23" y="13" textAnchor="middle" fill="white" fontSize="7" fontFamily="Arial"></text>
-        <text x="23" y="21" textAnchor="middle" fill="white" fontSize="8" fontWeight="500" fontFamily="-apple-system,Arial">Pay</text>
-        <text x="16" y="14" textAnchor="middle" fill="white" fontSize="10" fontFamily="-apple-system,Arial"></text>
-      </svg>
-    </PaymentBadge>
-    {/* Google Pay */}
-    <PaymentBadge label="Google Pay">
-      <svg viewBox="0 0 46 30" width="46" height="30">
-        <rect width="46" height="30" rx="4" fill="#fff"/>
-        <text x="7" y="20" fill="#4285F4" fontSize="9" fontWeight="bold" fontFamily="Arial">G</text>
-        <text x="14" y="20" fill="#34A853" fontSize="9" fontWeight="bold" fontFamily="Arial">o</text>
-        <text x="20" y="20" fill="#FBBC05" fontSize="9" fontWeight="bold" fontFamily="Arial">o</text>
-        <text x="26" y="20" fill="#EA4335" fontSize="9" fontWeight="bold" fontFamily="Arial">g</text>
-        <text x="32" y="20" fill="#4285F4" fontSize="9" fontWeight="bold" fontFamily="Arial">le</text>
-      </svg>
-    </PaymentBadge>
     {/* Maestro */}
     <PaymentBadge label="Maestro">
       <svg viewBox="0 0 46 30" width="46" height="30">
@@ -96,30 +76,6 @@ const PaymentIcons = () => (
         <circle cx="18" cy="15" r="9" fill="#EB001B"/>
         <circle cx="28" cy="15" r="9" fill="#F79E1B"/>
         <path d="M23 8.5a9 9 0 0 1 0 13A9 9 0 0 1 23 8.5z" fill="#FF5F00"/>
-      </svg>
-    </PaymentBadge>
-    {/* PayPal */}
-    <PaymentBadge label="PayPal">
-      <svg viewBox="0 0 46 30" width="46" height="30">
-        <rect width="46" height="30" rx="4" fill="#fff"/>
-        <text x="8" y="20" fill="#003087" fontSize="11" fontWeight="bold" fontFamily="Arial">Pay</text>
-        <text x="26" y="20" fill="#009CDE" fontSize="11" fontWeight="bold" fontFamily="Arial">Pal</text>
-      </svg>
-    </PaymentBadge>
-    {/* Shop Pay */}
-    <PaymentBadge label="Shop Pay">
-      <svg viewBox="0 0 46 30" width="46" height="30">
-        <rect width="46" height="30" rx="4" fill="#5A31F4"/>
-        <text x="23" y="19" textAnchor="middle" fill="white" fontSize="8" fontWeight="bold" fontFamily="Arial">Shop</text>
-      </svg>
-    </PaymentBadge>
-    {/* UnionPay */}
-    <PaymentBadge label="UnionPay">
-      <svg viewBox="0 0 46 30" width="46" height="30">
-        <rect width="46" height="30" rx="4" fill="#fff"/>
-        <rect x="4" y="5" width="13" height="20" rx="2" fill="#E21836"/>
-        <rect x="18" y="5" width="10" height="20" rx="2" fill="#00447C"/>
-        <rect x="29" y="5" width="13" height="20" rx="2" fill="#007B40"/>
       </svg>
     </PaymentBadge>
     {/* Visa */}

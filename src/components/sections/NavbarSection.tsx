@@ -7,6 +7,7 @@ import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import CartDrawer from "@/components/CartDrawer";
+import AccountDropdown from "@/components/AccountDropdown";
 import logo from "@/assets/logo.jpg";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -110,6 +111,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
   const searchRef = useRef<HTMLDivElement>(null);
   const links = data.links ?? [];
   const shopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const accountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { user, signOut, openAuthModal }    = useAuth();
   const { count }                           = useCart();
   const navigate   = useNavigate();
@@ -154,6 +157,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
 
   const openShop  = () => { if (shopTimerRef.current) clearTimeout(shopTimerRef.current); setShopOpen(true); };
   const closeShop = () => { shopTimerRef.current = setTimeout(() => setShopOpen(false), 120); };
+  const openAccount  = () => { if (accountTimerRef.current) clearTimeout(accountTimerRef.current); setAccountOpen(true); };
+  const closeAccount = () => { accountTimerRef.current = setTimeout(() => setAccountOpen(false), 150); };
   const isShopLink = (href: string) => href === "/shop" || href.startsWith("/shop?");
   // Home link: a clean "/" or any legacy anchor value (e.g. "#shop by category").
   const isHomeLink = (href: string) => href === "/" || href.startsWith("#");
@@ -194,7 +199,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
           </a>
 
           {/* Search bar with live dropdown */}
-          <div ref={searchRef} className="flex-1 relative">
+          <div ref={searchRef} className="flex-1 min-w-0 relative">
             <form onSubmit={handleSearch} className="flex">
               <div className="flex w-full rounded-lg overflow-hidden" style={{ border: "2px solid var(--color-gold)" }}>
                 <input
@@ -267,25 +272,26 @@ const NavbarSection = ({ data, announcement }: Props) => {
           </div>
 
           {/* Account & Lists */}
-          <button
-            onClick={user ? undefined : openAuthModal}
-            className="hidden sm:flex flex-col items-start shrink-0 transition-opacity hover:opacity-80 group"
-            style={{ color: "var(--color-white)" }}
-          >
-            <span className="font-sans text-xs" style={{ color: "rgba(245,239,230,0.75)" }}>
-              Hello, {firstName ?? "sign in"}
-            </span>
-            <span className="font-display text-sm font-semibold leading-tight flex items-center gap-1">
-              Account &amp; Lists
-              {user && (
-                <button onClick={(e) => { e.stopPropagation(); signOut(); }}
-                  className="font-sans text-[10px] opacity-50 hover:opacity-100 ml-1 transition-opacity"
-                  style={{ color: "var(--color-white)" }}>
-                  (sign out)
-                </button>
-              )}
-            </span>
-          </button>
+          <div className="hidden sm:block relative shrink-0" onMouseEnter={openAccount} onMouseLeave={closeAccount}>
+            <button
+              onClick={() => { if (!user) openAuthModal(); }}
+              className="flex flex-col items-start transition-opacity hover:opacity-80"
+              style={{ color: "var(--color-white)" }}
+            >
+              <span className="font-sans text-xs" style={{ color: "rgba(245,239,230,0.75)" }}>
+                Hello, {firstName ?? "sign in"}
+              </span>
+              <span className="font-display text-sm font-semibold leading-tight flex items-center gap-1">
+                Account &amp; Lists
+                <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" style={{ transform: "translateY(1px)" }}>
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </span>
+            </button>
+            <AnimatePresence>
+              {accountOpen && <AccountDropdown onClose={() => setAccountOpen(false)} />}
+            </AnimatePresence>
+          </div>
 
           {/* Basket */}
           <button
@@ -307,6 +313,28 @@ const NavbarSection = ({ data, announcement }: Props) => {
               )}
             </div>
             <span className="font-display text-sm font-semibold">Basket</span>
+          </button>
+
+          {/* Mobile basket icon — nav links, Account & Lists, and the basket
+              button above are all desktop-only, so this is the only way to
+              reach the basket on small screens. */}
+          <button
+            onClick={() => { if (user) navigate("/basket"); else openAuthModal(); }}
+            className="sm:hidden relative shrink-0 p-1"
+            style={{ color: "var(--color-white)" }}
+            aria-label="Basket"
+          >
+            <svg width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+              <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <path d="M16 10a4 4 0 01-8 0"/>
+            </svg>
+            {count > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full flex items-center justify-center font-sans text-[10px] font-bold"
+                style={{ background: "var(--btn-primary-bg)", color: "var(--color-forest-dark)" }}>
+                {count > 9 ? "9+" : count}
+              </span>
+            )}
           </button>
 
           {/* Mobile hamburger */}
@@ -427,6 +455,28 @@ const NavbarSection = ({ data, announcement }: Props) => {
                     </a>
                   );
                 })}
+
+                {user && (
+                  <div className="pt-3 pb-1 space-y-1" style={{ borderTop: "1px solid rgba(255,255,255,0.18)" }}>
+                    {[
+                      { label: "Your Account", path: "/account" },
+                      { label: "Login & Security", path: "/account/security" },
+                      { label: "Your Addresses", path: "/account/addresses" },
+                      { label: "Your Orders", path: "/orders" },
+                      { label: "Track Order", path: "/track-order" },
+                      { label: "Returns & Refunds", path: "/returns" },
+                      { label: "Gift Cards", path: "/gift-cards" },
+                      { label: "Customer Service", path: "/customer-service" },
+                    ].map(item => (
+                      <button key={item.label}
+                        onClick={() => { navigate(item.path); setMobileOpen(false); }}
+                        className="block w-full text-left font-sans text-sm py-1.5 transition-opacity hover:opacity-70"
+                        style={{ color: "rgba(245,239,230,0.85)" }}>
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 <div className="pt-3 flex items-center justify-between gap-3">
                   {user ? (

@@ -4,13 +4,12 @@ import { useAuth } from "@/contexts/AuthContext";
 
 const AuthCallback = () => {
   const [params]        = useSearchParams();
-  const { loginWithToken } = useAuth();
+  const { completeOAuthLogin } = useAuth();
   const navigate        = useNavigate();
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const token = params.get("token");
-    const err   = params.get("error");
+    const err = params.get("error");
 
     if (err) {
       setError(decodeURIComponent(err));
@@ -18,14 +17,13 @@ const AuthCallback = () => {
       return;
     }
 
-    if (token) {
-      loginWithToken(token).then(() => navigate("/")).catch(() => {
-        setError("Failed to complete sign-in. Please try again.");
-        setTimeout(() => navigate("/"), 3000);
-      });
-    } else {
-      navigate("/");
-    }
+    // The backend already set the session cookie during the OAuth redirect —
+    // just confirm it took and load the user.
+    completeOAuthLogin().then(ok => {
+      if (ok) { navigate("/"); return; }
+      setError("Failed to complete sign-in. Please try again.");
+      setTimeout(() => navigate("/"), 3000);
+    });
   }, []);
 
   if (error) {

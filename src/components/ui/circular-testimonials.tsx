@@ -6,7 +6,6 @@ import React, {
   useCallback,
 } from "react";
 import { FaArrowLeft, FaArrowRight } from "react-icons/fa";
-import { motion, AnimatePresence } from "framer-motion";
 
 interface Testimonial {
   quote: string;
@@ -161,12 +160,6 @@ export const CircularTestimonials = ({
     };
   }
 
-  const quoteVariants = {
-    initial: { opacity: 0, y: 20 },
-    animate: { opacity: 1, y: 0 },
-    exit: { opacity: 0, y: -20 },
-  };
-
   return (
     <div style={{ width: "100%", maxWidth: "56rem", padding: "0.5rem 2rem" }}>
       <div
@@ -207,50 +200,31 @@ export const CircularTestimonials = ({
 
         {/* Content */}
         <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={activeIndex}
-              variants={quoteVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              transition={{ duration: 0.3, ease: "easeInOut" }}
+          <div key={activeIndex}>
+            <h3
+              style={{
+                color: colorName,
+                fontSize: fontSizeName,
+                fontWeight: "bold",
+                marginBottom: "0.25rem",
+                fontFamily: "var(--font-serif, serif)",
+              }}
             >
-              <h3
-                style={{
-                  color: colorName,
-                  fontSize: fontSizeName,
-                  fontWeight: "bold",
-                  marginBottom: "0.25rem",
-                  fontFamily: "var(--font-serif, serif)",
-                }}
-              >
-                {activeTestimonial.name}
-              </h3>
-              <p
-                style={{
-                  color: colorDesignation,
-                  fontSize: fontSizeDesignation,
-                  marginBottom: "2rem",
-                }}
-              >
-                {activeTestimonial.designation}
-              </p>
-              <motion.p style={{ color: colorTestimony, fontSize: fontSizeQuote, lineHeight: 1.75 }}>
-                {activeTestimonial.quote.split(" ").map((word, i) => (
-                  <motion.span
-                    key={i}
-                    initial={{ filter: "blur(10px)", opacity: 0, y: 5 }}
-                    animate={{ filter: "blur(0px)", opacity: 1, y: 0 }}
-                    transition={{ duration: 0.22, ease: "easeInOut", delay: 0.025 * i }}
-                    style={{ display: "inline-block" }}
-                  >
-                    {word}&nbsp;
-                  </motion.span>
-                ))}
-              </motion.p>
-            </motion.div>
-          </AnimatePresence>
+              {activeTestimonial.name}
+            </h3>
+            <p
+              style={{
+                color: colorDesignation,
+                fontSize: fontSizeDesignation,
+                marginBottom: "2rem",
+              }}
+            >
+              {activeTestimonial.designation}
+            </p>
+            <p style={{ color: colorTestimony, fontSize: fontSizeQuote, lineHeight: 1.75 }}>
+              {activeTestimonial.quote}
+            </p>
+          </div>
 
           {/* Arrow buttons */}
           <div style={{ display: "flex", gap: "1.5rem", paddingTop: "1.5rem" }}>

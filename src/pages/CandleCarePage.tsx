@@ -3,6 +3,7 @@ import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
 import CandleCareSection from "@/components/sections/CandleCareSection";
 import FooterSection from "@/components/sections/FooterSection";
+import PageHero from "@/components/PageHero";
 
 const CandleCarePage = () => {
   const [content, setContent] = useState<SiteContent>(DEFAULT_CONTENT);
@@ -28,31 +29,11 @@ const CandleCarePage = () => {
     <div className="w-full">
       {/* top padding = announcement bar (38px) + nav (~56px) */}
       <div className="pt-[112px]">
-        {/* Page hero banner */}
-        <div
-          className="w-full py-16 px-6 text-center"
-          style={{ background: "#1E2918" }}
-        >
-          <p
-            className="font-display text-xs tracking-[0.2em] uppercase mb-3"
-            style={{ color: "var(--color-gold)" }}
-          >
-            ✦ &nbsp; The Guide
-          </p>
-          <h1
-            className="font-display font-semibold mb-4"
-            style={{ fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05 }}
-          >
-            {content.candleCare.headline_part1}{" "}
-            <span style={{ color: "var(--color-gold)" }}>{content.candleCare.headline_part2}</span>
-          </h1>
-          <p
-            className="font-sans text-base max-w-md mx-auto leading-relaxed"
-            style={{ color: "rgba(245,239,230,0.7)" }}
-          >
-            Everything you need to get the most out of your Olive Goose candle — no cap.
-          </p>
-        </div>
+        <PageHero
+          eyebrow="The Guide"
+          title={<>{content.candleCare.headline_part1}{" "}<span style={{ color: "var(--color-gold)" }}>{content.candleCare.headline_part2}</span></>}
+          subtitle="Everything you need to get the most out of your Olive Goose candle — no cap."
+        />
 
         <CandleCareSection data={content.candleCare} />
         <FooterSection data={content.footer} />

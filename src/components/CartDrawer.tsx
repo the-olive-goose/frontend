@@ -1,14 +1,26 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { getContent } from "@/lib/api";
+import { DEFAULT_CONTENT, type PickupSettingsContent } from "@/lib/defaults";
+import { cartSubtotal } from "@/lib/cart";
+import FreeShippingBar from "@/components/FreeShippingBar";
+import TrustBadges from "@/components/TrustBadges";
 
 const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean; onExternalClose?: () => void } = {}) => {
   const { items, removeFromCart, updateQuantity, count, total, clearCart } = useCart();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [internalOpen, setInternalOpen] = useState(false);
+  const [pickup, setPickup] = useState<PickupSettingsContent>(DEFAULT_CONTENT.pickupSettings);
   const open = externalOpen ?? internalOpen;
   const setOpen = (v: boolean) => { setInternalOpen(v); if (!v) onExternalClose?.(); };
+
+  useEffect(() => {
+    getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings).then(setPickup);
+  }, []);
 
   if (!user) return null;
 
@@ -158,6 +170,9 @@ const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean;
               {/* Footer */}
               {items.length > 0 && (
                 <div className="px-6 py-5" style={{ borderTop: "1px solid var(--color-border)" }}>
+                  <div className="mb-4">
+                    <FreeShippingBar subtotal={cartSubtotal(items)} threshold={pickup.free_shipping_threshold} compact />
+                  </div>
                   <div className="flex items-center justify-between mb-4">
                     <span className="font-display text-base" style={{ color: "rgba(30,41,24,0.65)" }}>Total</span>
                     <span className="font-display text-xl font-semibold" style={{ color: "var(--color-forest-dark)" }}>
@@ -165,11 +180,15 @@ const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean;
                     </span>
                   </div>
                   <button
+                    onClick={() => { setOpen(false); navigate("/checkout"); }}
                     className="w-full py-3 rounded-full font-display text-sm font-semibold transition-all hover:opacity-90 active:scale-[0.98] mb-2"
                     style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
                   >
                     Checkout
                   </button>
+                  <div className="mb-2">
+                    <TrustBadges compact />
+                  </div>
                   <button
                     onClick={clearCart}
                     className="w-full py-2 font-sans text-xs text-center transition-opacity hover:opacity-60"

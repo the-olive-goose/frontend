@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
+import { getAuthProviders } from "@/lib/userApi";
 
-type View = "signin" | "signup" | "verify";
+type View = "signin" | "signup" | "verify" | "forgot" | "reset";
 
 
 // ── Shared input ───────────────────────────────────────────────────────────────
@@ -93,7 +94,11 @@ const GoogleIcon = () => (
 // ── Main Modal ─────────────────────────────────────────────────────────────────
 
 const AuthModal = () => {
-  const { showAuthModal, closeAuthModal, signInWithGoogle, signInWithEmail, startSignup, verifySignup } = useAuth();
+  const {
+    showAuthModal, closeAuthModal, sessionExpired,
+    signInWithGoogle, signInWithEmail, startSignup, verifySignup,
+    requestPasswordReset, confirmPasswordReset,
+  } = useAuth();
 
   const [view,     setView]     = useState<View>("signin");
   const [loading,  setLoading]  = useState(false);
@@ -101,21 +106,38 @@ const AuthModal = () => {
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
+  const [remember, setRemember] = useState(true);
   const [fullName, setFullName] = useState("");
   const [otp,      setOtp]      = useState("");
   const [devOtp,   setDevOtp]   = useState("");   // shown only in dev mode (no email provider)
   const [resendIn, setResendIn] = useState(0);    // seconds left on the resend cooldown
+  const [newPassword,   setNewPassword]   = useState("");
+  const [showNewPass,   setShowNewPass]   = useState(false);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
   const overlayRef = useRef<HTMLDivElement>(null);
+
+  // Hide the Google button rather than let it hard-navigate to a raw error
+  // page when GOOGLE_CLIENT_ID isn't configured on the backend.
+  useEffect(() => {
+    getAuthProviders().then(p => setGoogleEnabled(p.google));
+  }, []);
 
   useEffect(() => {
     if (!showAuthModal) {
       setTimeout(() => {
         setView("signin"); setError("");
         setEmail(""); setPassword(""); setFullName(""); setShowPass(false);
-        setOtp(""); setDevOtp(""); setResendIn(0);
+        setOtp(""); setDevOtp(""); setResendIn(0); setRemember(true);
+        setNewPassword(""); setShowNewPass(false);
       }, 300);
     }
   }, [showAuthModal]);
+
+  // If the session expired while the modal was closed, jump straight to sign-in
+  // with the "expired" banner visible — the user is never left staring at signup.
+  useEffect(() => {
+    if (showAuthModal && sessionExpired) setView("signin");
+  }, [showAuthModal, sessionExpired]);
 
   // Resend cooldown ticker
   useEffect(() => {
@@ -140,7 +162,7 @@ const AuthModal = () => {
     setLoading(true);
     try {
       if (view === "signin") {
-        await signInWithEmail(email, password);
+        await signInWithEmail(email, password, remember);
         closeAuthModal();
       } else {
         if (!fullName.trim()) { setError("Please enter your name."); setLoading(false); return; }
@@ -168,6 +190,48 @@ const AuthModal = () => {
     clear(); setLoading(true);
     try {
       await sendSignupCode();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not resend the code.");
+    } finally { setLoading(false); }
+  };
+
+  // Send (or resend) the password-reset code, then move to the reset view.
+  const sendResetCode = async () => {
+    const { dev_otp } = await requestPasswordReset(email);
+    setDevOtp(dev_otp ?? "");
+    setResendIn(60);
+    setView("reset");
+  };
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault(); clear();
+    if (!email.trim()) { setError("Please enter your email address."); return; }
+    setLoading(true);
+    try {
+      await sendResetCode();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not send reset code.");
+    } finally { setLoading(false); }
+  };
+
+  const handleResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault(); clear();
+    if (otp.trim().length !== 6) { setError("Enter the 6-digit code from your email."); return; }
+    if (!newPassword) { setError("Please enter a new password."); return; }
+    setLoading(true);
+    try {
+      await confirmPasswordReset(email, otp.trim(), newPassword);
+      closeAuthModal(); // confirmPasswordReset already signs the user in
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not reset password.");
+    } finally { setLoading(false); }
+  };
+
+  const handleResendReset = async () => {
+    if (resendIn > 0) return;
+    clear(); setLoading(true);
+    try {
+      await sendResetCode();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Could not resend the code.");
     } finally { setLoading(false); }
@@ -202,6 +266,11 @@ const AuthModal = () => {
                     The Olive Goose
                   </p>
 
+                  {sessionExpired && (
+                    <div className="mb-4 px-3 py-2.5 rounded font-sans text-sm" style={{ background: "#fdf0e6", border: "1px solid #e77600", color: "#111" }}>
+                      Your session has expired — please sign in again to continue.
+                    </div>
+                  )}
                   {error && <div className="mb-4 px-3 py-2.5 rounded font-sans text-sm" style={{ background: "#fff3cd", border: "1px solid #e77600", color: "#111" }}>{error}</div>}
 
                   <form onSubmit={handleEmailSubmit} className="space-y-4">
@@ -213,14 +282,28 @@ const AuthModal = () => {
                         onChange={e => setPassword(e.target.value)} autoComplete="current-password"
                         showToggle show={showPass} onToggle={() => setShowPass(s => !s)} />
                     </Field>
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 font-sans text-sm select-none cursor-pointer" style={{ color: "#0F1111" }}>
+                        <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)}
+                          className="accent-current" style={{ accentColor: "#e77600" }} />
+                        Keep me signed in
+                      </label>
+                      <button type="button" onClick={() => { clear(); setEmail(email); setView("forgot"); }}
+                        className="font-sans text-sm hover:underline" style={{ color: "#007185" }}>
+                        Forgot password?
+                      </button>
+                    </div>
                     <PrimaryBtn type="submit" loading={loading}>Sign In</PrimaryBtn>
                   </form>
 
-                  <Divider />
-
-                  <div className="space-y-2.5">
-                    <SocialBtn icon={<GoogleIcon />} label="Continue with Google" onClick={() => { clear(); signInWithGoogle(); }} />
-                  </div>
+                  {googleEnabled && (
+                    <>
+                      <Divider />
+                      <div className="space-y-2.5">
+                        <SocialBtn icon={<GoogleIcon />} label="Continue with Google" onClick={() => { clear(); signInWithGoogle(); }} />
+                      </div>
+                    </>
+                  )}
 
                   <Divider label="New to The Olive Goose?" />
 
@@ -232,8 +315,8 @@ const AuthModal = () => {
 
                   <p className="font-sans text-xs text-center mt-4" style={{ color: "#888" }}>
                     By continuing you agree to our{" "}
-                    <a href="#" className="underline text-blue-600">Terms</a> &amp;{" "}
-                    <a href="#" className="underline text-blue-600">Privacy Policy</a>
+                    <a href="/terms-of-service" className="underline text-blue-600">Terms</a> &amp;{" "}
+                    <a href="/privacy-policy" className="underline text-blue-600">Privacy Policy</a>
                   </p>
                 </>
               )}
@@ -321,6 +404,79 @@ const AuthModal = () => {
                 </>
               )}
 
+              {/* ── Forgot password view ── */}
+              {view === "forgot" && (
+                <>
+                  <h1 className="font-sans text-2xl font-bold mb-0.5" style={{ color: "#0F1111" }}>Reset your password</h1>
+                  <p className="font-sans text-sm mb-5" style={{ color: "#555" }}>
+                    Enter your account email and we'll send you a code to reset your password.
+                  </p>
+
+                  {error && <div className="mb-4 px-3 py-2.5 rounded font-sans text-sm" style={{ background: "#fff3cd", border: "1px solid #e77600", color: "#111" }}>{error}</div>}
+
+                  <form onSubmit={handleForgotSubmit} className="space-y-4">
+                    <Field label="Email address">
+                      <TextInput type="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" autoFocus />
+                    </Field>
+                    <PrimaryBtn type="submit" loading={loading}>Send reset code</PrimaryBtn>
+                  </form>
+
+                  <button onClick={() => { clear(); setView("signin"); }}
+                    className="w-full text-center mt-4 font-sans text-sm hover:underline" style={{ color: "#C7511F" }}>
+                    ← Back to sign in
+                  </button>
+                </>
+              )}
+
+              {/* ── Reset password (enter code) view ── */}
+              {view === "reset" && (
+                <>
+                  <h1 className="font-sans text-2xl font-bold mb-0.5" style={{ color: "#0F1111" }}>Enter your reset code</h1>
+                  <p className="font-sans text-sm mb-5" style={{ color: "#555" }}>
+                    We sent a 6-digit code to <span className="font-semibold" style={{ color: "#0F1111" }}>{email}</span>.
+                  </p>
+
+                  {error && <div className="mb-4 px-3 py-2.5 rounded font-sans text-sm" style={{ background: "#fff3cd", border: "1px solid #e77600", color: "#111" }}>{error}</div>}
+
+                  {devOtp && (
+                    <div className="mb-4 px-3 py-2.5 rounded font-sans text-sm" style={{ background: "#eef6ee", border: "1px solid #8bbf8b", color: "#1e2918" }}>
+                      Dev mode (no email provider configured): your code is <span className="font-bold tracking-widest">{devOtp}</span>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleResetSubmit} className="space-y-4">
+                    <Field label="Reset code">
+                      <TextInput
+                        type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                        placeholder="123456" value={otp}
+                        onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        style={{ letterSpacing: "0.4em", textAlign: "center", fontSize: 18 }}
+                      />
+                    </Field>
+                    <Field label="New password">
+                      <TextInput type={showNewPass ? "text" : "password"} placeholder="At least 8 characters" value={newPassword}
+                        onChange={e => setNewPassword(e.target.value)} autoComplete="new-password"
+                        showToggle show={showNewPass} onToggle={() => setShowNewPass(s => !s)} />
+                      <p className="font-sans text-xs mt-1" style={{ color: "#888" }}>
+                        At least 8 characters, with a letter and a number.
+                      </p>
+                    </Field>
+                    <PrimaryBtn type="submit" loading={loading}>Reset password &amp; sign in</PrimaryBtn>
+                  </form>
+
+                  <div className="flex items-center justify-between mt-4">
+                    <button onClick={() => { clear(); setOtp(""); setView("forgot"); }}
+                      className="font-sans text-sm hover:underline" style={{ color: "#C7511F" }}>
+                      ← Use a different email
+                    </button>
+                    <button onClick={handleResendReset} disabled={resendIn > 0 || loading}
+                      className="font-sans text-sm hover:underline disabled:opacity-50 disabled:no-underline"
+                      style={{ color: resendIn > 0 ? "#888" : "#C7511F" }}>
+                      {resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}
+                    </button>
+                  </div>
+                </>
+              )}
 
             </div>
           </motion.div>

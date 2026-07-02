@@ -41,15 +41,14 @@ const HeroSection = ({ data }: Props) => {
       className="relative w-full"
       style={{ marginTop: navbarHeight }}
     >
-      {/* ── Full image — no crop, original aspect ratio ── */}
-      <div className="relative w-full" style={{ lineHeight: 0 }}>
+      {/* ── Image fills a responsive fixed height so the centered text overlay
+             always has room, regardless of the image's own aspect ratio ── */}
+      <div className="relative w-full h-[560px] sm:h-[620px] lg:h-[760px]">
         <img
           src={bgImage}
           alt="Hero background"
+          className="absolute inset-0 w-full h-full object-cover"
           style={{
-            display: "block",
-            width: "100%",
-            height: "auto",
             opacity: Math.max(0.05, bgOpacity),
           }}
         />

@@ -20,6 +20,9 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
   const img = product.image_url || FALLBACK_IMGS[idx % 2];
   const { user, openAuthModal } = useAuth();
   const { addToCart } = useCart();
+  // undefined/null stock = "not tracked", always purchasable — only an explicit
+  // 0 blocks the button. Checkout enforces this authoritatively either way.
+  const outOfStock = product.stock !== undefined && product.stock !== null && Number(product.stock) <= 0;
 
   const handleAddToCart = () => {
     if (!user) {
@@ -52,12 +55,20 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
           className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
           style={{ mixBlendMode: "multiply" }}
         />
-        {product.tag && (
+        {product.tag && !outOfStock && (
           <span
             className="absolute top-3 left-3 text-xs font-semibold tracking-wider uppercase px-3 py-1 rounded-full"
             style={{ fontFamily: "'Fredoka',sans-serif", background: accent || "var(--color-forest-dark)", color: "#fff" }}
           >
             {product.tag}
+          </span>
+        )}
+        {outOfStock && (
+          <span
+            className="absolute top-3 left-3 text-xs font-semibold tracking-wider uppercase px-3 py-1 rounded-full"
+            style={{ fontFamily: "'Fredoka',sans-serif", background: "#6b6b6b", color: "#fff" }}
+          >
+            Out of stock
           </span>
         )}
       </div>
@@ -87,14 +98,15 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
             {product.price}
           </span>
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.96 }}
+            whileHover={outOfStock ? undefined : { scale: 1.05 }}
+            whileTap={outOfStock ? undefined : { scale: 0.96 }}
             onClick={handleAddToCart}
-            className="text-sm font-semibold px-5 py-2 rounded-full transition-all"
+            disabled={outOfStock}
+            className="text-sm font-semibold px-5 py-2 rounded-full transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ fontFamily: "'Fredoka',sans-serif", background: accent || "var(--color-forest-dark)", color: "#fff" }}
-            title={!user ? "Sign in to add to cart" : undefined}
+            title={outOfStock ? "Out of stock" : !user ? "Sign in to add to cart" : undefined}
           >
-            {user ? "Add to Cart" : "Buy Now"}
+            {outOfStock ? "Out of Stock" : user ? "Add to Cart" : "Buy Now"}
           </motion.button>
         </div>
       </div>

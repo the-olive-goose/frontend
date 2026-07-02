@@ -1,10 +1,15 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent } from "@/lib/defaults";
+import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent, type Product, type PickupSettingsContent } from "@/lib/defaults";
+import { cartSubtotal } from "@/lib/cart";
+import { getBundleNudges } from "@/lib/bundleNudges";
+import FreeShippingBar from "@/components/FreeShippingBar";
+import TrustBadges from "@/components/TrustBadges";
 import FooterSection from "@/components/sections/FooterSection";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -13,19 +18,36 @@ const FALLBACK_IMGS = [m1, m2];
 
 const BasketPage = () => {
   const { user, openAuthModal } = useAuth();
-  const { items, removeFromCart, updateQuantity, clearCart, count } = useCart();
+  const { items, removeFromCart, updateQuantity, clearCart, count, addToCart } = useCart();
   const navigate = useNavigate();
   const [clearing, setClearing] = useState(false);
   const [bundles, setBundles] = useState<Bundle[]>([]);
+  const [allProducts, setAllProducts] = useState<Product[]>([]);
+  const [pickup, setPickup] = useState<PickupSettingsContent>(DEFAULT_CONTENT.pickupSettings);
+  const [addingNudge, setAddingNudge] = useState<string | null>(null);
 
   useEffect(() => {
     getContent<DealsContent>("deals", DEFAULT_DEALS).then(d => setBundles(d?.bundles ?? []));
+    getContent("products", DEFAULT_CONTENT.products).then(d => setAllProducts(d?.items ?? []));
+    getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings).then(setPickup);
   }, []);
 
   const appliedBundles = bundles.filter(b =>
     b.is_active && b.product_ids.length > 0 &&
     b.product_ids.every(pid => items.some(i => i.product.id === pid))
   );
+
+  // Bundles where the customer already has some, but not all, of the qualifying items —
+  // ranked by how compelling they are to finish, not just listed as-is.
+  const bundleNudges = getBundleNudges(bundles, items, allProducts, 2);
+
+  const handleAddNudge = async (nudge: ReturnType<typeof getBundleNudges>[number]) => {
+    setAddingNudge(nudge.bundle.id);
+    for (const p of nudge.missing) await addToCart(p);
+    setAddingNudge(null);
+    toast.success(`${nudge.bundle.name} unlocked!`, { description: `You save €${nudge.savings.toFixed(2)}`, duration: 3000 });
+  };
+
   const bundleSavings = appliedBundles.reduce((sum, b) => {
     const base = b.product_ids.reduce((s, pid) => {
       const item = items.find(i => i.product.id === pid);
@@ -36,10 +58,7 @@ const BasketPage = () => {
     return sum + (b.discount_type === "percentage" ? base * (b.discount_value / 100) : b.discount_value);
   }, 0);
 
-  const subtotalNum = items.reduce((acc, i) => {
-    const n = parseFloat(i.product.price.replace(/[^0-9.]/g, ""));
-    return acc + (isNaN(n) ? 0 : n * i.quantity);
-  }, 0);
+  const subtotalNum = cartSubtotal(items);
   const total = `€${subtotalNum.toFixed(2)}`;
 
   const handleClear = async () => {
@@ -48,8 +67,7 @@ const BasketPage = () => {
     setClearing(false);
   };
 
-  // Parse subtotal for display
-  const shipping = subtotalNum >= 65 ? 0 : 4.99;
+  const shipping = subtotalNum >= pickup.free_shipping_threshold ? 0 : 4.99;
   const grandTotal = `€${Math.max(0, subtotalNum - bundleSavings + shipping).toFixed(2)}`;
 
   return (
@@ -238,6 +256,30 @@ const BasketPage = () => {
                 </button>
               </div>
             )}
+
+            {/* Almost-a-bundle nudges — ranked by how compelling they are to finish */}
+            {user && bundleNudges.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {bundleNudges.map(nudge => (
+                  <div key={nudge.bundle.id} className="flex items-center gap-3 px-4 py-3 rounded-xl flex-wrap"
+                    style={{ background: "#fff8f0", border: "1px solid #f0dfc0" }}>
+                    <span className="text-lg shrink-0">🏷️</span>
+                    <p className="font-sans text-sm flex-1 min-w-[200px]" style={{ color: "#0F1111" }}>
+                      Add <strong>{nudge.missing.map(p => p.name).join(" & ")}</strong> to unlock{" "}
+                      <strong style={{ color: "#007600" }}>
+                        {nudge.bundle.discount_type === "percentage" ? `${nudge.bundle.discount_value}% off` : `€${nudge.bundle.discount_value.toFixed(2)} off`}
+                      </strong>{" "}
+                      with the {nudge.bundle.name} bundle — save €{nudge.savings.toFixed(2)}.
+                    </p>
+                    <button onClick={() => handleAddNudge(nudge)} disabled={addingNudge === nudge.bundle.id}
+                      className="shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
+                      style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
+                      {addingNudge === nudge.bundle.id ? "Adding…" : "Add & Save"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* ── Right: summary / info ── */}
@@ -247,6 +289,7 @@ const BasketPage = () => {
             {user && items.length > 0 && (
               <div className="bg-white rounded-xl p-5 space-y-3"
                 style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                <FreeShippingBar subtotal={subtotalNum} threshold={pickup.free_shipping_threshold} />
                 <div className="flex justify-between font-sans text-sm" style={{ color: "#0F1111" }}>
                   <span>Subtotal ({count} item{count !== 1 ? "s" : ""})</span>
                   <span className="font-semibold">{total}</span>
@@ -274,11 +317,6 @@ const BasketPage = () => {
                     {shipping === 0 ? "FREE" : `€${shipping.toFixed(2)}`}
                   </span>
                 </div>
-                {shipping > 0 && (
-                  <p className="font-sans text-xs" style={{ color: "#C7511F" }}>
-                    Add €{Math.max(0, 65 - subtotalNum).toFixed(2)} more for free shipping
-                  </p>
-                )}
                 <div className="pt-2" style={{ borderTop: "1px solid #EEE" }}>
                   <div className="flex justify-between font-sans font-bold text-base" style={{ color: "#0F1111" }}>
                     <span>Order total</span>
@@ -287,10 +325,14 @@ const BasketPage = () => {
                 </div>
                 <motion.button
                   whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+                  onClick={() => navigate("/checkout")}
                   className="w-full font-sans text-sm font-bold py-2.5 rounded-full transition-all"
                   style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
                   Proceed to Checkout
                 </motion.button>
+                <div className="pt-1">
+                  <TrustBadges compact />
+                </div>
               </div>
             )}
 

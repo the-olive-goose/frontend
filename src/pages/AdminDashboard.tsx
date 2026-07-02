@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo, Fragment } from "react";
 import {
   isLoggedIn,
   logout,
@@ -15,12 +15,36 @@ import {
   deleteShopCategory,
   saveShopCandle,
   deleteShopCandle,
+  getAdminReturns,
+  updateReturnStatus,
+  getAdminOrders,
+  updateOrderStatus,
+  getAdminOrderDetail,
+  decideCancellation,
+  markRefundDone,
+  sendOrderMessage,
+  getOpsOverview,
+  getAutomationSettings,
+  saveAutomationSettings,
+  getAdminDecisions,
+  approveDecision,
+  dismissDecision,
+  getResolvedDecisions,
+  ORDER_STAGES,
+  DEFAULT_AUTOMATION_SETTINGS,
   SessionExpiredError,
   type Subscriber,
   type AppUserRecord,
   type FeedbackRecord,
   type ShopCategory,
   type ShopCandle,
+  type AdminReturnRecord,
+  type AdminOrderRecord,
+  type OrderTimelineEvent,
+  type RefundReminder,
+  type OpsOverview,
+  type AutomationSettings,
+  type AdminDecision,
 } from "@/lib/api";
 import {
   DEFAULT_CONTENT,
@@ -41,6 +65,11 @@ import {
   type TestimonialsContent,
   type NewsletterContent,
   type FooterContent,
+  type ReturnPolicyContent,
+  type GiftCardsContent,
+  type CustomerServiceContent,
+  type PickupSettingsContent,
+  type LegalPageContent,
   type CandleCareCard,
   type VideoItem,
   type Testimonial,
@@ -98,6 +127,15 @@ const SaveButton = ({
   >
     {saving ? "Saving…" : "Save Changes"}
   </button>
+);
+
+// Shows what the customer was last told (and when) right next to whatever
+// admin control could re-trigger a notification — so it's never ambiguous
+// whether contact has already happened for this order/return.
+const LastNotified = ({ title, at }: { title: string | null; at: string | null }) => (
+  <p className="font-sans text-[11px] text-muted-foreground mt-1 max-w-[180px] truncate" title={title ? `${title} · ${new Date(at!).toLocaleString()}` : undefined}>
+    {title ? <>✉ {title} · {new Date(at!).toLocaleDateString()}</> : "No notification sent yet"}
+  </p>
 );
 
 const SectionHeading = ({ title, desc }: { title: string; desc?: string }) => (
@@ -548,6 +586,16 @@ const ProductsEditor = ({
               items[i] = { ...items[i], tag: e.target.value };
               onChange({ ...data, items });
             }} />
+          </Field>
+          <Field label="Stock" hint="Optional — leave blank to not track inventory for this product. When set, it's decremented automatically on each purchase and flagged in Ops once low.">
+            <Input type="number" min={0} placeholder="Not tracked"
+              value={product.stock ?? ""}
+              onChange={(e) => {
+                const items = [...data.items];
+                const v = e.target.value;
+                items[i] = { ...items[i], stock: v === "" ? null : Number(v) };
+                onChange({ ...data, items });
+              }} />
           </Field>
         </Card>
       ))}
@@ -1009,6 +1057,1047 @@ const FooterEditor = ({
     <SaveButton onClick={onSave} saving={saving} />
   </div>
 );
+
+// ── Return Policy editor ───────────────────────────────────────────────────────
+
+const ReturnPolicyEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: ReturnPolicyContent;
+  onChange: (d: ReturnPolicyContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Return Policy" desc="Content shown on the Returns & Refunds page, plus the return-request form." />
+    <Field label="Heading">
+      <Input value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+    </Field>
+    <Field label="Intro">
+      <Textarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+    </Field>
+    <Field label="Contact Email">
+      <Input value={data.contact_email} onChange={(e) => onChange({ ...data, contact_email: e.target.value })} />
+    </Field>
+
+    <div className="space-y-4">
+      <label className="block text-sm font-sans font-medium text-foreground">Policy Sections</label>
+      {data.sections.map((section, i) => (
+        <Card key={i}>
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm font-medium text-foreground">Section {i + 1}</span>
+            <RemoveButton onClick={() => onChange({ ...data, sections: data.sections.filter((_, j) => j !== i) })} />
+          </div>
+          <Field label="Title">
+            <Input value={section.title} onChange={(e) => {
+              const sections = [...data.sections];
+              sections[i] = { ...sections[i], title: e.target.value };
+              onChange({ ...data, sections });
+            }} />
+          </Field>
+          <Field label="Body">
+            <Textarea rows={3} value={section.body} onChange={(e) => {
+              const sections = [...data.sections];
+              sections[i] = { ...sections[i], body: e.target.value };
+              onChange({ ...data, sections });
+            }} />
+          </Field>
+        </Card>
+      ))}
+      <AddButton
+        label="Add section"
+        onClick={() => onChange({ ...data, sections: [...data.sections, { title: "", body: "" }] })}
+      />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+// ── Legal page editor (Privacy Policy / Terms of Service / Shipping Policy) ──────
+// All three share the same heading + intro + sections + contact email shape.
+
+const LegalPageEditor = ({
+  title,
+  desc,
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  title: string;
+  desc: string;
+  data: LegalPageContent;
+  onChange: (d: LegalPageContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title={title} desc={desc} />
+    <Field label="Heading">
+      <Input value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+    </Field>
+    <Field label="Intro">
+      <Textarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+    </Field>
+    <Field label="Contact Email">
+      <Input value={data.contact_email} onChange={(e) => onChange({ ...data, contact_email: e.target.value })} />
+    </Field>
+
+    <div className="space-y-4">
+      <label className="block text-sm font-sans font-medium text-foreground">Sections</label>
+      {data.sections.map((section, i) => (
+        <Card key={i}>
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm font-medium text-foreground">Section {i + 1}</span>
+            <RemoveButton onClick={() => onChange({ ...data, sections: data.sections.filter((_, j) => j !== i) })} />
+          </div>
+          <Field label="Title">
+            <Input value={section.title} onChange={(e) => {
+              const sections = [...data.sections];
+              sections[i] = { ...sections[i], title: e.target.value };
+              onChange({ ...data, sections });
+            }} />
+          </Field>
+          <Field label="Body">
+            <Textarea rows={3} value={section.body} onChange={(e) => {
+              const sections = [...data.sections];
+              sections[i] = { ...sections[i], body: e.target.value };
+              onChange({ ...data, sections });
+            }} />
+          </Field>
+        </Card>
+      ))}
+      <AddButton
+        label="Add section"
+        onClick={() => onChange({ ...data, sections: [...data.sections, { title: "", body: "" }] })}
+      />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+// ── Gift Cards editor ───────────────────────────────────────────────────────────
+
+const GiftCardsEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: GiftCardsContent;
+  onChange: (d: GiftCardsContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Gift Cards" desc="Content shown on the Gift Cards page." />
+    <Field label="Heading">
+      <Input value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+    </Field>
+    <Field label="Intro">
+      <Textarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+    </Field>
+
+    <div className="space-y-2">
+      <label className="block text-sm font-sans font-medium text-foreground">Denominations</label>
+      {data.denominations.map((d, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <Input value={d} onChange={(e) => {
+            const denominations = [...data.denominations];
+            denominations[i] = e.target.value;
+            onChange({ ...data, denominations });
+          }} />
+          <RemoveButton onClick={() => onChange({ ...data, denominations: data.denominations.filter((_, j) => j !== i) })} />
+        </div>
+      ))}
+      <AddButton label="Add denomination" onClick={() => onChange({ ...data, denominations: [...data.denominations, ""] })} />
+    </div>
+
+    <Field label="Note" hint="Small print shown under the denominations">
+      <Input value={data.note} onChange={(e) => onChange({ ...data, note: e.target.value })} />
+    </Field>
+    <Field label="CTA Button Text" hint={`Shown when gift cards aren't available yet, e.g. "Notify Me When Available"`}>
+      <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+    </Field>
+
+    <label className="flex items-center gap-2">
+      <input type="checkbox" checked={data.available} onChange={(e) => onChange({ ...data, available: e.target.checked })} className="accent-primary" />
+      <span className="text-sm font-sans text-foreground">Gift cards are available for purchase</span>
+    </label>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+// ── Customer Service editor ─────────────────────────────────────────────────────
+
+const CustomerServiceEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: CustomerServiceContent;
+  onChange: (d: CustomerServiceContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Customer Service" desc="Content shown on the Customer Service page, including FAQs." />
+    <Field label="Heading">
+      <Input value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+    </Field>
+    <Field label="Intro">
+      <Textarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Contact Email">
+        <Input value={data.contact_email} onChange={(e) => onChange({ ...data, contact_email: e.target.value })} />
+      </Field>
+      <Field label="Contact Phone" hint="Optional">
+        <Input value={data.contact_phone} onChange={(e) => onChange({ ...data, contact_phone: e.target.value })} />
+      </Field>
+    </div>
+
+    <div className="space-y-4">
+      <label className="block text-sm font-sans font-medium text-foreground">FAQs</label>
+      {data.faqs.map((faq, i) => (
+        <Card key={i}>
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm font-medium text-foreground">FAQ {i + 1}</span>
+            <RemoveButton onClick={() => onChange({ ...data, faqs: data.faqs.filter((_, j) => j !== i) })} />
+          </div>
+          <Field label="Question">
+            <Input value={faq.question} onChange={(e) => {
+              const faqs = [...data.faqs];
+              faqs[i] = { ...faqs[i], question: e.target.value };
+              onChange({ ...data, faqs });
+            }} />
+          </Field>
+          <Field label="Answer">
+            <Textarea rows={2} value={faq.answer} onChange={(e) => {
+              const faqs = [...data.faqs];
+              faqs[i] = { ...faqs[i], answer: e.target.value };
+              onChange({ ...data, faqs });
+            }} />
+          </Field>
+        </Card>
+      ))}
+      <AddButton label="Add FAQ" onClick={() => onChange({ ...data, faqs: [...data.faqs, { question: "", answer: "" }] })} />
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+// ── Pickup & Delivery editor ─────────────────────────────────────────────────────
+
+const PickupSettingsEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: PickupSettingsContent;
+  onChange: (d: PickupSettingsContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Pickup & Delivery" desc="Controls the in-store pickup option shown at checkout, including its discount." />
+
+    <label className="flex items-center gap-2">
+      <input type="checkbox" checked={data.enabled} onChange={(e) => onChange({ ...data, enabled: e.target.checked })} className="accent-primary" />
+      <span className="text-sm font-sans text-foreground">Offer in-store pickup at checkout</span>
+    </label>
+
+    <Field label="Location Name">
+      <Input value={data.location_name} onChange={(e) => onChange({ ...data, location_name: e.target.value })} />
+    </Field>
+    <Field label="Address">
+      <Input value={data.address_line1} onChange={(e) => onChange({ ...data, address_line1: e.target.value })} />
+    </Field>
+    <div className="grid grid-cols-3 gap-4">
+      <Field label="City / Area">
+        <Input value={data.city} onChange={(e) => onChange({ ...data, city: e.target.value })} />
+      </Field>
+      <Field label="Eircode">
+        <Input value={data.eircode} onChange={(e) => onChange({ ...data, eircode: e.target.value })} />
+      </Field>
+      <Field label="Country">
+        <Input value={data.country} onChange={(e) => onChange({ ...data, country: e.target.value })} />
+      </Field>
+    </div>
+    <Field label="Pickup Hours">
+      <Input value={data.hours} onChange={(e) => onChange({ ...data, hours: e.target.value })} placeholder="e.g. Tue–Sat, 10am–5pm" />
+    </Field>
+    <Field label={`Pickup Discount: ${data.discount_percent}%`} hint="Applied to the order subtotal when a customer chooses in-store pickup instead of delivery">
+      <input
+        type="range" min={0} max={50} step={1}
+        value={data.discount_percent}
+        onChange={(e) => onChange({ ...data, discount_percent: Number(e.target.value) })}
+        className="w-full accent-primary"
+      />
+    </Field>
+    <Field label="Pickup Notes" hint="Shown to customers after they choose pickup at checkout">
+      <Textarea rows={2} value={data.notes} onChange={(e) => onChange({ ...data, notes: e.target.value })} />
+    </Field>
+
+    <div className="pt-2 border-t border-border">
+      <h3 className="font-serif text-lg text-foreground mt-6 mb-4">Shipping</h3>
+      <Field label="Free Shipping Threshold (€)" hint="Orders at or above this subtotal ship free. Shown on the basket, checkout, and cart with a progress bar.">
+        <Input
+          type="number" min={0} step={1}
+          value={data.free_shipping_threshold}
+          onChange={(e) => onChange({ ...data, free_shipping_threshold: Number(e.target.value) })}
+        />
+      </Field>
+    </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+// ── Order detail: cancellation decisions, refund tracking, messaging, timeline ──
+// The human-in-the-loop step: automated events populate the timeline below, but
+// cancellations, refunds, and outbound messages all require an explicit admin
+// click here before anything happens.
+
+const EVENT_ICON: Record<string, string> = {
+  order_placed: "🧾", status_changed: "📦", cancellation_requested: "⚠️",
+  cancellation_approved: "✅", cancellation_rejected: "🚫", return_requested: "↩",
+  return_status_changed: "↩", message: "✉", refund_completed: "💳",
+};
+
+const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpdate: (o: AdminOrderRecord) => void }) => {
+  const [detail, setDetail] = useState<(AdminOrderRecord & { timeline: OrderTimelineEvent[]; refund_reminders: RefundReminder[] }) | null>(null);
+  const [deciding, setDeciding] = useState(false);
+  const [decisionNote, setDecisionNote] = useState("");
+  const [markingRefund, setMarkingRefund] = useState(false);
+  const [msgSubject, setMsgSubject] = useState("");
+  const [msgBody, setMsgBody] = useState("");
+  const [sendingMsg, setSendingMsg] = useState(false);
+  const [refundAutomationEnabled, setRefundAutomationEnabled] = useState(false);
+  const { toast } = useToast();
+
+  const load = useCallback(() => {
+    getAdminOrderDetail(order.id).then(setDetail);
+  }, [order.id]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { getAutomationSettings().then(s => setRefundAutomationEnabled(s.refund_automation_enabled)); }, []);
+
+  const handleDecision = async (decision: "approved" | "rejected") => {
+    setDeciding(true);
+    try {
+      const updated = await decideCancellation(order.id, decision, decisionNote.trim());
+      onUpdate(updated);
+      setDecisionNote("");
+      load();
+      toast({ title: decision === "approved" ? "Cancellation approved" : "Cancellation rejected" });
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Could not record decision", variant: "destructive" });
+    } finally {
+      setDeciding(false);
+    }
+  };
+
+  const handleMarkRefund = async () => {
+    setMarkingRefund(true);
+    try {
+      const { via_stripe } = await markRefundDone(order.id);
+      onUpdate({ ...order, refund_status: "refunded" });
+      load();
+      toast({ title: via_stripe ? "Refund processed via Stripe" : "Refund marked as completed" });
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Could not update refund status", variant: "destructive" });
+    } finally {
+      setMarkingRefund(false);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!msgSubject.trim() || !msgBody.trim()) return;
+    setSendingMsg(true);
+    try {
+      await sendOrderMessage(order.id, msgSubject.trim(), msgBody.trim());
+      setMsgSubject("");
+      setMsgBody("");
+      load();
+      toast({ title: "Message sent to customer" });
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Could not send message", variant: "destructive" });
+    } finally {
+      setSendingMsg(false);
+    }
+  };
+
+  // Most recent event of a given type, so a resolved action shows *when* the
+  // customer was told instead of the banner just silently disappearing.
+  const lastEventOf = (types: string[]) => detail ? [...detail.timeline].reverse().find(e => types.includes(e.type)) : undefined;
+  const cancellationEvent = lastEventOf(["cancellation_approved", "cancellation_rejected"]);
+  const refundEvent = lastEventOf(["refund_completed"]);
+  const lastMessage = lastEventOf(["message"]);
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        {order.items.map(item => (
+          <div key={item.product_id} className="flex items-center justify-between font-sans text-xs text-muted-foreground">
+            <span>{(item.product_data?.name as string) || item.product_id} × {item.quantity}</span>
+            <span>{(item.product_data?.price as string) || ""}</span>
+          </div>
+        ))}
+        <p className="font-sans text-xs text-muted-foreground pt-1">
+          {order.fulfillment_type === "pickup" ? "Pickup" : "Shipping"} address:{" "}
+          {[order.shipping_address?.address_line1, order.shipping_address?.city, order.shipping_address?.country]
+            .filter(Boolean).join(", ") || "—"}
+        </p>
+      </div>
+
+      {order.cancellation_status === "requested" && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
+          <p className="font-sans text-xs font-semibold text-amber-800">Cancellation requested — needs a decision</p>
+          {order.cancellation_reason && <p className="font-sans text-xs text-amber-700">"{order.cancellation_reason}"</p>}
+          <Input placeholder="Optional note to include in the customer email…" value={decisionNote} onChange={e => setDecisionNote(e.target.value)} className="text-xs !py-1.5" />
+          <div className="flex gap-2">
+            <button onClick={() => handleDecision("approved")} disabled={deciding}
+              className="font-sans text-xs font-medium px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
+              Approve cancellation
+            </button>
+            <button onClick={() => handleDecision("rejected")} disabled={deciding}
+              className="font-sans text-xs font-medium px-3 py-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-50">
+              Reject
+            </button>
+          </div>
+        </div>
+      )}
+
+      {order.cancellation_status !== "none" && order.cancellation_status !== "requested" && cancellationEvent && (
+        <div className="rounded-lg border border-border bg-muted/20 p-3">
+          <p className="font-sans text-xs text-muted-foreground">
+            ✅ Cancellation {order.cancellation_status} — customer notified {new Date(cancellationEvent.created_at).toLocaleString()}
+          </p>
+        </div>
+      )}
+
+      {order.refund_status === "pending" && (
+        <div className="rounded-lg border border-red-300 bg-red-50 p-3 flex items-center justify-between gap-3">
+          <p className="font-sans text-xs text-red-800">
+            {refundAutomationEnabled
+              ? `Refund still owed — clicking will charge Stripe for €${Number(order.total).toFixed(2)}.`
+              : "Refund still owed — process it manually (Stripe/bank), then mark it done here."}
+          </p>
+          <button onClick={handleMarkRefund} disabled={markingRefund}
+            className="font-sans text-xs font-medium px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 shrink-0">
+            {markingRefund ? "Saving…" : refundAutomationEnabled ? `Refund via Stripe (€${Number(order.total).toFixed(2)})` : "Mark refund done"}
+          </button>
+        </div>
+      )}
+      {order.refund_status === "refunded" && refundEvent && (
+        <div className="rounded-lg border border-border bg-muted/20 p-3">
+          <p className="font-sans text-xs text-muted-foreground">
+            ✅ Refund completed — customer notified {new Date(refundEvent.created_at).toLocaleString()}
+          </p>
+        </div>
+      )}
+
+      <div className="rounded-lg border border-border p-3 space-y-2">
+        <p className="font-sans text-xs font-semibold text-foreground">Message customer</p>
+        {lastMessage && (
+          <p className="font-sans text-xs text-muted-foreground">
+            Last sent: "{lastMessage.title}" — {new Date(lastMessage.created_at).toLocaleString()}
+          </p>
+        )}
+        <Input placeholder="Subject" value={msgSubject} onChange={e => setMsgSubject(e.target.value)} className="text-xs !py-1.5" />
+        <Textarea rows={3} placeholder="Message…" value={msgBody} onChange={e => setMsgBody(e.target.value)} className="text-xs" />
+        <button onClick={handleSendMessage} disabled={sendingMsg || !msgSubject.trim() || !msgBody.trim()}
+          className="font-sans text-xs font-medium px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-olive-light disabled:opacity-50">
+          {sendingMsg ? "Sending…" : "Send email"}
+        </button>
+      </div>
+
+      {detail && detail.timeline.length > 0 && (
+        <div className="rounded-lg border border-border p-3 space-y-1.5">
+          <p className="font-sans text-xs font-semibold text-foreground mb-1">Timeline</p>
+          {[...detail.timeline].reverse().map(ev => (
+            <div key={ev.id} className="font-sans text-xs text-muted-foreground flex items-start justify-between gap-3">
+              <span>{EVENT_ICON[ev.type] || "•"} {ev.title}{ev.detail ? ` — ${ev.detail}` : ""} {!ev.customer_visible && <em>(internal)</em>}</span>
+              <span className="shrink-0">{new Date(ev.created_at).toLocaleString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Orders panel ───────────────────────────────────────────────────────────────
+// Aggregated by customer: one table per customer, one row per order. Tracking
+// status is admin-controlled here — it never advances on its own server-side.
+
+const OrdersPanel = () => {
+  const [items, setItems] = useState<AdminOrderRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  const load = useCallback((showSpinner = true) => {
+    if (showSpinner) setLoading(true);
+    return getAdminOrders().then(o => setItems(o)).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    load();
+    // New orders come from customers placing them elsewhere — poll so they
+    // show up here without the admin needing to leave and reopen this tab.
+    const interval = setInterval(() => load(false), 15000);
+    return () => clearInterval(interval);
+  }, [load]);
+
+  const currency = (n: string | number) => `€${Number(n).toFixed(2)}`;
+
+  const customers = useMemo(() => {
+    const byUser = new Map<string, { name: string; email: string; orders: AdminOrderRecord[] }>();
+    for (const o of items) {
+      if (!byUser.has(o.user_id)) byUser.set(o.user_id, { name: o.user_name || o.user_email, email: o.user_email, orders: [] });
+      byUser.get(o.user_id)!.orders.push(o);
+    }
+    return Array.from(byUser.values());
+  }, [items]);
+
+  const handleStatusChange = async (order: AdminOrderRecord, status: string) => {
+    setSavingId(order.id);
+    try {
+      const updated = await updateOrderStatus(order.id, status);
+      setItems(prev => prev.map(o => o.id === order.id ? updated : o));
+      toast({ title: "Tracking updated" });
+    } catch {
+      toast({ title: "Could not update tracking", variant: "destructive" });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Orders" desc="All orders placed by customers, grouped by customer. Update a delivery/pickup tracking status here." />
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground font-sans">
+          {items.length} order{items.length !== 1 ? "s" : ""} · {customers.length} customer{customers.length !== 1 ? "s" : ""}
+        </p>
+        <button onClick={() => load()}
+          className="font-sans text-xs font-medium text-primary hover:underline shrink-0">
+          Refresh
+        </button>
+      </div>
+      {loading && <p className="text-sm text-muted-foreground font-sans">Loading…</p>}
+      {!loading && items.length === 0 && <p className="text-sm text-muted-foreground font-sans">No orders yet.</p>}
+
+      <div className="space-y-6">
+        {customers.map(c => (
+          <div key={c.email} className="border border-border rounded-xl overflow-hidden">
+            <div className="px-4 py-3 bg-muted/40 border-b border-border flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="font-sans text-sm font-semibold text-foreground">{c.name}</p>
+                <p className="font-sans text-xs text-muted-foreground">{c.email}</p>
+              </div>
+              <span className="font-sans text-xs text-muted-foreground shrink-0">
+                {c.orders.length} order{c.orders.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-muted/10">
+                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Order #</th>
+                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Date</th>
+                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Type</th>
+                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Total</th>
+                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Payment</th>
+                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Tracking status</th>
+                  <th className="px-4 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {c.orders.map(o => (
+                  <Fragment key={o.id}>
+                    <tr className="border-t border-border hover:bg-muted/20 transition-colors">
+                      <td className="px-4 py-3 font-sans font-medium text-foreground whitespace-nowrap">
+                        {o.tracking_number}
+                        {o.cancellation_status === "requested" && (
+                          <span className="block font-sans text-[10px] font-semibold mt-1 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 w-fit">
+                            Cancellation pending
+                          </span>
+                        )}
+                        {o.refund_status === "pending" && (
+                          <span className="block font-sans text-[10px] font-semibold mt-1 px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 w-fit">
+                            Refund owed
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-sans text-muted-foreground whitespace-nowrap">{new Date(o.created_at).toLocaleDateString()}</td>
+                      <td className="px-4 py-3 font-sans capitalize text-muted-foreground">{o.fulfillment_type}</td>
+                      <td className="px-4 py-3 font-sans text-foreground whitespace-nowrap">
+                        {currency(o.total)}
+                        {Number(o.discount_percent) > 0 && (
+                          <span className="text-muted-foreground text-xs"> ({o.discount_percent}% off)</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <span className={`font-sans text-xs font-medium px-2 py-0.5 rounded-full ${
+                          o.payment_status === "paid" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                        }`}>
+                          {o.payment_status === "paid" ? "Paid" : o.payment_status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={o.status}
+                          disabled={savingId === o.id}
+                          onChange={e => handleStatusChange(o, e.target.value)}
+                          className="px-2 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
+                        >
+                          {ORDER_STAGES[o.fulfillment_type].map(stage => (
+                            <option key={stage} value={stage}>{stage}</option>
+                          ))}
+                        </select>
+                        <LastNotified title={o.last_notification_title} at={o.last_notification_at} />
+                      </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <button
+                          onClick={() => setExpandedId(p => p === o.id ? null : o.id)}
+                          className="font-sans text-xs text-primary hover:underline"
+                        >
+                          {expandedId === o.id ? "Hide details" : "View details"}
+                        </button>
+                      </td>
+                    </tr>
+                    {expandedId === o.id && (
+                      <tr className="border-t border-border bg-muted/10">
+                        <td colSpan={7} className="px-4 py-4">
+                          <OrderDetailPanel order={o} onUpdate={(updated) => setItems(prev => prev.map(x => x.id === updated.id ? updated : x))} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ── Returns management panel ───────────────────────────────────────────────────
+
+const ReturnsPanel = () => {
+  const [items, setItems] = useState<AdminReturnRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refundsDue, setRefundsDue] = useState<OpsOverview["refunds_due"]>([]);
+  const { toast } = useToast();
+
+  const load = () => {
+    setLoading(true);
+    getAdminReturns().then(r => { setItems(r); setLoading(false); }).catch(() => setLoading(false));
+    getOpsOverview().then(o => setRefundsDue(o.refunds_due)).catch(() => {});
+  };
+  useEffect(load, []);
+
+  const refundDueFor = (returnId: string) => refundsDue.find(r => r.source_id === returnId);
+
+  const handleStatusChange = async (id: string, status: AdminReturnRecord["status"]) => {
+    try {
+      await updateReturnStatus(id, status);
+      setItems(prev => prev.map(r => r.id === id ? { ...r, status } : r));
+      toast({ title: "Return updated — customer notified" });
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Error", variant: "destructive" });
+    }
+  };
+
+  const STATUS_OPTIONS: AdminReturnRecord["status"][] = ["requested", "approved", "rejected", "refunded"];
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Returns & Refunds" desc="Customer return requests submitted from the Returns & Refunds page." />
+      <p className="text-sm text-muted-foreground font-sans">{items.length} request{items.length !== 1 ? "s" : ""}</p>
+      {loading && <p className="text-sm text-muted-foreground font-sans">Loading…</p>}
+      {!loading && items.length === 0 && <p className="text-sm text-muted-foreground font-sans">No return requests yet.</p>}
+      <div className="space-y-4">
+        {items.map(r => (
+          <div key={r.id} className="rounded-xl border border-border bg-card p-5 space-y-2">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1 flex-1 min-w-0">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="font-sans text-sm font-semibold text-foreground">{r.product_name}</span>
+                  <span className="font-sans text-xs text-muted-foreground">{r.user_name || r.user_email}</span>
+                </div>
+                <p className="font-sans text-sm text-foreground leading-relaxed">{r.reason}</p>
+                <p className="font-sans text-xs text-muted-foreground">{new Date(r.created_at).toLocaleString()}</p>
+                {refundDueFor(r.id) && (
+                  <span className="inline-block font-sans text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+                    Refund due — {refundDueFor(r.id)!.days_elapsed}d since approved
+                  </span>
+                )}
+              </div>
+              <div className="shrink-0 text-right">
+                <select
+                  value={r.status}
+                  disabled={r.status === "refunded"}
+                  onChange={(e) => handleStatusChange(r.id, e.target.value as AdminReturnRecord["status"])}
+                  className="px-3 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs capitalize disabled:opacity-60 disabled:cursor-not-allowed"
+                  title={r.status === "refunded" ? "Refunded is final — this can't be changed further." : undefined}
+                >
+                  {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <LastNotified title={r.last_notification_title} at={r.last_notification_at} />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ── Ops panel ──────────────────────────────────────────────────────────────────
+// Read-only aggregation over data the order-lifecycle feature already tracks
+// (or that already existed) so nothing needs digging through separate tabs —
+// plus the automation knobs (refund reminder cadence, thresholds) that drive it.
+
+const OpsSettingsForm = ({ onSaved }: { onSaved: () => void }) => {
+  const [settings, setSettings] = useState<AutomationSettings>(DEFAULT_AUTOMATION_SETTINGS);
+  const [daysText, setDaysText] = useState("1, 5, 7");
+  const [reasonsText, setReasonsText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    getAutomationSettings().then(s => {
+      setSettings(s);
+      setDaysText(s.refund_reminder_days.join(", "));
+      setReasonsText((s.auto_approvable_return_reasons || []).join(", "));
+    });
+  }, []);
+
+  const save = async () => {
+    const days = daysText.split(",").map(s => Number(s.trim())).filter(n => Number.isFinite(n) && n > 0);
+    const reasons = reasonsText.split(",").map(s => s.trim()).filter(Boolean);
+    const toSave = {
+      ...settings,
+      refund_reminder_days: days.length ? days : DEFAULT_AUTOMATION_SETTINGS.refund_reminder_days,
+      auto_approvable_return_reasons: reasons.length ? reasons : DEFAULT_AUTOMATION_SETTINGS.auto_approvable_return_reasons,
+    };
+    setSaving(true);
+    try {
+      await saveAutomationSettings(toSave);
+      setSettings(toSave);
+      toast({ title: "Automation settings saved" });
+      onSaved();
+    } catch {
+      toast({ title: "Failed to save settings", variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-border p-5 space-y-4">
+      <p className="font-sans text-sm font-semibold text-foreground">Automation settings</p>
+
+      <div className="space-y-2">
+        <label className="flex items-center gap-2 font-sans text-sm text-foreground">
+          <input type="checkbox" checked={settings.refund_reminder_enabled}
+            onChange={e => setSettings(s => ({ ...s, refund_reminder_enabled: e.target.checked }))} className="accent-primary" />
+          Email me refund reminders
+        </label>
+        <label className="flex items-center gap-2 font-sans text-sm text-foreground">
+          <input type="checkbox" checked={settings.decision_engine_enabled}
+            onChange={e => setSettings(s => ({ ...s, decision_engine_enabled: e.target.checked }))} className="accent-primary" />
+          Suggest decisions (returns, fraud review, stuck-order follow-up, back-in-stock)
+        </label>
+        <label className="flex items-center gap-2 font-sans text-sm text-foreground">
+          <input type="checkbox" checked={settings.stuck_order_followup_enabled}
+            onChange={e => setSettings(s => ({ ...s, stuck_order_followup_enabled: e.target.checked }))} className="accent-primary" />
+          Suggest a check-in email for stuck orders
+        </label>
+        <label className="flex items-center gap-2 font-sans text-sm text-foreground">
+          <input type="checkbox" checked={settings.back_in_stock_notify_enabled}
+            onChange={e => setSettings(s => ({ ...s, back_in_stock_notify_enabled: e.target.checked }))} className="accent-primary" />
+          Suggest notifying subscribers when a product is back in stock
+        </label>
+        <label className="flex items-center gap-2 font-sans text-sm" style={{ color: settings.refund_automation_enabled ? "#b91c1c" : undefined }}>
+          <input type="checkbox" checked={settings.refund_automation_enabled}
+            onChange={e => setSettings(s => ({ ...s, refund_automation_enabled: e.target.checked }))} className="accent-destructive" />
+          Refund via Stripe automatically when marked done (moves real money — off by default)
+        </label>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Reminder days" hint="Comma-separated days since approval, e.g. 1, 5, 7">
+          <Input value={daysText} onChange={e => setDaysText(e.target.value)} />
+        </Field>
+        <Field label="Stuck order after (days)">
+          <Input type="number" min={1} value={settings.stuck_order_days}
+            onChange={e => setSettings(s => ({ ...s, stuck_order_days: Number(e.target.value) }))} />
+        </Field>
+        <Field label="Low stock at or below">
+          <Input type="number" min={0} value={settings.low_stock_threshold}
+            onChange={e => setSettings(s => ({ ...s, low_stock_threshold: Number(e.target.value) }))} />
+        </Field>
+        <Field label="Return window (days)">
+          <Input type="number" min={1} value={settings.return_window_days}
+            onChange={e => setSettings(s => ({ ...s, return_window_days: Number(e.target.value) }))} />
+        </Field>
+        <Field label="Fraud review at or above (€)">
+          <Input type="number" min={0} value={settings.fraud_review_threshold}
+            onChange={e => setSettings(s => ({ ...s, fraud_review_threshold: Number(e.target.value) }))} />
+        </Field>
+        <Field label="Underperforming bundle window (days)">
+          <Input type="number" min={1} value={settings.underperforming_bundle_days}
+            onChange={e => setSettings(s => ({ ...s, underperforming_bundle_days: Number(e.target.value) }))} />
+        </Field>
+      </div>
+      <Field label="Auto-approvable return reasons" hint="Comma-separated — a return is suggested for approval when its reason contains one of these">
+        <Input value={reasonsText} onChange={e => setReasonsText(e.target.value)} />
+      </Field>
+
+      <button onClick={save} disabled={saving}
+        className="px-5 py-2 rounded-lg bg-primary text-primary-foreground font-sans text-sm font-medium hover:bg-olive-light transition-all disabled:opacity-50">
+        {saving ? "Saving…" : "Save automation settings"}
+      </button>
+    </div>
+  );
+};
+
+// ── Decisions queue — the human-in-the-loop centerpiece ─────────────────────
+// Every rule the backend evaluates lands here as a suggestion; nothing happens
+// until an admin clicks Approve (which executes it) or Dismiss (which doesn't).
+
+const DECISION_LABEL: Record<AdminDecision["type"], string> = {
+  return_approve_suggested: "Approve this return?",
+  return_reject_suggested: "Reject this return?",
+  fraud_review: "Review this high-value order",
+  stuck_order_followup: "Send a check-in email?",
+  back_in_stock_notify: "Notify subscribers it's back in stock?",
+};
+
+const DecisionsPanel = ({ decisions, onResolved }: { decisions: AdminDecision[]; onResolved: () => void }) => {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  if (!decisions.length) return null;
+
+  const approve = async (d: AdminDecision) => {
+    setBusyId(d.id);
+    try {
+      await approveDecision(d.id);
+      toast({ title: "Decision approved" });
+      onResolved();
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Could not approve", variant: "destructive" });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const dismiss = async (d: AdminDecision) => {
+    setBusyId(d.id);
+    try {
+      await dismissDecision(d.id);
+      toast({ title: "Dismissed" });
+      onResolved();
+    } catch {
+      toast({ title: "Could not dismiss", variant: "destructive" });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border-2 border-primary/40 p-5 space-y-3">
+      <p className="font-sans text-sm font-semibold text-foreground">Decisions ({decisions.length})</p>
+      <p className="font-sans text-xs text-muted-foreground -mt-2">Suggestions from the automated rules — nothing happens until you approve.</p>
+      {decisions.map(d => (
+        <div key={d.id} className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-sans text-xs font-semibold text-foreground">{DECISION_LABEL[d.type] || d.type}</span>
+            {(d.tracking_number || d.return_product_name) && (
+              <span className="font-sans text-xs text-muted-foreground">
+                {d.tracking_number ? `#${d.tracking_number}` : ""}{d.return_product_name ? ` · ${d.return_product_name}` : ""}
+              </span>
+            )}
+          </div>
+          <p className="font-sans text-xs text-muted-foreground">{d.reasoning}</p>
+          <div className="flex gap-2">
+            <button onClick={() => approve(d)} disabled={busyId === d.id}
+              className="font-sans text-xs font-medium px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
+              Approve
+            </button>
+            <button onClick={() => dismiss(d)} disabled={busyId === d.id}
+              className="font-sans text-xs font-medium px-3 py-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-50">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// History of resolved decisions — so an approved/dismissed suggestion doesn't
+// just vanish with no trace of what happened or when. Loaded lazily since it's
+// secondary to the actionable queue above it.
+const RESOLVED_DECISION_LABEL: Record<string, string> = { approved: "Approved", dismissed: "Dismissed" };
+
+const ResolvedDecisionsPanel = () => {
+  const [items, setItems] = useState<(AdminDecision & { resolved_at: string })[] | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  const load = () => { getResolvedDecisions().then(setItems).catch(() => setItems([])); };
+
+  return (
+    <div className="rounded-xl border border-border p-5 space-y-3">
+      <button onClick={() => { setExpanded(e => !e); if (!items) load(); }}
+        className="font-sans text-sm font-semibold text-foreground hover:underline">
+        {expanded ? "Hide" : "Show"} resolved decisions
+      </button>
+      {expanded && (
+        items === null ? (
+          <p className="font-sans text-xs text-muted-foreground">Loading…</p>
+        ) : items.length === 0 ? (
+          <p className="font-sans text-xs text-muted-foreground">Nothing resolved yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {items.map(d => (
+              <div key={d.id} className="flex items-center justify-between gap-3 font-sans text-xs text-muted-foreground">
+                <span>
+                  <span className={`font-medium ${d.status === "approved" ? "text-green-700" : "text-muted-foreground"}`}>
+                    {RESOLVED_DECISION_LABEL[d.status] || d.status}
+                  </span>
+                  {" · "}{DECISION_LABEL[d.type] || d.type}
+                  {(d.tracking_number || d.return_product_name) && ` · ${d.tracking_number ? `#${d.tracking_number}` : ""}${d.return_product_name ? ` ${d.return_product_name}` : ""}`}
+                </span>
+                <span className="shrink-0">{new Date(d.resolved_at).toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+};
+
+const OpsPanel = () => {
+  const [ops, setOps] = useState<OpsOverview | null>(null);
+  const [decisions, setDecisions] = useState<AdminDecision[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(() => {
+    Promise.all([getOpsOverview(), getAdminDecisions()])
+      .then(([o, d]) => { setOps(o); setDecisions(d); })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Ops" desc="Fulfillment, inventory, and marketing signals that need attention — plus the automation that drives them." />
+
+      {loading && <p className="text-sm text-muted-foreground font-sans">Loading…</p>}
+
+      {ops && (
+        <>
+          <DecisionsPanel decisions={decisions} onResolved={load} />
+          <ResolvedDecisionsPanel />
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="rounded-xl border border-border p-4">
+              <p className="font-sans text-2xl font-semibold text-foreground">{ops.stuck_orders.length}</p>
+              <p className="font-sans text-xs text-muted-foreground">Orders stuck &gt; {ops.settings.stuck_order_days}d</p>
+            </div>
+            <div className="rounded-xl border border-border p-4">
+              <p className="font-sans text-2xl font-semibold text-foreground">{ops.pending_cancellations.length}</p>
+              <p className="font-sans text-xs text-muted-foreground">Cancellations awaiting decision</p>
+            </div>
+            <div className="rounded-xl border border-border p-4">
+              <p className="font-sans text-2xl font-semibold text-foreground">{ops.pending_returns_count}</p>
+              <p className="font-sans text-xs text-muted-foreground">Return requests awaiting decision</p>
+            </div>
+            <div className="rounded-xl border border-border p-4">
+              <p className="font-sans text-2xl font-semibold text-foreground">{ops.refunds_due.length}</p>
+              <p className="font-sans text-xs text-muted-foreground">Refunds owed to customers</p>
+            </div>
+          </div>
+
+          {ops.stuck_orders.length > 0 && (
+            <div className="rounded-xl border border-border p-5 space-y-2">
+              <p className="font-sans text-sm font-semibold text-foreground">Stuck orders</p>
+              {ops.stuck_orders.map(o => (
+                <div key={o.id} className="flex items-center justify-between font-sans text-xs text-muted-foreground">
+                  <span>{o.tracking_number} · {o.user_name || o.user_email} · stuck at "{o.status}"</span>
+                  <span>{new Date(o.created_at).toLocaleDateString()}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {ops.refunds_due.length > 0 && (
+            <div className="rounded-xl border border-border p-5 space-y-2">
+              <p className="font-sans text-sm font-semibold text-foreground">Refunds due</p>
+              {ops.refunds_due.map(r => (
+                <div key={r.id} className="flex items-center justify-between font-sans text-xs text-muted-foreground">
+                  <span>{r.source === "return" ? "Return" : "Cancellation"} · #{r.tracking_number} · {r.user_name || r.user_email} · €{Number(r.total).toFixed(2)}</span>
+                  <span className="font-medium text-red-700">{r.days_elapsed}d</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {ops.low_stock_products.length > 0 && (
+            <div className="rounded-xl border border-border p-5 space-y-2">
+              <p className="font-sans text-sm font-semibold text-foreground">Low stock</p>
+              {ops.low_stock_products.map(p => (
+                <div key={p.id} className="flex items-center justify-between font-sans text-xs text-muted-foreground">
+                  <span>{p.name}</span>
+                  <span className="font-medium text-amber-700">{p.stock} left</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {ops.underperforming_bundles.length > 0 && (
+            <div className="rounded-xl border border-border p-5 space-y-2">
+              <p className="font-sans text-sm font-semibold text-foreground">Underperforming bundles</p>
+              <p className="font-sans text-xs text-muted-foreground -mt-1">No orders matched these active bundles in the last {ops.settings.underperforming_bundle_days} days.</p>
+              {ops.underperforming_bundles.map(b => (
+                <div key={b.id} className="font-sans text-xs text-muted-foreground">{b.name}</div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-xl border border-border p-5">
+            <p className="font-sans text-sm font-semibold text-foreground mb-1">Subscribers</p>
+            <p className="font-sans text-xs text-muted-foreground">
+              {ops.subscriber_stats.total} total · +{ops.subscriber_stats.new_7d} in the last 7 days · +{ops.subscriber_stats.new_30d} in the last 30 days
+            </p>
+          </div>
+
+          <OpsSettingsForm onSaved={load} />
+        </>
+      )}
+    </div>
+  );
+};
 
 // ── Deals / Bundle & Save editor ──────────────────────────────────────────────
 
@@ -1773,35 +2862,99 @@ type TabId =
   | "testimonials"
   | "newsletter"
   | "footer"
+  | "returnPolicy"
+  | "giftCards"
+  | "customerService"
+  | "pickupSettings"
+  | "privacyPolicy"
+  | "termsOfService"
+  | "shippingPolicy"
   | "subscribers"
   | "users"
-  | "feedback";
+  | "feedback"
+  | "orders"
+  | "returns"
+  | "ops";
 
-const NAV_ITEMS: { id: TabId; label: string; icon: string }[] = [
-  { id: "announcementBar", label: "Announcement Bar", icon: "📢" },
-  { id: "navbar",          label: "Navbar",           icon: "☰" },
-  { id: "hero",            label: "Home Page",         icon: "🏠" },
-  { id: "shopCategories",  label: "Shop By Category", icon: "📖" },
-  { id: "deals",           label: "Today's Deals",    icon: "🏷️" },
-  { id: "products",        label: "Products",         icon: "◈" },
-  { id: "momentPill",      label: "Moment Pill",      icon: "💊" },
-  { id: "welcomeClub",     label: "Welcome Club",     icon: "🫶" },
-  { id: "brandStory",      label: "Brand Story",      icon: "✦" },
-  { id: "candleCare",      label: "Candle Care",      icon: "♨" },
-  { id: "videos",          label: "Videos",           icon: "▶" },
-  { id: "testimonials",    label: "Testimonials",     icon: "❝" },
-  { id: "newsletter",      label: "Newsletter",       icon: "✉" },
-  { id: "footer",          label: "Footer",           icon: "⊘" },
-  { id: "subscribers",     label: "Subscribers",      icon: "◉" },
-  { id: "users",           label: "Signed Up Users",  icon: "👤" },
-  { id: "feedback",        label: "Customer Feedback", icon: "💬" },
+type NavItem = { id: TabId; label: string; icon: string };
+type NavGroup = { id: string; label: string; icon: string; items: NavItem[] };
+
+// Sections are grouped by which real site page they control, so the sidebar
+// reads as "pages" rather than a flat list of every content block.
+const NAV_GROUPS: NavGroup[] = [
+  {
+    id: "home",
+    label: "Home Page",
+    icon: "🏠",
+    items: [
+      { id: "announcementBar", label: "Announcement Bar", icon: "📢" },
+      { id: "navbar",          label: "Navbar",           icon: "☰" },
+      { id: "hero",            label: "Hero Banner",      icon: "🖼️" },
+      { id: "momentPill",      label: "Moment Pill",      icon: "💊" },
+      { id: "welcomeClub",     label: "Welcome Club",     icon: "🫶" },
+      { id: "brandStory",      label: "Brand Story",      icon: "✦" },
+      { id: "products",        label: "Products",         icon: "◈" },
+      { id: "candleCare",      label: "Candle Care",      icon: "♨" },
+      { id: "videos",          label: "Videos",           icon: "▶" },
+      { id: "testimonials",    label: "Testimonials",     icon: "❝" },
+      { id: "newsletter",      label: "Newsletter",       icon: "✉" },
+      { id: "footer",          label: "Footer",           icon: "⊘" },
+    ],
+  },
+  {
+    id: "shop",
+    label: "Shop Page",
+    icon: "🛍️",
+    items: [
+      { id: "shopCategories", label: "Shop By Category", icon: "📖" },
+      { id: "deals",          label: "Today's Deals",    icon: "🏷️" },
+    ],
+  },
+  {
+    id: "policies",
+    label: "Policy & Info Pages",
+    icon: "📄",
+    items: [
+      { id: "returnPolicy",    label: "Return Policy",    icon: "↩" },
+      { id: "giftCards",       label: "Gift Cards",       icon: "🎁" },
+      { id: "customerService", label: "Customer Service", icon: "🎧" },
+      { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
+      { id: "privacyPolicy",   label: "Privacy Policy",   icon: "🔒" },
+      { id: "termsOfService",  label: "Terms of Service", icon: "📜" },
+      { id: "shippingPolicy",  label: "Shipping Policy",  icon: "🚚" },
+    ],
+  },
+  {
+    id: "customers",
+    label: "Customers & Orders",
+    icon: "👥",
+    items: [
+      { id: "subscribers", label: "Subscribers",       icon: "◉" },
+      { id: "users",       label: "Signed Up Users",   icon: "👤" },
+      { id: "feedback",    label: "Customer Feedback", icon: "💬" },
+      { id: "orders",      label: "Orders",            icon: "🧾" },
+      { id: "returns",     label: "Returns",           icon: "📦" },
+    ],
+  },
+  {
+    id: "ops",
+    label: "Ops",
+    icon: "⚙️",
+    items: [
+      { id: "ops", label: "Ops Overview", icon: "📊" },
+    ],
+  },
 ];
+
+const groupIdForTab = (tab: TabId): string =>
+  NAV_GROUPS.find((g) => g.items.some((i) => i.id === tab))?.id ?? NAV_GROUPS[0].id;
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
 
 const AdminDashboard = () => {
   const [session, setSession] = useState<boolean | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("hero");
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set([groupIdForTab("hero")]));
   const [content, setContent] = useState<SiteContent>(DEFAULT_CONTENT);
   const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
   const [shopCategories, setShopCategories] = useState<ShopCategory[]>([]);
@@ -1814,7 +2967,7 @@ const AdminDashboard = () => {
 
   const loadData = useCallback(async () => {
     // ── Content sections (getContent never throws — falls back to defaults) ──
-    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer] =
+    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, privacyPolicy, termsOfService, shippingPolicy] =
       await Promise.all([
         getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
         getContent("navbar",          DEFAULT_CONTENT.navbar),
@@ -1828,8 +2981,15 @@ const AdminDashboard = () => {
         getContent("testimonials",    DEFAULT_CONTENT.testimonials),
         getContent("newsletter",      DEFAULT_CONTENT.newsletter),
         getContent("footer",          DEFAULT_CONTENT.footer),
+        getContent("returnPolicy",    DEFAULT_CONTENT.returnPolicy),
+        getContent("giftCards",       DEFAULT_CONTENT.giftCards),
+        getContent("customerService", DEFAULT_CONTENT.customerService),
+        getContent("pickupSettings",  DEFAULT_CONTENT.pickupSettings),
+        getContent("privacyPolicy",   DEFAULT_CONTENT.privacyPolicy),
+        getContent("termsOfService",  DEFAULT_CONTENT.termsOfService),
+        getContent("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
       ]);
-    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer });
+    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, privacyPolicy, termsOfService, shippingPolicy });
 
     // ── Shop categories ───────────────────────────────────────────────────────
     try {
@@ -1889,6 +3049,18 @@ const AdminDashboard = () => {
   const update = <K extends keyof SiteContent>(section: K) =>
     (value: SiteContent[K]) => setContent((prev) => ({ ...prev, [section]: value }));
 
+  const selectTab = (id: TabId) => {
+    setActiveTab(id);
+    setExpandedGroups((prev) => new Set(prev).add(groupIdForTab(id)));
+  };
+
+  const toggleGroup = (id: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Top header */}
@@ -1923,22 +3095,53 @@ const AdminDashboard = () => {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-52 shrink-0 border-r border-border bg-card overflow-y-auto">
+        <aside className="w-64 shrink-0 border-r border-border bg-card overflow-y-auto">
           <nav className="py-4">
-            {NAV_ITEMS.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-3 px-5 py-2.5 text-left font-sans text-sm transition-colors ${
-                  activeTab === item.id
-                    ? "bg-primary/10 text-primary font-medium"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                }`}
-              >
-                <span className="text-base leading-none">{item.icon}</span>
-                {item.label}
-              </button>
-            ))}
+            {NAV_GROUPS.map((group) => {
+              const isExpanded = expandedGroups.has(group.id);
+              const isActiveGroup = group.items.some((i) => i.id === activeTab);
+              return (
+                <div key={group.id} className="mb-1">
+                  <button
+                    onClick={() => toggleGroup(group.id)}
+                    className={`w-full flex items-center justify-between gap-2 px-5 py-2.5 text-left font-sans text-xs font-semibold uppercase tracking-wide transition-colors ${
+                      isActiveGroup ? "text-primary" : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="text-sm leading-none">{group.icon}</span>
+                      {group.label}
+                    </span>
+                    <svg
+                      className={`w-3.5 h-3.5 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                  {isExpanded && (
+                    <div className="pb-2">
+                      {group.items.map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => selectTab(item.id)}
+                          className={`w-full flex items-center gap-3 pl-8 pr-5 py-2 text-left font-sans text-sm border-l-2 transition-colors ${
+                            activeTab === item.id
+                              ? "border-primary bg-primary/10 text-primary font-medium"
+                              : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                          }`}
+                        >
+                          <span className="text-sm leading-none">{item.icon}</span>
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </nav>
         </aside>
 
@@ -1959,9 +3162,19 @@ const AdminDashboard = () => {
             {activeTab === "testimonials" && <TestimonialsEditor data={content.testimonials} onChange={update("testimonials")} onSave={() => handleSave("testimonials")} saving={saving} />}
             {activeTab === "newsletter"   && <NewsletterEditor   data={content.newsletter}   onChange={update("newsletter")}   onSave={() => handleSave("newsletter")}   saving={saving} />}
             {activeTab === "footer"       && <FooterEditor       data={content.footer}       onChange={update("footer")}       onSave={() => handleSave("footer")}       saving={saving} />}
+            {activeTab === "returnPolicy"    && <ReturnPolicyEditor    data={content.returnPolicy}    onChange={update("returnPolicy")}    onSave={() => handleSave("returnPolicy")}    saving={saving} />}
+            {activeTab === "giftCards"       && <GiftCardsEditor       data={content.giftCards}       onChange={update("giftCards")}       onSave={() => handleSave("giftCards")}       saving={saving} />}
+            {activeTab === "customerService" && <CustomerServiceEditor data={content.customerService} onChange={update("customerService")} onSave={() => handleSave("customerService")} saving={saving} />}
+            {activeTab === "pickupSettings"  && <PickupSettingsEditor  data={content.pickupSettings}  onChange={update("pickupSettings")}  onSave={() => handleSave("pickupSettings")}  saving={saving} />}
+            {activeTab === "privacyPolicy"   && <LegalPageEditor title="Privacy Policy"   desc="Content shown on the Privacy Policy page."   data={content.privacyPolicy}  onChange={update("privacyPolicy")}  onSave={() => handleSave("privacyPolicy")}  saving={saving} />}
+            {activeTab === "termsOfService"  && <LegalPageEditor title="Terms of Service" desc="Content shown on the Terms of Service page." data={content.termsOfService} onChange={update("termsOfService")} onSave={() => handleSave("termsOfService")} saving={saving} />}
+            {activeTab === "shippingPolicy"  && <LegalPageEditor title="Shipping Policy"  desc="Content shown on the Shipping Policy page."  data={content.shippingPolicy} onChange={update("shippingPolicy")} onSave={() => handleSave("shippingPolicy")} saving={saving} />}
             {activeTab === "subscribers"  && <SubscribersPanel   subscribers={subscribers}   onDelete={handleDeleteSubscriber} />}
             {activeTab === "users"        && <UsersPanel />}
             {activeTab === "feedback"     && <FeedbackPanel />}
+            {activeTab === "orders"       && <OrdersPanel />}
+            {activeTab === "returns"      && <ReturnsPanel />}
+            {activeTab === "ops"          && <OpsPanel />}
           </div>
         </main>
       </div>
