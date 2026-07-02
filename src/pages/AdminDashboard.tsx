@@ -2892,7 +2892,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "hero",            label: "Hero Banner",      icon: "🖼️" },
       { id: "momentPill",      label: "Moment Pill",      icon: "💊" },
       { id: "welcomeClub",     label: "Welcome Club",     icon: "🫶" },
-      { id: "brandStory",      label: "Brand Story",      icon: "✦" },
+      { id: "brandStory",      label: "Brand Story",      icon: "🕯️" },
       { id: "products",        label: "Products",         icon: "◈" },
       { id: "candleCare",      label: "Candle Care",      icon: "♨" },
       { id: "videos",          label: "Videos",           icon: "▶" },

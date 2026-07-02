@@ -181,7 +181,7 @@ const ShopPage = () => {
             className="font-display text-xs tracking-[0.2em] uppercase mb-4"
             style={{ color: "var(--color-gold)" }}
           >
-            ✦ &nbsp; The Collection
+            🕯️ &nbsp; The Collection &nbsp; 🕯️
           </motion.p>
           <motion.h1
             initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}

@@ -47,7 +47,7 @@ const AboutPage = () => {
             className="font-display text-xs tracking-[0.2em] uppercase mb-5"
             style={{ color: "var(--color-gold)" }}
           >
-            ✦ &nbsp; Our Story
+            🕯️ &nbsp; Our Story &nbsp; 🕯️
           </motion.p>
           <motion.h1 {...fadeIn(0.1)}
             className="font-display font-semibold mb-6"

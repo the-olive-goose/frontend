@@ -103,7 +103,7 @@ const Index = () => {
         <section style={{ background: "var(--color-cream-section)", paddingBottom: "clamp(32px,5vw,60px)" }}>
           <div className="text-center">
             <p style={{ fontFamily: "'Permanent Marker',cursive", fontSize: "clamp(0.62rem,0.96vw,0.78rem)", color: "var(--color-sage-light)", marginBottom: 10, transform: "rotate(-0.5deg)", display: "inline-block" }}>
-              ✦ your voice matters
+              🕯️ your voice matters 🕯️
             </p>
             <div>
               <motion.button

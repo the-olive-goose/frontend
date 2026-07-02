@@ -171,7 +171,7 @@ const DealsPage = () => {
             <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }}
               className="font-display text-xs tracking-[0.2em] uppercase mb-3"
               style={{ color: "var(--color-gold)" }}>
-              ✦ limited time offers
+              🕯️ limited time offers 🕯️
             </motion.p>
             <motion.h1 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}
               style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 600, fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05, marginBottom: 12 }}>

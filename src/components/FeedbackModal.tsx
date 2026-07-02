@@ -110,7 +110,7 @@ const FeedbackModal = ({ open, onClose }: Props) => {
                       Share Your Experience
                     </h2>
                     <p style={{ fontFamily: "'Permanent Marker',cursive", fontSize: "0.72rem", color: "rgba(30,20,10,0.5)", transform: "rotate(-0.8deg)" }}>
-                      we'd love to hear from you ✦
+                      🕯️ we'd love to hear from you 🕯️
                     </p>
                   </div>
 
