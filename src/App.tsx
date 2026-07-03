@@ -10,6 +10,7 @@ import CookieConsent from "@/components/CookieConsent";
 import Layout from "@/components/Layout";
 import Index from "./pages/Index.tsx";
 import AdminDashboard from "./pages/AdminDashboard.tsx";
+import AdminResetPassword from "./pages/AdminResetPassword.tsx";
 import CandleCarePage from "./pages/CandleCarePage.tsx";
 import ShopPage from "./pages/ShopPage.tsx";
 import BasketPage from "./pages/BasketPage.tsx";
@@ -67,6 +68,7 @@ const App = () => (
                 <Route path="/shipping-policy" element={<ShippingPolicyPage />} />
               </Route>
               <Route path="/admin" element={<AdminDashboard />} />
+              <Route path="/admin/reset-password" element={<AdminResetPassword />} />
               <Route path="/auth/callback" element={<AuthCallback />} />
               <Route path="*" element={<NotFound />} />
             </Routes>

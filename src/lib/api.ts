@@ -68,6 +68,30 @@ export const logout = (): void => {
   localStorage.removeItem('admin_token');
 };
 
+// Always resolves with a generic message, whether or not the email is a
+// registered admin — the backend intentionally doesn't reveal which.
+export const requestAdminPasswordReset = async (email: string): Promise<{ message: string }> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/auth/admin/password/forgot`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ email }),
+  });
+  return res.json();
+};
+
+export const confirmAdminPasswordReset = async (token: string, newPassword: string): Promise<void> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/auth/admin/password/reset`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ token, newPassword }),
+  });
+  if (!res.ok) {
+    let errMsg = `HTTP ${res.status}`;
+    try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+};
+
 export const isLoggedIn = (): boolean => !!getToken();
 
 // ── Generic content API ────────────────────────────────────────────────────────

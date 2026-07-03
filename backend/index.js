@@ -6,6 +6,7 @@ import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
 import multer from 'multer';
@@ -14,7 +15,7 @@ import Stripe from 'stripe';
 import { sendOtpEmail, sendPasswordResetEmail, sendOrderConfirmationEmail, sendOrderStatusUpdateEmail,
   sendCancellationRequestedEmail, sendCancellationRequestAdminAlert, sendCancellationDecisionEmail,
   sendReturnRequestedEmail, sendReturnDecisionEmail, sendRefundCompletedEmail, sendCustomerMessageEmail,
-  sendBackInStockEmail } from './email.js';
+  sendBackInStockEmail, sendAdminPasswordResetEmail } from './email.js';
 import { startRefundReminderScheduler } from './scheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -243,11 +244,19 @@ const addOrderEvent = async (orderId, { type, actor = 'system', title, detail = 
 // Best-effort — decrements stock for products that opted into tracking (a numeric
 // `stock` field on the item in content_products). Products with no stock field
 // are left untouched, so this is fully optional per-product.
+// Uses SELECT ... FOR UPDATE inside a transaction to serialize concurrent
+// decrements against the same row — without this, two checkouts completing
+// at the same instant for the last unit(s) of a product can both read the
+// same pre-decrement stock and both succeed, overselling it.
 const decrementStock = async (items) => {
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'content_products'`);
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT value FROM site_settings WHERE key = 'content_products' FOR UPDATE`
+    );
     const content = rows[0]?.value;
-    if (!content?.items?.length) return;
+    if (!content?.items?.length) { await client.query('ROLLBACK'); return; }
     let changed = false;
     const updatedItems = content.items.map((p) => {
       const line = items.find(i => i.product_id === p.id);
@@ -256,13 +265,17 @@ const decrementStock = async (items) => {
       return { ...p, stock: Math.max(0, Number(p.stock) - line.quantity) };
     });
     if (changed) {
-      await pool.query(
+      await client.query(
         `UPDATE site_settings SET value = $1, updated_at = NOW() WHERE key = 'content_products'`,
         [JSON.stringify({ ...content, items: updatedItems })]
       );
     }
+    await client.query('COMMIT');
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[decrementStock]', err);
+  } finally {
+    client.release();
   }
 };
 
@@ -469,11 +482,19 @@ const finalizeCheckoutSession = async (sessionId) => {
 };
 
 // ── Admin auth middleware ──────────────────────────────────────────────────────
-const requireAuth = (req, res, next) => {
+// Beyond signature/expiry, this checks the token's tokenVersion against the
+// admins row: a password reset bumps token_version, which immediately
+// invalidates every JWT issued before the reset — not just the one the admin
+// is currently holding — even though JWTs are otherwise stateless for 7 days.
+const requireAuth = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET);
+    const { rows } = await pool.query('SELECT token_version FROM admins WHERE email = $1', [payload.email]);
+    if (!rows.length || rows[0].token_version !== payload.tokenVersion)
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    req.user = payload;
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });
@@ -503,23 +524,97 @@ const requireUserAuth = (req, res, next) => {
 // ── Health check ───────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 
+// A fixed dummy hash to compare against when no admin row matches — keeps the
+// login response time roughly constant whether or not the email exists, so a
+// timing side-channel can't be used to enumerate the admin email.
+const DUMMY_BCRYPT_HASH = '$2a$12$CwTycUXWue0Thq9StjUM0uJ8g9wYQpBhaC4PVeWZQhBw1lB9O.k0.';
+
 // ── Admin login ────────────────────────────────────────────────────────────────
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
-  const adminEmail        = process.env.ADMIN_EMAIL;
-  const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH;
+  const normEmail = (email || '').toLowerCase().trim();
+  if (!normEmail || !password) return res.status(401).json({ error: 'Invalid credentials' });
 
-  console.log('[login] received email:', email);
-  if (!adminEmail || !adminPasswordHash)
-    return res.status(500).json({ error: 'Admin credentials not configured' });
-  if (email !== adminEmail)
-    return res.status(401).json({ error: 'Invalid credentials' });
+  const { rows } = await pool.query('SELECT * FROM admins WHERE email = $1', [normEmail]);
+  const admin = rows[0];
 
-  const valid = await bcrypt.compare(password, adminPasswordHash);
-  if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+  const valid = await bcrypt.compare(password, admin ? admin.password_hash : DUMMY_BCRYPT_HASH);
+  if (!admin || !valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-  const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ email: admin.email, tokenVersion: admin.token_version }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token });
+});
+
+// ── Admin password reset (forgot) ───────────────────────────────────────────────
+// Always returns the same generic message regardless of whether the email
+// matches an admin, so this endpoint can't be used to enumerate admin accounts.
+app.post('/api/auth/admin/password/forgot', otpSendLimiter, async (req, res) => {
+  const normEmail = (req.body.email || '').toLowerCase().trim();
+  const genericMsg = { message: 'If that email is registered as an admin, a reset link has been sent.' };
+
+  if (!EMAIL_RE.test(normEmail)) return res.json(genericMsg);
+
+  try {
+    const { rows } = await pool.query('SELECT email FROM admins WHERE email = $1', [normEmail]);
+    if (rows.length) {
+      const rawToken  = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 min, single-use
+
+      await pool.query(
+        `INSERT INTO admin_password_resets (admin_email, token_hash, expires_at) VALUES ($1, $2, $3)`,
+        [normEmail, tokenHash, expiresAt]
+      );
+
+      const resetUrl = `${FRONTEND_URL}/admin/reset-password?token=${rawToken}`;
+      sendAdminPasswordResetEmail(normEmail, resetUrl).catch(err => console.error('[admin reset email]', err));
+    }
+  } catch (err) {
+    console.error('[admin password forgot]', err);
+  }
+
+  res.json(genericMsg);
+});
+
+// ── Admin password reset (confirm) ──────────────────────────────────────────────
+app.post('/api/auth/admin/password/reset', authLimiter, async (req, res) => {
+  const { token, newPassword } = req.body;
+  if (!token || !newPassword) return res.status(400).json({ error: 'Missing token or new password.' });
+
+  const pwError = validatePassword(newPassword);
+  if (pwError) return res.status(400).json({ error: pwError });
+
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM admin_password_resets WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()`,
+      [tokenHash]
+    );
+    if (!rows.length) return res.status(400).json({ error: 'This reset link is invalid or has expired.' });
+
+    const record = rows[0];
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+    // Bumping token_version invalidates every JWT issued before this reset —
+    // a leaked/stolen admin session token stops working the moment the
+    // password changes, instead of remaining valid for its full 7-day life.
+    await pool.query(
+      `UPDATE admins SET password_hash = $1, token_version = token_version + 1, updated_at = NOW() WHERE email = $2`,
+      [passwordHash, record.admin_email]
+    );
+    // Consume this token and any other outstanding ones for the same admin,
+    // so a second, unused reset link can't be replayed after this one lands.
+    await pool.query(
+      `UPDATE admin_password_resets SET used_at = NOW() WHERE admin_email = $1 AND used_at IS NULL`,
+      [record.admin_email]
+    );
+
+    res.json({ message: 'Password reset. Please sign in with your new password.' });
+  } catch (err) {
+    console.error('[admin password reset]', err);
+    res.status(500).json({ error: 'Could not reset password.' });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -874,6 +969,22 @@ app.get('/api/auth/google/callback', async (req, res) => {
     });
     const gUser = await userRes.json();
 
+    // Never silently merge a Google login into an account that was created
+    // with a different identity (password/Facebook/phone), and never trust
+    // an unverified provider email as proof of ownership — otherwise anyone
+    // who can obtain a Google identity reporting a victim's email (e.g. an
+    // unverified Workspace alias) could sign in as that victim.
+    if (!gUser.verified_email) {
+      return res.redirect(`${FRONTEND_URL}/auth/callback?error=email_not_verified`);
+    }
+
+    const { rows: existingRows } = await pool.query(
+      'SELECT provider FROM users WHERE email = $1', [gUser.email]
+    );
+    if (existingRows.length && existingRows[0].provider !== 'google') {
+      return res.redirect(`${FRONTEND_URL}/auth/callback?error=account_exists`);
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO users (email, full_name, avatar_url, provider, provider_id)
        VALUES ($1, $2, $3, 'google', $4)
@@ -933,6 +1044,16 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
 
     const email     = fbUser.email || `fb_${fbUser.id}@noemail.local`;
     const avatarUrl = fbUser.picture?.data?.url || '';
+
+    // Graph API doesn't expose a reliable "email verified" flag, so treat every
+    // Facebook email as unverified proof of ownership: never merge into an
+    // account that already exists under a different provider.
+    const { rows: existingRows } = await pool.query(
+      'SELECT provider FROM users WHERE email = $1', [email]
+    );
+    if (existingRows.length && existingRows[0].provider !== 'facebook') {
+      return res.redirect(`${FRONTEND_URL}/auth/callback?error=account_exists`);
+    }
 
     const { rows } = await pool.query(
       `INSERT INTO users (email, full_name, avatar_url, provider, provider_id)
@@ -2400,7 +2521,44 @@ async function initDb() {
       "notes":            "Bring your order confirmation email — we''ll have it ready and waiting."
     }')
     ON CONFLICT (key) DO NOTHING;
+
+    -- Admin accounts live in the DB (not just env vars) so a password reset can
+    -- actually persist. token_version is bumped on every password change and
+    -- checked on every request (see requireAuth) so a stolen JWT issued before
+    -- a reset stops working immediately instead of staying valid for its full 7d.
+    CREATE TABLE IF NOT EXISTS admins (
+      id            UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      email         TEXT        UNIQUE NOT NULL,
+      password_hash TEXT        NOT NULL,
+      token_version INT         NOT NULL DEFAULT 0,
+      created_at    TIMESTAMPTZ DEFAULT NOW(),
+      updated_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    -- Reset tokens are single-use, short-lived, and stored as a SHA-256 digest
+    -- (not bcrypt) so they can be looked up by an indexed equality match — the
+    -- token itself already carries 256 bits of entropy from crypto.randomBytes,
+    -- so a fast deterministic hash is appropriate here (unlike user passwords).
+    CREATE TABLE IF NOT EXISTS admin_password_resets (
+      id          UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      admin_email TEXT        NOT NULL,
+      token_hash  TEXT        UNIQUE NOT NULL,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
+
+  // One-time bootstrap: seed the admins table from the env vars if it's empty.
+  // After this, ADMIN_EMAIL/ADMIN_PASSWORD_HASH are only a fallback for the very
+  // first boot — password changes/resets live in the DB from then on.
+  if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD_HASH) {
+    await pool.query(
+      `INSERT INTO admins (email, password_hash) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING`,
+      [process.env.ADMIN_EMAIL.toLowerCase().trim(), process.env.ADMIN_PASSWORD_HASH]
+    );
+  }
+
   console.log('✅ Database ready');
 }
 

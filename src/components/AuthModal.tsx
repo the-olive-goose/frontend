@@ -349,9 +349,14 @@ const AuthModal = () => {
                     <PrimaryBtn type="submit" loading={loading}>Create your account</PrimaryBtn>
                   </form>
 
-                  <div className="flex items-center gap-2 mt-5">
-                    <div className="flex-1 h-px bg-gray-300" />
-                  </div>
+                  {googleEnabled && (
+                    <>
+                      <Divider />
+                      <div className="space-y-2.5">
+                        <SocialBtn icon={<GoogleIcon />} label="Continue with Google" onClick={() => { clear(); signInWithGoogle(); }} />
+                      </div>
+                    </>
+                  )}
 
                   <p className="font-sans text-sm text-center mt-4" style={{ color: "#0F1111" }}>
                     Already have an account?{" "}

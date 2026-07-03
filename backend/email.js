@@ -55,6 +55,28 @@ export async function sendPasswordResetEmail(to, code) {
 }
 
 /**
+ * Send an admin password-reset link (single-use, short-lived token in the URL).
+ * @returns {Promise<{ delivered: boolean }>}
+ */
+export async function sendAdminPasswordResetEmail(to, resetUrl) {
+  const subject = `Reset your Olive Goose admin password`;
+  const text =
+    `Someone requested a password reset for the Olive Goose admin account.\n` +
+    `Reset it here: ${resetUrl}\n` +
+    `This link expires in 15 minutes and can only be used once. If you didn't request this, ignore this email — your password won't change.`;
+  const html = `
+  <div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1e2918">
+    <p style="font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:#6b7a5e;margin:0 0 4px">The Olive Goose · Admin</p>
+    <h1 style="font-size:20px;margin:0 0 16px;color:#1e2918">Reset your admin password</h1>
+    <p style="font-size:15px;line-height:1.5;margin:0 0 20px">Click below to choose a new admin password. This link expires in 15 minutes and can only be used once.</p>
+    <a href="${resetUrl}" style="display:inline-block;margin-bottom:20px;padding:12px 22px;background:#1e2918;color:#fff;border-radius:8px;font-size:14px;font-weight:600;text-decoration:none">Reset password</a>
+    <p style="font-size:13px;line-height:1.5;color:#6b7a5e;margin:0">If you didn't request this, you can safely ignore this email — your password won't change.</p>
+  </div>`;
+
+  return sendEmail({ to, subject, html, text });
+}
+
+/**
  * Send a 6-digit verification code.
  * @returns {Promise<{ delivered: boolean }>}
  */
