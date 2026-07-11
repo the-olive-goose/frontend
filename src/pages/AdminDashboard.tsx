@@ -3275,7 +3275,6 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "returnPolicy",    label: "Return Policy",    icon: "↩" },
       { id: "giftCards",       label: "Gift Cards",       icon: "🎁" },
       { id: "customerService", label: "Customer Service", icon: "🎧" },
-      { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
       { id: "privacyPolicy",   label: "Privacy Policy",   icon: "🔒" },
       { id: "termsOfService",  label: "Terms of Service", icon: "📜" },
       { id: "shippingPolicy",  label: "Shipping Policy",  icon: "🚚" },
@@ -3299,6 +3298,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "⚙️",
     items: [
       { id: "ops", label: "Ops Overview", icon: "📊" },
+      { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
     ],
   },
 ];

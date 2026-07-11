@@ -1418,6 +1418,9 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
     );
     const pickup = pickupRows[0]?.value || {};
     const freeShippingThreshold = Number(pickup.free_shipping_threshold) || 65;
+    // Use ?? / isFinite (not ||) so an admin-set rate of 0 is honored — 0 is falsy.
+    const rawFlatRate = Number(pickup.flat_shipping_rate);
+    const flatShippingRate = Number.isFinite(rawFlatRate) ? rawFlatRate : 4.99;
 
     let shipping = 0;
     let discountPercent = 0;
@@ -1439,7 +1442,7 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
         contact_phone:   contactPhone || profile.phone || '',
       };
     } else {
-      shipping = subtotal >= freeShippingThreshold ? 0 : (Number(pickup.flat_shipping_rate) || 4.99);
+      shipping = subtotal >= freeShippingThreshold ? 0 : flatShippingRate;
       shippingAddress = {
         fulfillment_type: 'delivery',
         full_name:      addressOverride.full_name ?? profile.full_name ?? '',
