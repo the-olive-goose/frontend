@@ -24,40 +24,74 @@ const app = express();
 // Railway terminates TLS at a proxy — trust it so rate limiting sees real client IPs.
 app.set('trust proxy', 1);
 
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// ── Security headers ───────────────────────────────────────────────────────────
+// Applied to every response (API + the SPA this server also serves). Scripts are
+// locked to 'self' — the Vite bundle has no inline scripts — while inline styles
+// (React style props) and Google Fonts stay allowed so the site keeps rendering.
+app.disable('x-powered-by');
+
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' blob: https:",
+  "connect-src 'self' https:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+app.use((_req, res, next) => {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  if (IS_PROD) res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+  next();
+});
+
 // ── Video upload (multer) ──────────────────────────────────────────────────────
 const uploadDir = path.join(__dirname, 'uploads');
 if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
 
-const storage = multer.diskStorage({
+// Uploaded files are served back from /uploads on this origin, so both the
+// extension and the stored name are security-sensitive: the extension is
+// allowlisted (never taken from the client verbatim — an uploaded .html/.svg
+// would execute script when viewed) and the name is regenerated with random
+// bytes so a request can't influence the path at all.
+const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.ogv']);
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif']);
+
+const makeUploadStorage = (prefix) => multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `video-${Date.now()}${ext}`);
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    cb(null, `${prefix}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`);
   },
 });
+const makeUploadFilter = (mimePrefix, allowedExts, label) => (_req, file, cb) => {
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  if (file.mimetype.startsWith(mimePrefix) && allowedExts.has(ext)) cb(null, true);
+  else cb(new Error(`Only ${label} files are allowed (${[...allowedExts].join(', ')})`));
+};
+
 const upload = multer({
-  storage,
-  limits: { fileSize: 200 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith('video/')) cb(null, true);
-    else cb(new Error('Only video files are allowed'));
-  },
+  storage: makeUploadStorage('video'),
+  limits: { fileSize: 200 * 1024 * 1024, files: 1 },
+  fileFilter: makeUploadFilter('video/', VIDEO_EXTS, 'video'),
 });
 
-const imageStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `image-${Date.now()}${ext}`);
-  },
-});
 const uploadImage = multer({
-  storage: imageStorage,
-  limits: { fileSize: 20 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true);
-    else cb(new Error('Only image files are allowed'));
-  },
+  storage: makeUploadStorage('image'),
+  limits: { fileSize: 20 * 1024 * 1024, files: 1 },
+  fileFilter: makeUploadFilter('image/', IMAGE_EXTS, 'image'),
 });
 
 const { Pool } = pg;
@@ -78,7 +112,9 @@ const allowedOrigins = [
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-    cb(new Error(`CORS: origin ${origin} not allowed`));
+    const err = new Error('Origin not allowed');
+    err.status = 403; // a rejected origin is a client error, not a server crash
+    cb(err);
   },
   credentials: true, // required so the browser sends/accepts the session cookie cross-port in dev
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -116,14 +152,15 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
     }
     res.json({ received: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
-app.use(express.json());
+// Explicit body cap — a giant JSON body is rejected before parsing rather than
+// relying on the implicit default.
+app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
 
-const IS_PROD      = process.env.NODE_ENV === 'production';
 // Every admin and customer session token is signed with this secret — a
 // hardcoded fallback would let anyone forge a valid admin/customer token if
 // JWT_SECRET is ever left unset on a real deploy. Fail closed in production
@@ -140,16 +177,20 @@ const BACKEND_URL  = process.env.BACKEND_URL   || 'http://localhost:3001';
 const BCRYPT_ROUNDS = 12;
 
 // ── Session cookie (customer-facing auth) ──────────────────────────────────────
-// httpOnly so it's invisible to page JS (no XSS token theft), Secure in production
-// (Railway serves over HTTPS), SameSite=Lax (localhost:8080 ↔ localhost:3001 count
-// as the same "site" since SameSite ignores port, so this works in dev too).
+// httpOnly so it's invisible to page JS (no XSS token theft). In production the
+// storefront (theolivegoose.ie) and this API (…up.railway.app) are different
+// registrable sites, so the cookie is cross-site on every fetch() from the shop.
+// A SameSite=Lax cookie is NOT attached to cross-site XHR/fetch, which would make
+// checkout behave as if logged out — so production must use SameSite=None; Secure
+// (Secure is mandatory for None, and Railway serves HTTPS). Dev stays Lax because
+// SameSite=None requires Secure, which a browser won't honour over http://localhost.
 const SESSION_COOKIE = 'og_session';
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — sliding, see requireUserAuth
 
 const sessionCookieOptions = (maxAge) => ({
   httpOnly: true,
   secure: IS_PROD,
-  sameSite: 'lax',
+  sameSite: IS_PROD ? 'none' : 'lax',
   path: '/',
   ...(maxAge ? { maxAge } : {}), // omit maxAge → browser-session cookie ("remember me" off)
 });
@@ -160,7 +201,29 @@ const setSessionCookie = (res, userPayload, { remember = true } = {}) => {
 };
 
 const clearSessionCookie = (res) => {
-  res.clearCookie(SESSION_COOKIE, { httpOnly: true, secure: IS_PROD, sameSite: 'lax', path: '/' });
+  res.clearCookie(SESSION_COOKIE, { httpOnly: true, secure: IS_PROD, sameSite: IS_PROD ? 'none' : 'lax', path: '/' });
+};
+
+// ── OAuth state (CSRF protection for the Google/Facebook flows) ───────────────
+// A random nonce is set as a short-lived cookie when the flow starts and must
+// round-trip through the provider's `state` param — a forged callback link
+// (login CSRF: silently signing the victim into an attacker's account) fails
+// the comparison because the attacker can't set the victim's cookie.
+const OAUTH_STATE_COOKIE = 'og_oauth_state';
+const oauthStateCookieOptions = { httpOnly: true, secure: IS_PROD, sameSite: 'lax', path: '/', maxAge: 10 * 60 * 1000 };
+
+const issueOauthState = (res) => {
+  const state = crypto.randomBytes(16).toString('hex');
+  res.cookie(OAUTH_STATE_COOKIE, state, oauthStateCookieOptions);
+  return state;
+};
+
+const consumeOauthState = (req, res) => {
+  const expected = req.cookies?.[OAUTH_STATE_COOKIE];
+  res.clearCookie(OAUTH_STATE_COOKIE, { ...oauthStateCookieOptions, maxAge: undefined });
+  const got = req.query.state;
+  if (!expected || typeof got !== 'string' || got.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got));
 };
 
 // ── Rate limiters ───────────────────────────────────────────────────────────────
@@ -178,6 +241,27 @@ const otpSendLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many codes requested. Please wait a few minutes and try again.' },
+});
+// Safety-net limiter over the whole API — generous enough that real shoppers
+// never hit it, but it blunts scripted scraping/brute-force floods from a
+// single IP. Registered here (after the Stripe webhook route above) so
+// Stripe's own retries are never rate-limited.
+const apiLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 400,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please slow down and try again shortly.' },
+});
+app.use('/api', apiLimiter);
+// Unauthenticated write endpoints (newsletter signup, feedback) get a much
+// tighter budget — nothing legitimate submits these dozens of times.
+const publicWriteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many submissions. Please try again later.' },
 });
 
 // ── Validation helpers ──────────────────────────────────────────────────────────
@@ -286,6 +370,16 @@ const genTrackingNumber = () =>
 // from request bodies — coerce to a bounded string so a non-string value can't
 // crash a route (e.g. `{}.trim()`) and a giant string can't bloat storage/email.
 const safeText = (v, max = 2000) => typeof v === 'string' ? v.trim().slice(0, max) : '';
+
+// Unexpected 5xx errors must never echo raw driver/library messages to the
+// client in production (SQL constraint names, file paths, Stripe internals are
+// all reconnaissance material). Errors thrown intentionally with a .status
+// keep their message — those are written to be user-facing.
+const sendServerError = (res, err) => {
+  if (err?.status) return res.status(err.status).json({ error: err.message });
+  console.error(err);
+  res.status(500).json({ error: IS_PROD ? 'Something went wrong. Please try again.' : err.message });
+};
 
 // ── Shared helpers (dedupe price parsing / bundle logic used by checkout + ops) ─
 const parsePrice = (price) => {
@@ -666,7 +760,7 @@ app.post('/api/user/register/start', otpSendLimiter, async (req, res) => {
     // (RESEND_API_KEY missing) fails to send rather than leaking the code.
     res.json(delivered || IS_PROD ? { success: true } : { success: true, dev_otp: code });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -717,7 +811,7 @@ app.post('/api/user/register/verify', authLimiter, async (req, res) => {
     res.status(201).json({ user });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Email already in use' });
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -741,7 +835,7 @@ app.post('/api/user/login', authLimiter, async (req, res) => {
     setSessionCookie(res, { userId: user.id, email: user.email }, { remember: !!remember });
     res.json({ user: { id: user.id, email: user.email, full_name: user.full_name, avatar_url: user.avatar_url, provider: user.provider } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -763,7 +857,7 @@ app.get('/api/user/me', requireUserAuth, async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'User not found' });
     res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -792,7 +886,7 @@ app.put('/api/user/me', requireUserAuth, async (req, res) => {
     res.json(rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Phone number already in use' });
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -825,7 +919,7 @@ app.put('/api/user/me/password', requireUserAuth, authLimiter, async (req, res) 
     await pool.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [newHash, req.user.userId]);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -863,7 +957,7 @@ app.post('/api/user/password/forgot', otpSendLimiter, async (req, res) => {
     const { delivered } = await sendPasswordResetEmail(normEmail, code);
     res.json(delivered || IS_PROD ? { success: true } : { success: true, dev_otp: code });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -915,7 +1009,7 @@ app.post('/api/user/password/reset', authLimiter, async (req, res) => {
     setSessionCookie(res, { userId: user.id, email: user.email });
     res.json({ user });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -942,10 +1036,12 @@ app.get('/api/auth/google', (_req, res) => {
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('scope',         'openid email profile');
   url.searchParams.set('access_type',   'offline');
+  url.searchParams.set('state',         issueOauthState(res));
   res.redirect(url.toString());
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {
+  if (!consumeOauthState(req, res)) return res.redirect(`${FRONTEND_URL}/auth/callback?error=state_mismatch`);
   const { code } = req.query;
   if (!code) return res.redirect(`${FRONTEND_URL}/auth/callback?error=no_code`);
 
@@ -1002,7 +1098,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
     res.redirect(`${FRONTEND_URL}/auth/callback`);
   } catch (err) {
     console.error('[google callback]', err);
-    res.redirect(`${FRONTEND_URL}/auth/callback?error=${encodeURIComponent(err.message)}`);
+    res.redirect(`${FRONTEND_URL}/auth/callback?error=${encodeURIComponent(IS_PROD ? 'oauth_failed' : err.message)}`);
   }
 });
 
@@ -1019,10 +1115,12 @@ app.get('/api/auth/facebook', (_req, res) => {
   url.searchParams.set('redirect_uri',  `${BACKEND_URL}/api/auth/facebook/callback`);
   url.searchParams.set('scope',         'email,public_profile');
   url.searchParams.set('response_type', 'code');
+  url.searchParams.set('state',         issueOauthState(res));
   res.redirect(url.toString());
 });
 
 app.get('/api/auth/facebook/callback', async (req, res) => {
+  if (!consumeOauthState(req, res)) return res.redirect(`${FRONTEND_URL}/auth/callback?error=state_mismatch`);
   const { code } = req.query;
   if (!code) return res.redirect(`${FRONTEND_URL}/auth/callback?error=no_code`);
 
@@ -1072,7 +1170,7 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
     res.redirect(`${FRONTEND_URL}/auth/callback`);
   } catch (err) {
     console.error('[facebook callback]', err);
-    res.redirect(`${FRONTEND_URL}/auth/callback?error=${encodeURIComponent(err.message)}`);
+    res.redirect(`${FRONTEND_URL}/auth/callback?error=${encodeURIComponent(IS_PROD ? 'oauth_failed' : err.message)}`);
   }
 });
 
@@ -1080,9 +1178,12 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
 // PHONE OTP
 // ══════════════════════════════════════════════════════════════════════════════
 
+const PHONE_RE = /^\+?[0-9\s().-]{6,20}$/;
+
 app.post('/api/auth/phone/send-otp', otpSendLimiter, async (req, res) => {
   const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: 'Phone number required' });
+  if (!phone || typeof phone !== 'string' || !PHONE_RE.test(phone.trim()))
+    return res.status(400).json({ error: 'Please enter a valid phone number' });
 
   const otp       = Math.floor(100000 + Math.random() * 900000).toString();
   const otpHash   = await bcrypt.hash(otp, 8);
@@ -1113,7 +1214,7 @@ app.post('/api/auth/phone/send-otp', otpSendLimiter, async (req, res) => {
       res.json(IS_PROD ? { success: true } : { success: true, dev_otp: otp });
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1155,7 +1256,7 @@ app.post('/api/auth/phone/verify-otp', authLimiter, async (req, res) => {
     setSessionCookie(res, { userId: user.id, phone: user.phone });
     res.json({ user });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1171,7 +1272,7 @@ app.get('/api/cart', requireUserAuth, async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1199,7 +1300,7 @@ app.post('/api/cart/items', requireUserAuth, async (req, res) => {
     );
     res.status(201).json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1224,7 +1325,7 @@ app.put('/api/cart/items/:productId', requireUserAuth, async (req, res) => {
     }
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1236,7 +1337,7 @@ app.delete('/api/cart/items/:productId', requireUserAuth, async (req, res) => {
     );
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1245,7 +1346,7 @@ app.delete('/api/cart', requireUserAuth, async (req, res) => {
     await pool.query('DELETE FROM user_carts WHERE user_id = $1', [req.user.userId]);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1338,7 +1439,7 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
         contact_phone:   contactPhone || profile.phone || '',
       };
     } else {
-      shipping = subtotal >= freeShippingThreshold ? 0 : 4.99;
+      shipping = subtotal >= freeShippingThreshold ? 0 : (Number(pickup.flat_shipping_rate) || 4.99);
       shippingAddress = {
         fulfillment_type: 'delivery',
         full_name:      addressOverride.full_name ?? profile.full_name ?? '',
@@ -1407,7 +1508,12 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
-      payment_method_types: ['card'],
+      // No explicit payment_method_types → Stripe Checkout offers every method
+      // enabled in the Dashboard (Settings → Payment methods) that's eligible for
+      // the customer's country and this EUR charge: cards + Apple/Google Pay always,
+      // plus Link / Klarna / iDEAL / Bancontact / SEPA etc. once toggled on there.
+      // Some of those settle asynchronously, which is safe here: the order is only
+      // created once the webhook/poll sees payment_status: 'paid' (finalizeCheckoutSession).
       customer_email: profile.email || undefined,
       line_items,
       discounts,
@@ -1422,7 +1528,7 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
 
     res.status(201).json({ url: session.url });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1441,7 +1547,7 @@ app.get('/api/checkout/session/:sessionId', requireUserAuth, async (req, res) =>
     const order = await finalizeCheckoutSession(req.params.sessionId);
     res.json(order || { pending: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1454,7 +1560,7 @@ app.get('/api/orders', requireUserAuth, async (req, res) => {
     );
     res.json(rows.map(withTracking));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1473,7 +1579,7 @@ app.get('/api/orders/:id', requireUserAuth, async (req, res) => {
     );
     res.json({ ...withTracking(rows[0]), timeline: events });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1509,7 +1615,7 @@ app.post('/api/orders/:id/cancel', requireUserAuth, async (req, res) => {
     const { rows: updated } = await pool.query('SELECT * FROM orders WHERE id = $1', [order.id]);
     res.json(withTracking(updated[0]));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1535,7 +1641,7 @@ app.get('/api/admin/orders', requireAuth, async (_req, res) => {
     );
     res.json(rows.map(withTracking));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1563,7 +1669,7 @@ app.put('/api/admin/orders/:id', requireAuth, async (req, res) => {
     }
     res.json(withTracking({ ...rows[0], status }));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1586,7 +1692,7 @@ app.get('/api/admin/orders/:id', requireAuth, async (req, res) => {
     );
     res.json({ ...withTracking(rows[0]), timeline: events, refund_reminders: refunds });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1635,7 +1741,7 @@ app.put('/api/admin/orders/:id/cancellation', requireAuth, async (req, res) => {
     );
     res.json(withTracking(updated[0]));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1673,7 +1779,7 @@ app.put('/api/admin/orders/:id/refund-status', requireAuth, async (req, res) => 
     sendRefundCompletedEmail(order.user_email, { trackingNumber: order.tracking_number }).catch(err => console.error('[sendRefundCompletedEmail]', err));
     res.json({ success: true, via_stripe: viaStripe });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1702,7 +1808,7 @@ app.post('/api/admin/orders/:id/message', requireAuth, async (req, res) => {
     await sendAdminMessageToOrder(req.params.id, subject, body);
     res.status(201).json({ success: true });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1746,7 +1852,7 @@ app.post('/api/returns', requireUserAuth, async (req, res) => {
 
     res.status(201).json(ret);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1759,7 +1865,7 @@ app.get('/api/returns', requireUserAuth, async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1779,7 +1885,7 @@ app.get('/api/admin/returns', requireAuth, async (_req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1861,7 +1967,7 @@ app.put('/api/admin/returns/:id', requireAuth, async (req, res) => {
     const ret = await applyReturnStatusChange(req.params.id, req.body.status);
     res.json(ret);
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1882,7 +1988,7 @@ app.get('/api/admin/decisions', requireAuth, async (_req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1902,7 +2008,7 @@ app.get('/api/admin/decisions/resolved', requireAuth, async (_req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1939,7 +2045,7 @@ app.post('/api/admin/decisions/:id/approve', requireAuth, async (req, res) => {
     await pool.query(`UPDATE admin_decisions SET status = 'approved', resolved_at = NOW() WHERE id = $1`, [decision.id]);
     res.json({ success: true });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1953,7 +2059,7 @@ app.post('/api/admin/decisions/:id/dismiss', requireAuth, async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Decision not found or already resolved' });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2029,7 +2135,7 @@ app.get('/api/admin/ops-overview', requireAuth, async (_req, res) => {
       underperforming_bundles: underperformingBundles,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2041,7 +2147,7 @@ app.get('/api/settings', async (_req, res) => {
   try {
     const { rows } = await pool.query("SELECT value FROM site_settings WHERE key = 'hero'");
     res.json(rows[0]?.value || {});
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/settings', requireAuth, async (req, res) => {
@@ -2052,7 +2158,7 @@ app.put('/api/settings', requireAuth, async (req, res) => {
       [JSON.stringify(req.body)]
     );
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.get('/api/content/:section', async (req, res) => {
@@ -2060,7 +2166,7 @@ app.get('/api/content/:section', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT value FROM site_settings WHERE key = $1', [key]);
     res.json(rows[0]?.value || null);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/content/:section', requireAuth, async (req, res) => {
@@ -2078,12 +2184,13 @@ app.put('/api/content/:section', requireAuth, async (req, res) => {
       [key, JSON.stringify(req.body)]
     );
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
-app.post('/api/subscribers', async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'Email is required' });
+app.post('/api/subscribers', publicWriteLimiter, async (req, res) => {
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!EMAIL_RE.test(email) || email.length > 254)
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
   try {
     const { rows } = await pool.query(
       'INSERT INTO subscribers (email) VALUES ($1) RETURNING *',
@@ -2092,7 +2199,7 @@ app.post('/api/subscribers', async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (err) {
     if (err.code === '23505') res.status(409).json({ error: 'already_subscribed' });
-    else                      res.status(500).json({ error: err.message });
+    else                      sendServerError(res, err);
   }
 });
 
@@ -2104,21 +2211,34 @@ app.get('/api/admin/users', requireAuth, async (_req, res) => {
        FROM users ORDER BY created_at DESC`
     );
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // ── POST /api/feedback (public) ───────────────────────────────────────────────
-app.post('/api/feedback', async (req, res) => {
-  const { name = '', email = '', rating = 5, message, photo_url = '' } = req.body;
-  if (!message?.trim()) return res.status(400).json({ error: 'Feedback message is required' });
+app.post('/api/feedback', publicWriteLimiter, async (req, res) => {
+  // Every field here is unauthenticated public input — bound lengths, force the
+  // rating into the DB's valid range (a bad value would otherwise 500 on the
+  // CHECK constraint), and only accept http(s)/relative photo URLs so nothing
+  // like javascript: can be stored and later rendered as a link.
+  const name    = safeText(req.body.name, 100);
+  const email   = safeText(req.body.email, 254);
+  const message = safeText(req.body.message, 2000);
+  const photoUrl = safeText(req.body.photo_url, 500);
+  const rating  = Number(req.body.rating ?? 5);
+  if (!message) return res.status(400).json({ error: 'Feedback message is required' });
+  if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'Please enter a valid email address.' });
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5)
+    return res.status(400).json({ error: 'Rating must be a whole number between 1 and 5.' });
+  if (photoUrl && !/^(https?:\/\/|\/)/i.test(photoUrl))
+    return res.status(400).json({ error: 'Photo URL must be a valid link.' });
   try {
     const { rows } = await pool.query(
       `INSERT INTO feedback (name, email, rating, message, photo_url)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [name.trim(), email.trim(), rating, message.trim(), photo_url]
+      [name, email, rating, message, photoUrl]
     );
     res.status(201).json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // ── GET /api/admin/feedback (admin only) ──────────────────────────────────────
@@ -2128,7 +2248,7 @@ app.get('/api/admin/feedback', requireAuth, async (_req, res) => {
       `SELECT * FROM feedback ORDER BY created_at DESC`
     );
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // ── DELETE /api/admin/feedback/:id (admin only) ───────────────────────────────
@@ -2136,21 +2256,21 @@ app.delete('/api/admin/feedback/:id', requireAuth, async (req, res) => {
   try {
     await pool.query('DELETE FROM feedback WHERE id = $1', [req.params.id]);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.get('/api/subscribers', requireAuth, async (_req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM subscribers ORDER BY subscribed_at DESC');
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.delete('/api/subscribers/:id', requireAuth, async (req, res) => {
   try {
     await pool.query('DELETE FROM subscribers WHERE id = $1', [req.params.id]);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.get('/api/shop/categories', async (_req, res) => {
@@ -2159,7 +2279,7 @@ app.get('/api/shop/categories', async (_req, res) => {
       'SELECT * FROM shop_categories WHERE is_active = true ORDER BY display_order ASC, created_at ASC'
     );
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.post('/api/shop/categories', requireAuth, async (req, res) => {
@@ -2174,7 +2294,7 @@ app.post('/api/shop/categories', requireAuth, async (req, res) => {
        accent_color, text_color, JSON.stringify(stickers), JSON.stringify(product_ids), display_order]
     );
     res.status(201).json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/shop/categories/:id', requireAuth, async (req, res) => {
@@ -2190,14 +2310,14 @@ app.put('/api/shop/categories/:id', requireAuth, async (req, res) => {
        display_order, is_active ?? true, req.params.id]
     );
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.delete('/api/shop/categories/:id', requireAuth, async (req, res) => {
   try {
     await pool.query('DELETE FROM shop_categories WHERE id=$1', [req.params.id]);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.post('/api/shop/candles', requireAuth, async (req, res) => {
@@ -2210,7 +2330,7 @@ app.post('/api/shop/candles', requireAuth, async (req, res) => {
       [name, price, scent_notes, tagline, category_id, image_url, rotation, pos_top, pos_left, display_order]
     );
     res.status(201).json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/shop/candles/:id', requireAuth, async (req, res) => {
@@ -2225,14 +2345,14 @@ app.put('/api/shop/candles/:id', requireAuth, async (req, res) => {
        rotation, pos_top, pos_left, display_order, is_active ?? true, req.params.id]
     );
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.delete('/api/shop/candles/:id', requireAuth, async (req, res) => {
   try {
     await pool.query('DELETE FROM shop_candles WHERE id=$1', [req.params.id]);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // ── POST /api/upload/video (admin only) ───────────────────────────────────────
@@ -2250,7 +2370,15 @@ app.post('/api/upload/image', requireAuth, uploadImage.single('image'), (req, re
   res.json({ path: `/uploads/${req.file.filename}` });
 });
 
-app.use('/uploads', express.static(uploadDir));
+app.use('/uploads', express.static(uploadDir, {
+  dotfiles: 'deny',
+  // Belt-and-braces on top of the upload allowlist: even if a scriptable file
+  // ever lands in uploads/, this CSP stops it executing when viewed directly.
+  setHeaders: (res) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'");
+  },
+}));
 
 // ── Serve React frontend (SPA catch-all) ──────────────────────────────────────
 const distPath = path.join(__dirname, '../dist');
@@ -2518,6 +2646,8 @@ async function initDb() {
       "country":          "Ireland",
       "hours":            "Tue–Sat, 10am–5pm",
       "discount_percent": 10,
+      "free_shipping_threshold": 65,
+      "flat_shipping_rate": 4.99,
       "notes":            "Bring your order confirmation email — we''ll have it ready and waiting."
     }')
     ON CONFLICT (key) DO NOTHING;

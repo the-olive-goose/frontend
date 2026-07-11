@@ -6,7 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent, type Product, type PickupSettingsContent } from "@/lib/defaults";
-import { cartSubtotal } from "@/lib/cart";
+import { cartSubtotal, formatPrice } from "@/lib/cart";
 import { getBundleNudges } from "@/lib/bundleNudges";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
@@ -67,7 +67,7 @@ const BasketPage = () => {
     setClearing(false);
   };
 
-  const shipping = subtotalNum >= pickup.free_shipping_threshold ? 0 : 4.99;
+  const shipping = subtotalNum >= pickup.free_shipping_threshold ? 0 : (pickup.flat_shipping_rate ?? 4.99);
   const grandTotal = `€${Math.max(0, subtotalNum - bundleSavings + shipping).toFixed(2)}`;
 
   return (
@@ -159,7 +159,7 @@ const BasketPage = () => {
                   {items.map((item, idx) => {
                     const img = item.product.image_url || FALLBACK_IMGS[idx % 2];
                     const unitPrice = parseFloat(item.product.price.replace(/[^0-9.]/g, ""));
-                    const lineTotal = isNaN(unitPrice) ? item.product.price : `€${(unitPrice * item.quantity).toFixed(2)}`;
+                    const lineTotal = isNaN(unitPrice) ? formatPrice(item.product.price) : `€${(unitPrice * item.quantity).toFixed(2)}`;
 
                     return (
                       <motion.div key={item.product.id}
@@ -228,7 +228,7 @@ const BasketPage = () => {
                         <div className="shrink-0 text-right">
                           <p className="font-sans font-bold text-lg" style={{ color: "#0F1111" }}>{lineTotal}</p>
                           {item.quantity > 1 && (
-                            <p className="font-sans text-xs" style={{ color: "#555" }}>{item.product.price} each</p>
+                            <p className="font-sans text-xs" style={{ color: "#555" }}>{formatPrice(item.product.price)} each</p>
                           )}
                         </div>
                       </motion.div>

@@ -5,7 +5,7 @@ import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type PickupSettingsContent } from "@/lib/defaults";
-import { cartSubtotal } from "@/lib/cart";
+import { cartSubtotal, formatPrice } from "@/lib/cart";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
 
@@ -129,7 +129,7 @@ const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean;
                           {product.name}
                         </p>
                         <p className="font-display text-sm mt-0.5" style={{ color: "var(--color-forest-dark)" }}>
-                          {product.price}
+                          {formatPrice(product.price)}
                         </p>
 
                         {/* Quantity controls */}

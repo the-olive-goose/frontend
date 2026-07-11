@@ -51,22 +51,18 @@ const PaymentBadge = ({ label, children }: { label: string; children: ReactEleme
   </span>
 );
 
+// Mirrors the methods enabled in the Stripe Dashboard (Settings → Payment methods),
+// which are what Checkout actually offers now that the backend uses dynamic payment
+// methods. Card brands (Visa/Mastercard/Amex) stand in for "Cards"; the rest are the
+// wallets + BNPL toggled on. Samsung Pay is intentionally omitted — it's South-Korea
+// only and never surfaces for EU shoppers, so showing it here would mislead.
 const PaymentIcons = () => (
   <div className="flex flex-wrap items-center justify-center gap-2">
-    {/* Amex */}
-    <PaymentBadge label="American Express">
-      <svg viewBox="0 0 46 30" width="46" height="30">
-        <rect width="46" height="30" rx="4" fill="#2557D6"/>
-        <text x="23" y="20" textAnchor="middle" fill="white" fontSize="9" fontWeight="bold" fontFamily="Arial">AMEX</text>
-      </svg>
-    </PaymentBadge>
-    {/* Maestro */}
-    <PaymentBadge label="Maestro">
+    {/* Visa */}
+    <PaymentBadge label="Visa">
       <svg viewBox="0 0 46 30" width="46" height="30">
         <rect width="46" height="30" rx="4" fill="#fff"/>
-        <circle cx="18" cy="15" r="9" fill="#EB001B" opacity="0.9"/>
-        <circle cx="28" cy="15" r="9" fill="#0099DF" opacity="0.9"/>
-        <ellipse cx="23" cy="15" rx="4" ry="9" fill="#7B3FBE" opacity="0.7"/>
+        <text x="23" y="21" textAnchor="middle" fill="#1A1F71" fontSize="14" fontWeight="bold" fontFamily="Arial" fontStyle="italic">VISA</text>
       </svg>
     </PaymentBadge>
     {/* Mastercard */}
@@ -78,11 +74,59 @@ const PaymentIcons = () => (
         <path d="M23 8.5a9 9 0 0 1 0 13A9 9 0 0 1 23 8.5z" fill="#FF5F00"/>
       </svg>
     </PaymentBadge>
-    {/* Visa */}
-    <PaymentBadge label="Visa">
+    {/* Amex */}
+    <PaymentBadge label="American Express">
+      <svg viewBox="0 0 46 30" width="46" height="30">
+        <rect width="46" height="30" rx="4" fill="#2557D6"/>
+        <text x="23" y="20" textAnchor="middle" fill="white" fontSize="9" fontWeight="bold" fontFamily="Arial">AMEX</text>
+      </svg>
+    </PaymentBadge>
+    {/* Apple Pay */}
+    <PaymentBadge label="Apple Pay">
       <svg viewBox="0 0 46 30" width="46" height="30">
         <rect width="46" height="30" rx="4" fill="#fff"/>
-        <text x="23" y="21" textAnchor="middle" fill="#1A1F71" fontSize="14" fontWeight="bold" fontFamily="Arial" fontStyle="italic">VISA</text>
+        <g transform="translate(7,9) scale(0.5)" fill="#000">
+          <path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.142-1.64 3.248-1.68.03.13.05.28.05.43zm4.565 15.71c-.03.07-.463 1.58-1.518 3.12-.945 1.34-1.94 2.71-3.43 2.71-1.517 0-1.9-.88-3.63-.88-1.698 0-2.302.91-3.67.91-1.377 0-2.332-1.26-3.428-2.8-1.287-1.82-2.323-4.63-2.323-7.28 0-4.28 2.797-6.55 5.552-6.55 1.448 0 2.675.95 3.6.95.865 0 2.222-1.01 3.902-1.01.635 0 2.928.06 4.42 2.16-.113.07-2.612 1.53-2.612 4.57 0 3.56 3.11 4.83 3.157 4.83z"/>
+        </g>
+        <text x="21" y="20" fill="#000" fontSize="10" fontWeight="600" fontFamily="Arial">Pay</text>
+      </svg>
+    </PaymentBadge>
+    {/* Google Pay */}
+    <PaymentBadge label="Google Pay">
+      <svg viewBox="0 0 46 30" width="46" height="30">
+        <rect width="46" height="30" rx="4" fill="#fff"/>
+        <text x="23" y="20" textAnchor="middle" fontSize="12" fontWeight="700" fontFamily="Arial">
+          <tspan fill="#4285F4">G</tspan><tspan fill="#5F6368"> Pay</tspan>
+        </text>
+      </svg>
+    </PaymentBadge>
+    {/* Amazon Pay */}
+    <PaymentBadge label="Amazon Pay">
+      <svg viewBox="0 0 46 30" width="46" height="30">
+        <rect width="46" height="30" rx="4" fill="#fff"/>
+        <text x="23" y="14" textAnchor="middle" fill="#232F3E" fontSize="8.5" fontWeight="700" fontFamily="Arial">amazon</text>
+        <text x="23" y="24" textAnchor="middle" fill="#F90" fontSize="8" fontWeight="700" fontFamily="Arial">pay</text>
+      </svg>
+    </PaymentBadge>
+    {/* Revolut Pay */}
+    <PaymentBadge label="Revolut Pay">
+      <svg viewBox="0 0 46 30" width="46" height="30">
+        <rect width="46" height="30" rx="4" fill="#191C1F"/>
+        <text x="23" y="19" textAnchor="middle" fill="#fff" fontSize="8.5" fontWeight="700" fontFamily="Georgia, serif">Revolut</text>
+      </svg>
+    </PaymentBadge>
+    {/* Link */}
+    <PaymentBadge label="Link">
+      <svg viewBox="0 0 46 30" width="46" height="30">
+        <rect width="46" height="30" rx="4" fill="#33DDB3"/>
+        <text x="23" y="20" textAnchor="middle" fill="#011E0F" fontSize="11" fontWeight="700" fontFamily="Arial">link</text>
+      </svg>
+    </PaymentBadge>
+    {/* Klarna */}
+    <PaymentBadge label="Klarna">
+      <svg viewBox="0 0 46 30" width="46" height="30">
+        <rect width="46" height="30" rx="4" fill="#FFB3C7"/>
+        <text x="23" y="20" textAnchor="middle" fill="#0A0A0A" fontSize="9" fontWeight="700" fontFamily="Arial">Klarna</text>
       </svg>
     </PaymentBadge>
   </div>

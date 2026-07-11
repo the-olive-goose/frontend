@@ -6,6 +6,7 @@ import { getContent, getShopCategories, type ShopCategory } from "@/lib/api";
 import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
+import { formatPrice } from "@/lib/cart";
 import FooterSection from "@/components/sections/FooterSection";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -31,7 +32,7 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
     }
     addToCart(product);
     toast.success(`${product.name} added to cart`, {
-      description: product.price,
+      description: formatPrice(product.price),
       duration: 2500,
     });
   };
@@ -95,7 +96,7 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
             className="font-semibold"
             style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1.05rem,1.7vw,1.3rem)", color: accent || "var(--color-forest-dark)" }}
           >
-            {product.price}
+            {formatPrice(product.price)}
           </span>
           <motion.button
             whileHover={outOfStock ? undefined : { scale: 1.05 }}

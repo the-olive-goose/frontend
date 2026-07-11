@@ -6,6 +6,7 @@ import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
 import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
+import { formatPrice } from "@/lib/cart";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
 
@@ -50,7 +51,7 @@ export const CandleCard = ({ product, accent, isDark, idx }: {
     e.stopPropagation();
     if (!user) { openAuthModal(); return; }
     addToCart(product);
-    toast.success(`${product.name} added to basket`, { description: product.price, duration: 2000 });
+    toast.success(`${product.name} added to basket`, { description: formatPrice(product.price), duration: 2000 });
   };
 
   return (
@@ -89,7 +90,7 @@ export const CandleCard = ({ product, accent, isDark, idx }: {
         {/* Price + Add to Cart */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: "auto", paddingTop: 8, borderTop: `1px solid ${isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)"}` }}>
           <span style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 700, fontSize: "clamp(0.95rem,1.5vw,1.15rem)", color: accent }}>
-            {product.price}
+            {formatPrice(product.price)}
           </span>
           <motion.button
             whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.94 }}

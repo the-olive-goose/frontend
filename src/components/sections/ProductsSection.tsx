@@ -1,4 +1,5 @@
 import { ProductsContent } from "@/lib/defaults";
+import { formatPrice } from "@/lib/cart";
 
 interface Props { data: ProductsContent }
 
@@ -87,7 +88,7 @@ const ProductsSection = ({ data }: Props) => {
                   className="font-rounded font-bold text-base"
                   style={{ color: "var(--text-primary)" }}
                 >
-                  {product.price}
+                  {formatPrice(product.price)}
                 </p>
                 <button
                   className="mt-1 w-full py-2.5 font-sans text-sm font-semibold transition-all hover:opacity-85 active:scale-95"

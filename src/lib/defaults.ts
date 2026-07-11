@@ -205,6 +205,7 @@ export interface PickupSettingsContent {
   discount_percent: number;
   notes: string;
   free_shipping_threshold: number;
+  flat_shipping_rate: number;
 }
 
 export interface SiteContent {
@@ -234,7 +235,7 @@ export interface SiteContent {
 export const DEFAULT_CONTENT: SiteContent = {
   announcementBar: {
     messages: [
-      "✨ Free shipping on orders over $65",
+      "✨ Free shipping on orders over €65",
       "🕯️ New café collection dropping soon — Shop now →",
       "💌 Sign up for early access & 10% off your first order",
     ],
@@ -269,9 +270,9 @@ export const DEFAULT_CONTENT: SiteContent = {
 
   momentPill: {
     text1: "Live in the moment.",
-    image1_url: "hero-bg.jpg",
+    image1_url: "",
     text2: "Because after all,",
-    image2_url: "logo.jpg",
+    image2_url: "",
     text3: "isn't it the most important?",
   },
 
@@ -302,7 +303,7 @@ export const DEFAULT_CONTENT: SiteContent = {
         id: "1",
         name: "Forest & Cedar",
         description: "Grounding. Woody. Earthy.",
-        price: "$38",
+        price: "€38",
         image_url: "",
         tag: "BESTSELLER",
       },
@@ -310,7 +311,7 @@ export const DEFAULT_CONTENT: SiteContent = {
         id: "2",
         name: "White Jasmine",
         description: "Floral. Clean. Serene.",
-        price: "$38",
+        price: "€38",
         image_url: "",
         tag: "NEW",
       },
@@ -318,7 +319,7 @@ export const DEFAULT_CONTENT: SiteContent = {
         id: "3",
         name: "Amber & Sandalwood",
         description: "Warm. Sensual. Timeless.",
-        price: "$42",
+        price: "€42",
         image_url: "",
         tag: "",
       },
@@ -506,6 +507,7 @@ export const DEFAULT_CONTENT: SiteContent = {
     discount_percent: 10,
     notes: "Bring your order confirmation email — we'll have it ready and waiting.",
     free_shipping_threshold: 65,
+    flat_shipping_rate: 4.99,
   },
 
   privacyPolicy: {

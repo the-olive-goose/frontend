@@ -4,6 +4,7 @@ import { fetchOrder, requestOrderCancellation, SessionExpiredError, type Order }
 import { useAuth } from "@/contexts/AuthContext";
 import FooterSection from "@/components/sections/FooterSection";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
+import { formatPrice } from "@/lib/cart";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
 
@@ -304,7 +305,7 @@ const OrderTrackingPage = () => {
                         <p className="font-sans text-sm font-semibold truncate" style={{ color: "#0F1111" }}>{data.name}</p>
                         <p className="font-sans text-xs" style={{ color: "#555" }}>Qty: {item.quantity}</p>
                       </div>
-                      <p className="font-sans text-sm font-semibold shrink-0" style={{ color: "#0F1111" }}>{data.price}</p>
+                      <p className="font-sans text-sm font-semibold shrink-0" style={{ color: "#0F1111" }}>{formatPrice(data.price)}</p>
                     </div>
                   );
                 })}

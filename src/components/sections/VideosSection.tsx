@@ -93,7 +93,7 @@ const VideoPlayer = ({ item }: { item: VideosContent["items"][number] }) => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                 d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            <p className="font-sans text-xs">Drop .mp4 into public/videos/ → type /videos/filename.mp4 in admin</p>
+            <p className="font-sans text-xs">Add a video URL in admin — YouTube, Vimeo, Instagram, or a direct .mp4 link</p>
           </div>
         )}
       </div>

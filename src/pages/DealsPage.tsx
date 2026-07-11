@@ -5,6 +5,7 @@ import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type Product, type Bundle, type DealsContent } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
+import { formatPrice } from "@/lib/cart";
 import FooterSection from "@/components/sections/FooterSection";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -103,7 +104,7 @@ const BundleCard = ({ bundle, allProducts, idx }: { bundle: Bundle; allProducts:
                 <img src={img} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: "multiply" }} />
               </div>
               <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.82rem,1.3vw,1rem)", color: accent, lineHeight: 1.1, marginBottom: 2 }}>{p.name}</p>
-              <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.72rem,1.1vw,0.88rem)", color: "rgba(30,20,10,0.55)", textDecoration: "line-through" }}>{p.price}</p>
+              <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.72rem,1.1vw,0.88rem)", color: "rgba(30,20,10,0.55)", textDecoration: "line-through" }}>{formatPrice(p.price)}</p>
               {i < bundleProducts.length - 1 && (
                 <span style={{ position: "absolute", top: "50%", right: -14, transform: "translateY(-50%)", fontFamily: "'Fredoka',sans-serif", fontSize: "1.2rem", color: accent, zIndex: 3 }}>+</span>
               )}

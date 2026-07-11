@@ -6,7 +6,7 @@ import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
 import { createCheckoutSession, SessionExpiredError, type DeliveryAddress, type FulfillmentType } from "@/lib/userApi";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
-import { cartSubtotal } from "@/lib/cart";
+import { cartSubtotal, formatPrice } from "@/lib/cart";
 import { getBundleNudges } from "@/lib/bundleNudges";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
@@ -77,7 +77,8 @@ const CheckoutPage = () => {
   }, 0);
 
   const discountAmount = pickupDiscountAmount + bundleSavings;
-  const shipping = isPickup ? 0 : (subtotalNum >= pickup.free_shipping_threshold ? 0 : 4.99);
+  const flatShipping = pickup.flat_shipping_rate ?? 4.99;
+  const shipping = isPickup ? 0 : (subtotalNum >= pickup.free_shipping_threshold ? 0 : flatShipping);
   const grandTotal = Math.max(0, subtotalNum - discountAmount + shipping);
 
   const addressComplete = !!(address.address_line1 && address.city && address.postal_code && address.country);
@@ -171,7 +172,7 @@ const CheckoutPage = () => {
                     <div>
                       <p className="font-sans text-sm font-semibold" style={{ color: "#0F1111" }}>Ship to my address</p>
                       <p className="font-sans text-xs" style={{ color: "#555" }}>
-                        {subtotalNum >= pickup.free_shipping_threshold ? "Free shipping" : `€4.99 shipping — free over €${pickup.free_shipping_threshold.toFixed(2)}`}
+                        {subtotalNum >= pickup.free_shipping_threshold ? "Free shipping" : `€${flatShipping.toFixed(2)} shipping — free over €${pickup.free_shipping_threshold.toFixed(2)}`}
                       </p>
                     </div>
                   </label>
@@ -254,7 +255,7 @@ const CheckoutPage = () => {
                   {items.map((item, i) => {
                     const img = item.product.image_url || FALLBACK_IMGS[i % 2];
                     const unitPrice = parseFloat(item.product.price.replace(/[^0-9.]/g, ""));
-                    const lineTotal = isNaN(unitPrice) ? item.product.price : `€${(unitPrice * item.quantity).toFixed(2)}`;
+                    const lineTotal = isNaN(unitPrice) ? formatPrice(item.product.price) : `€${(unitPrice * item.quantity).toFixed(2)}`;
                     return (
                       <div key={item.product.id} className="flex items-center gap-4 px-5 py-3" style={{ borderBottom: i < items.length - 1 ? "1px solid #EEE" : "none" }}>
                         <img src={img} alt={item.product.name} className="rounded-lg object-cover shrink-0" style={{ width: 52, height: 52, mixBlendMode: "multiply" }} />

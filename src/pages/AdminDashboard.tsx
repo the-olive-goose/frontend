@@ -1,10 +1,9 @@
-import { useEffect, useState, useCallback, useRef, useMemo, Fragment } from "react";
+import { useEffect, useState, useCallback, useMemo, Fragment } from "react";
 import {
   isLoggedIn,
   logout,
   getContent,
   saveContent,
-  uploadImage,
   getSubscribers,
   deleteSubscriber,
   getAdminUsers,
@@ -314,26 +313,6 @@ const HeroEditor = ({
   onSave: () => void;
   saving: boolean;
 }) => {
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const { toast } = useToast();
-
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const url = await uploadImage(file);
-      onChange({ ...data, bg_image_url: url });
-      toast({ title: "Image uploaded!" });
-    } catch {
-      toast({ title: "Upload failed", description: "Check file type (jpg/png/webp) and size (max 20 MB)", variant: "destructive" });
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  };
-
   return (
     <div className="space-y-6">
       <SectionHeading title="Home Page" desc="The full-screen hero banner at the top of the homepage." />
@@ -353,7 +332,7 @@ const HeroEditor = ({
         </Field>
       </div>
 
-      {/* Background image — upload or URL */}
+      {/* Background image — direct URL */}
       <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-4">
         <p className="font-sans text-sm font-semibold text-foreground">Background Image</p>
 
@@ -361,45 +340,11 @@ const HeroEditor = ({
         {data.bg_image_url && (
           <div className="relative rounded-lg overflow-hidden" style={{ aspectRatio: "16/5" }}>
             <img src={data.bg_image_url} alt="Hero background preview"
-              className="w-full h-full object-cover"
-              style={{ opacity: data.overlay_opacity ?? 0.55 }} />
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className="font-sans text-xs text-white bg-black/50 px-2 py-1 rounded">
-                Preview at {Math.round((data.overlay_opacity ?? 0.55) * 100)}% opacity
-              </span>
-            </div>
+              className="w-full h-full object-cover" />
           </div>
         )}
 
-        {/* Upload button */}
-        <div className="flex gap-3 items-center">
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary text-primary font-sans text-sm font-medium hover:bg-primary/5 transition-colors disabled:opacity-50"
-          >
-            {uploading ? (
-              <>
-                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-                </svg>
-                Uploading…
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-                </svg>
-                Upload image
-              </>
-            )}
-          </button>
-          <span className="font-sans text-xs text-muted-foreground">or paste a URL below</span>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-        </div>
-
-        <Field label="Image URL" hint="Direct URL to jpg, png, or webp image">
+        <Field label="Image URL" hint="Paste a direct link to a hosted image (jpg, png, or webp). The site loads it straight from this URL.">
           <Input
             placeholder="https://…"
             value={data.bg_image_url}
@@ -558,7 +503,7 @@ const ProductsEditor = ({
                 onChange({ ...data, items });
               }} />
             </Field>
-            <Field label="Price">
+            <Field label="Price (€)" hint="Just enter the number — it's shown in euro (€) on the storefront by default.">
               <Input value={product.price} onChange={(e) => {
                 const items = [...data.items];
                 items[i] = { ...items[i], price: e.target.value };
@@ -606,7 +551,7 @@ const ProductsEditor = ({
             id: Date.now().toString(),
             name: "New Product",
             description: "",
-            price: "$0",
+            price: "0",
             image_url: "",
             tag: "",
           };
@@ -627,14 +572,14 @@ const MomentPillEditor = ({
     <Field label="Text 1" hint={`e.g. "Live in the moment."`}>
       <Input value={data.text1} onChange={(e) => onChange({ ...data, text1: e.target.value })} />
     </Field>
-    <Field label="Image 1 filename" hint="Filename from src/assets/ folder — e.g. hero-bg.jpg. Drop the file there first, then enter its name here.">
-      <Input placeholder="hero-bg.jpg" value={data.image1_url} onChange={(e) => onChange({ ...data, image1_url: e.target.value })} />
+    <Field label="Image 1 URL" hint="Paste a direct image link — shown inline inside the pill. The site loads it straight from this URL.">
+      <Input placeholder="https://…" value={data.image1_url} onChange={(e) => onChange({ ...data, image1_url: e.target.value })} />
     </Field>
     <Field label="Text 2" hint={`e.g. "Because after all,"`}>
       <Input value={data.text2} onChange={(e) => onChange({ ...data, text2: e.target.value })} />
     </Field>
-    <Field label="Image 2 filename" hint="Filename from src/assets/ folder — e.g. logo.jpg. Drop the file there first, then enter its name here.">
-      <Input placeholder="logo.jpg" value={data.image2_url} onChange={(e) => onChange({ ...data, image2_url: e.target.value })} />
+    <Field label="Image 2 URL" hint="Paste a direct image link — shown inline inside the pill. The site loads it straight from this URL.">
+      <Input placeholder="https://…" value={data.image2_url} onChange={(e) => onChange({ ...data, image2_url: e.target.value })} />
     </Field>
       <Field label="Text 3" hint={`e.g. "isn't it the most important?"`}>
       <Input value={data.text3} onChange={(e) => onChange({ ...data, text3: e.target.value })} />
@@ -758,7 +703,7 @@ const VideosEditor = ({
 }) => {
   return (
     <div className="space-y-6">
-      <SectionHeading title="Videos" desc="Drop .mp4 files into public/videos/ in your project, then type /videos/filename.mp4 below. Or paste a YouTube / Vimeo link." />
+      <SectionHeading title="Videos" desc="Paste a video URL for each item — a YouTube, Vimeo, or Instagram link, or a direct .mp4 / .webm URL. The site plays it straight from the URL." />
       <Field label="Section Label">
         <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
       </Field>
@@ -784,9 +729,9 @@ const VideosEditor = ({
                 onChange({ ...data, items });
               }} />
             </Field>
-            <Field label="Video URL" hint="Local file: drop .mp4 into public/videos/ → type /videos/filename.mp4  |  Or paste a YouTube / Vimeo link">
+            <Field label="Video URL" hint="YouTube, Vimeo, or Instagram link, or a direct .mp4 / .webm URL. Played straight from this URL.">
               <Input
-                placeholder="/videos/my-reel.mp4  or  https://youtube.com/watch?v=…"
+                placeholder="https://youtube.com/watch?v=…  or  https://…/reel.mp4"
                 value={item.video_url}
                 onChange={(e) => {
                   const items = [...data.items];
@@ -1350,6 +1295,13 @@ const PickupSettingsEditor = ({
 
     <div className="pt-2 border-t border-border">
       <h3 className="font-serif text-lg text-foreground mt-6 mb-4">Shipping</h3>
+      <Field label="Flat Shipping Rate (€)" hint="Charged on delivery orders below the free-shipping threshold. This is the actual amount added to the order total at checkout.">
+        <Input
+          type="number" min={0} step={0.01}
+          value={data.flat_shipping_rate}
+          onChange={(e) => onChange({ ...data, flat_shipping_rate: Number(e.target.value) })}
+        />
+      </Field>
       <Field label="Free Shipping Threshold (€)" hint="Orders at or above this subtotal ship free. Shown on the basket, checkout, and cart with a progress bar.">
         <Input
           type="number" min={0} step={1}
@@ -1507,6 +1459,21 @@ const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpda
         </div>
       )}
 
+      {/* Return-based refunds live on the return, not the order's refund_status —
+          surface them here so the row's "Refund owed (return)" badge and this
+          panel never disagree. They're resolved from the Returns tab. */}
+      {detail && detail.refund_reminders.some(r => r.source === "return" && !r.resolved_at) && (
+        <div className="rounded-lg border border-red-300 bg-red-50 p-3">
+          <p className="font-sans text-xs text-red-800">
+            Refund owed for an approved <strong>return</strong> on this order
+            {(() => { const r = detail.refund_reminders.find(x => x.source === "return" && !x.resolved_at)!;
+              const days = Math.floor((Date.now() - new Date(r.eligible_at).getTime()) / 86400000);
+              return days > 0 ? ` — ${days}d since approved` : ""; })()}
+            . Mark the return as <em>refunded</em> in the <strong>Returns</strong> tab to resolve it.
+          </p>
+        </div>
+      )}
+
       <div className="rounded-lg border border-border p-3 space-y-2">
         <p className="font-sans text-xs font-semibold text-foreground">Message customer</p>
         {lastMessage && (
@@ -1538,20 +1505,117 @@ const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpda
 };
 
 // ── Orders panel ───────────────────────────────────────────────────────────────
-// Aggregated by customer: one table per customer, one row per order. Tracking
-// status is admin-controlled here — it never advances on its own server-side.
+// One unified, interactive table for every order — search, filter, sort, and an
+// optional group-by-customer view. Tracking status is admin-controlled here; it
+// never advances on its own server-side.
+
+const PaymentBadge = ({ status }: { status: string }) => (
+  <span className={`font-sans text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap capitalize ${
+    status === "paid" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+  }`}>
+    {status === "paid" ? "Paid" : status}
+  </span>
+);
+
+// A refund can be owed two ways: a cancellation sets the order's own
+// refund_status='pending', while a return-based refund lives in refund_reminders
+// (order.refund_status stays 'not_applicable'). RefundInfo unifies both so the
+// Orders table never hides an outstanding refund.
+type RefundKind = "none" | "owed" | "refunded";
+type RefundInfo = { kind: RefundKind; days?: number; source?: "return" | "cancellation" };
+
+const RefundCell = ({ info }: { info: RefundInfo }) => {
+  if (info.kind === "owed") return (
+    <span
+      className="font-sans text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700 whitespace-nowrap"
+      title={info.source ? `Refund owed via ${info.source}${info.days != null ? ` — ${info.days}d elapsed` : ""}` : undefined}
+    >
+      Owed{info.days != null && info.days > 0 ? ` · ${info.days}d` : ""}
+    </span>
+  );
+  if (info.kind === "refunded") return <span className="font-sans text-xs font-medium px-2 py-0.5 rounded-full bg-muted text-muted-foreground whitespace-nowrap">Refunded</span>;
+  return <span className="font-sans text-xs text-muted-foreground/50">—</span>;
+};
+
+// Compact KPI tile for the row of summary stats above the table.
+const StatTile = ({ label, value, tone = "default", onClick, active }: {
+  label: string; value: string | number; tone?: "default" | "red" | "amber" | "green"; onClick?: () => void; active?: boolean;
+}) => {
+  const toneCls = {
+    default: "text-foreground",
+    red: "text-red-600",
+    amber: "text-amber-600",
+    green: "text-green-600",
+  }[tone];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!onClick}
+      className={`text-left rounded-xl border p-4 transition-colors ${
+        active ? "border-primary bg-primary/5" : "border-border bg-card"
+      } ${onClick ? "hover:border-primary/50 cursor-pointer" : "cursor-default"}`}
+    >
+      <p className={`font-serif text-2xl leading-none ${toneCls}`}>{value}</p>
+      <p className="font-sans text-xs text-muted-foreground mt-1.5">{label}</p>
+    </button>
+  );
+};
+
+type OrderSortKey = "date" | "total" | "order" | "payment";
+type AttentionFilter = "all" | "attention" | "unpaid" | "refund" | "cancellation";
+
+const ALL_ORDER_STAGES = Array.from(new Set([...ORDER_STAGES.delivery, ...ORDER_STAGES.pickup]));
 
 const OrdersPanel = () => {
   const [items, setItems] = useState<AdminOrderRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"all" | "delivery" | "pickup">("all");
+  const [paymentFilter, setPaymentFilter] = useState<"all" | "paid" | "unpaid">("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [attention, setAttention] = useState<AttentionFilter>("all");
+  const [sortKey, setSortKey] = useState<OrderSortKey>("date");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [groupByCustomer, setGroupByCustomer] = useState(true);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [refundsDue, setRefundsDue] = useState<OpsOverview["refunds_due"]>([]);
   const { toast } = useToast();
 
   const load = useCallback((showSpinner = true) => {
     if (showSpinner) setLoading(true);
+    // Refund reminders (returns + cancellations) come from the ops overview —
+    // an order can owe a refund without its own refund_status being 'pending'.
+    getOpsOverview().then(o => setRefundsDue(o.refunds_due)).catch(() => {});
     return getAdminOrders().then(o => setItems(o)).finally(() => setLoading(false));
   }, []);
+
+  // order_id → outstanding refund reminder (keep the oldest / most-elapsed one).
+  const refundOwedByOrder = useMemo(() => {
+    const m = new Map<string, { days: number; source: "return" | "cancellation" }>();
+    for (const r of refundsDue) {
+      const prev = m.get(r.order_id);
+      if (!prev || r.days_elapsed > prev.days) m.set(r.order_id, { days: r.days_elapsed, source: r.source });
+    }
+    return m;
+  }, [refundsDue]);
+
+  // Unified refund state for a row. The order's own refund_status is
+  // authoritative — it's what changes when the admin acts *in this tab* (marks a
+  // refund done, approves a cancellation). The ops-overview reminder only
+  // *supplements* it, surfacing return-based refunds the order's refund_status
+  // never records. So a resolved order-level state always wins over a snapshot
+  // reminder that may not have been re-polled yet.
+  const refundInfo = useCallback((o: AdminOrderRecord): RefundInfo => {
+    if (o.refund_status === "refunded") return { kind: "refunded" };
+    const reminder = refundOwedByOrder.get(o.id);
+    if (o.refund_status === "pending") return { kind: "owed", source: "cancellation", days: reminder?.days };
+    if (reminder) return { kind: "owed", source: reminder.source, days: reminder.days };
+    return { kind: "none" };
+  }, [refundOwedByOrder]);
 
   useEffect(() => {
     load();
@@ -1562,22 +1626,21 @@ const OrdersPanel = () => {
   }, [load]);
 
   const currency = (n: string | number) => `€${Number(n).toFixed(2)}`;
-
-  const customers = useMemo(() => {
-    const byUser = new Map<string, { name: string; email: string; orders: AdminOrderRecord[] }>();
-    for (const o of items) {
-      if (!byUser.has(o.user_id)) byUser.set(o.user_id, { name: o.user_name || o.user_email, email: o.user_email, orders: [] });
-      byUser.get(o.user_id)!.orders.push(o);
-    }
-    return Array.from(byUser.values());
-  }, [items]);
+  const unitCount = (o: AdminOrderRecord) => o.items.reduce((n, i) => n + i.quantity, 0);
+  const itemSummary = (o: AdminOrderRecord) =>
+    o.items.map(i => `${(i.product_data?.name as string) || i.product_id} ×${i.quantity}`).join(", ");
 
   const handleStatusChange = async (order: AdminOrderRecord, status: string) => {
     setSavingId(order.id);
     try {
       const updated = await updateOrderStatus(order.id, status);
-      setItems(prev => prev.map(o => o.id === order.id ? updated : o));
+      // The PUT response omits the last-notification join fields, and changing
+      // status sends the customer a fresh notification — merge (so we don't blank
+      // out fields the response doesn't carry) then reconcile from the server so
+      // "Last notified" reflects the new email instead of going stale.
+      setItems(prev => prev.map(o => o.id === order.id ? { ...o, ...updated } : o));
       toast({ title: "Tracking updated" });
+      load(false);
     } catch {
       toast({ title: "Could not update tracking", variant: "destructive" });
     } finally {
@@ -1585,113 +1648,289 @@ const OrdersPanel = () => {
     }
   };
 
+  // Detail-panel actions (mark refund done, approve/reject a cancellation) mutate
+  // order-level state — patch it in immediately, then resync the refund-reminder
+  // snapshot so a resolved/created reminder doesn't lag behind the action.
+  const handleOrderUpdate = useCallback((updated: AdminOrderRecord) => {
+    setItems(prev => prev.map(x => x.id === updated.id ? { ...x, ...updated } : x));
+    getOpsOverview().then(o => setRefundsDue(o.refunds_due)).catch(() => {});
+  }, []);
+
+  // ── Summary stats (over all orders, not the current filter) ──────────────────
+  const stats = useMemo(() => {
+    let revenue = 0, unpaid = 0, refundsOwed = 0, cancellations = 0;
+    const customerIds = new Set<string>();
+    for (const o of items) {
+      customerIds.add(o.user_id);
+      if (o.payment_status === "paid") revenue += Number(o.total); else unpaid += 1;
+      if (refundInfo(o).kind === "owed") refundsOwed += 1;
+      if (o.cancellation_status === "requested") cancellations += 1;
+    }
+    return { revenue, unpaid, refundsOwed, cancellations, customers: customerIds.size };
+  }, [items, refundInfo]);
+
+  // ── Filter + sort ────────────────────────────────────────────────────────────
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = items.filter(o => {
+      if (typeFilter !== "all" && o.fulfillment_type !== typeFilter) return false;
+      if (paymentFilter === "paid" && o.payment_status !== "paid") return false;
+      if (paymentFilter === "unpaid" && o.payment_status === "paid") return false;
+      if (statusFilter !== "all" && o.status !== statusFilter) return false;
+      const owed = refundInfo(o).kind === "owed";
+      if (attention === "attention" && !(o.cancellation_status === "requested" || owed)) return false;
+      if (attention === "refund" && !owed) return false;
+      if (attention === "cancellation" && o.cancellation_status !== "requested") return false;
+      if (attention === "unpaid" && o.payment_status === "paid") return false;
+      if (q) {
+        const hay = [o.tracking_number, o.user_name, o.user_email, o.status, itemSummary(o)].join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    filtered.sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "date") cmp = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      else if (sortKey === "total") cmp = Number(a.total) - Number(b.total);
+      else if (sortKey === "order") cmp = a.tracking_number.localeCompare(b.tracking_number);
+      else if (sortKey === "payment") cmp = a.payment_status.localeCompare(b.payment_status);
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return filtered;
+  }, [items, search, typeFilter, paymentFilter, statusFilter, attention, sortKey, sortDir, refundInfo]);
+
+  const groups = useMemo(() => {
+    const byUser = new Map<string, { user_id: string; name: string; email: string; orders: AdminOrderRecord[] }>();
+    for (const o of visible) {
+      if (!byUser.has(o.user_id)) byUser.set(o.user_id, { user_id: o.user_id, name: o.user_name || o.user_email, email: o.user_email, orders: [] });
+      byUser.get(o.user_id)!.orders.push(o);
+    }
+    return Array.from(byUser.values());
+  }, [visible]);
+
+  const toggleSort = (k: OrderSortKey) => {
+    if (sortKey === k) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir(k === "date" || k === "total" ? "desc" : "asc"); }
+  };
+
+  const toggleCollapse = (userId: string) =>
+    setCollapsed(prev => { const next = new Set(prev); if (next.has(userId)) next.delete(userId); else next.add(userId); return next; });
+
+  const exportCSV = () => {
+    const header = ["Order", "Date", "Customer", "Email", "Type", "Units", "Total", "Discount %", "Payment", "Tracking", "Refund", "Cancellation"];
+    const rows = visible.map(o => {
+      const info = refundInfo(o);
+      const refundText = info.kind === "owed" ? `owed${info.source ? ` (${info.source})` : ""}` : info.kind;
+      return [
+        o.tracking_number, new Date(o.created_at).toISOString(), o.user_name || "", o.user_email,
+        o.fulfillment_type, unitCount(o), Number(o.total).toFixed(2), o.discount_percent || "0",
+        o.payment_status, o.status, refundText, o.cancellation_status,
+      ];
+    });
+    const csv = [header, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = `olive-goose-orders-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const colCount = groupByCustomer ? 9 : 10;
+  const selectCls = "px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40";
+  const chipCls = (active: boolean) => `font-sans text-xs font-medium px-3 py-1.5 rounded-full border transition-colors whitespace-nowrap ${
+    active ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-primary/40"
+  }`;
+
+  const SortTh = ({ label, k, className = "" }: { label: string; k: OrderSortKey; className?: string }) => (
+    <th className={`px-4 py-2.5 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider ${className}`}>
+      <button onClick={() => toggleSort(k)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors uppercase">
+        {label}
+        <span className={`text-[9px] ${sortKey === k ? "text-primary" : "text-muted-foreground/40"}`}>{sortKey === k ? (sortDir === "asc" ? "▲" : "▼") : "▲▼"}</span>
+      </button>
+    </th>
+  );
+
+  const renderRow = (o: AdminOrderRecord, showCustomer: boolean) => {
+    const rinfo = refundInfo(o);
+    return (
+    <Fragment key={o.id}>
+      <tr className="border-t border-border hover:bg-muted/20 transition-colors align-top">
+        <td className="px-4 py-3 font-sans font-medium text-foreground whitespace-nowrap">
+          {o.tracking_number}
+          {(o.cancellation_status === "requested" || rinfo.kind === "owed") && (
+            <div className="flex flex-col gap-1 mt-1">
+              {o.cancellation_status === "requested" && (
+                <span className="font-sans text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 w-fit">Cancellation pending</span>
+              )}
+              {rinfo.kind === "owed" && (
+                <span className="font-sans text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 w-fit">
+                  Refund owed{rinfo.source === "return" ? " (return)" : ""}
+                </span>
+              )}
+            </div>
+          )}
+        </td>
+        {showCustomer && (
+          <td className="px-4 py-3">
+            <div className="font-sans text-sm text-foreground whitespace-nowrap">{o.user_name || "—"}</div>
+            <div className="font-sans text-xs text-muted-foreground">{o.user_email}</div>
+          </td>
+        )}
+        <td className="px-4 py-3 font-sans text-muted-foreground whitespace-nowrap">{new Date(o.created_at).toLocaleDateString()}</td>
+        <td className="px-4 py-3 font-sans capitalize text-muted-foreground">{o.fulfillment_type}</td>
+        <td className="px-4 py-3 font-sans text-muted-foreground whitespace-nowrap" title={itemSummary(o)}>
+          {unitCount(o)} item{unitCount(o) !== 1 ? "s" : ""}
+        </td>
+        <td className="px-4 py-3 font-sans text-foreground whitespace-nowrap">
+          {currency(o.total)}
+          {Number(o.discount_percent) > 0 && <span className="text-muted-foreground text-xs"> ({o.discount_percent}% off)</span>}
+        </td>
+        <td className="px-4 py-3 whitespace-nowrap"><PaymentBadge status={o.payment_status} /></td>
+        <td className="px-4 py-3 whitespace-nowrap"><RefundCell info={rinfo} /></td>
+        <td className="px-4 py-3">
+          <select
+            value={o.status}
+            disabled={savingId === o.id}
+            onChange={e => handleStatusChange(o, e.target.value)}
+            className="px-2 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
+          >
+            {ORDER_STAGES[o.fulfillment_type].map(stage => <option key={stage} value={stage}>{stage}</option>)}
+          </select>
+          <LastNotified title={o.last_notification_title} at={o.last_notification_at} />
+        </td>
+        <td className="px-4 py-3 text-right whitespace-nowrap">
+          <button onClick={() => setExpandedId(p => p === o.id ? null : o.id)} className="font-sans text-xs text-primary hover:underline">
+            {expandedId === o.id ? "Hide" : "Details"}
+          </button>
+        </td>
+      </tr>
+      {expandedId === o.id && (
+        <tr className="border-t border-border bg-muted/10">
+          <td colSpan={colCount} className="px-4 py-4">
+            <OrderDetailPanel order={o} onUpdate={handleOrderUpdate} />
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+  };
+
+  const hasFilters = search.trim() !== "" || typeFilter !== "all" || paymentFilter !== "all" || statusFilter !== "all" || attention !== "all";
+  const clearFilters = () => { setSearch(""); setTypeFilter("all"); setPaymentFilter("all"); setStatusFilter("all"); setAttention("all"); };
+
   return (
     <div className="space-y-6">
-      <SectionHeading title="Orders" desc="All orders placed by customers, grouped by customer. Update a delivery/pickup tracking status here." />
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground font-sans">
-          {items.length} order{items.length !== 1 ? "s" : ""} · {customers.length} customer{customers.length !== 1 ? "s" : ""}
-        </p>
-        <button onClick={() => load()}
-          className="font-sans text-xs font-medium text-primary hover:underline shrink-0">
-          Refresh
-        </button>
+      <SectionHeading title="Orders" desc="Every order in one place. Search, filter, and sort — then open a row to update tracking, handle cancellations, refunds, and message the customer." />
+
+      {/* Summary — clickable tiles double as quick filters */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <StatTile label="Total orders" value={items.length} onClick={() => setAttention("all")} active={attention === "all"} />
+        <StatTile label="Customers" value={stats.customers} />
+        <StatTile label="Paid revenue" value={currency(stats.revenue)} tone="green" />
+        <StatTile label="Unpaid" value={stats.unpaid} tone="amber" onClick={() => setAttention("unpaid")} active={attention === "unpaid"} />
+        <StatTile label="Refunds owed" value={stats.refundsOwed} tone="red" onClick={() => setAttention("refund")} active={attention === "refund"} />
+        <StatTile label="Cancellations" value={stats.cancellations} tone="amber" onClick={() => setAttention("cancellation")} active={attention === "cancellation"} />
       </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">⌕</span>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search order #, customer, email, product…"
+            className="w-full pl-8 pr-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+          />
+        </div>
+        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as typeof typeFilter)} className={selectCls}>
+          <option value="all">All types</option>
+          <option value="delivery">Delivery</option>
+          <option value="pickup">Pickup</option>
+        </select>
+        <select value={paymentFilter} onChange={e => setPaymentFilter(e.target.value as typeof paymentFilter)} className={selectCls}>
+          <option value="all">Any payment</option>
+          <option value="paid">Paid</option>
+          <option value="unpaid">Unpaid</option>
+        </select>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className={selectCls}>
+          <option value="all">Any status</option>
+          {ALL_ORDER_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <label className="flex items-center gap-2 font-sans text-xs text-muted-foreground px-2 cursor-pointer select-none">
+          <input type="checkbox" checked={groupByCustomer} onChange={e => setGroupByCustomer(e.target.checked)} className="accent-primary" />
+          Group by customer
+        </label>
+        <button onClick={exportCSV} className="font-sans text-xs font-medium px-3 py-2 rounded-lg border border-border text-foreground hover:bg-muted transition-colors">Export CSV</button>
+        <button onClick={() => load()} className="font-sans text-xs font-medium px-3 py-2 rounded-lg border border-border text-foreground hover:bg-muted transition-colors">Refresh</button>
+      </div>
+
+      {/* Quick attention chips */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => setAttention("all")} className={chipCls(attention === "all")}>All</button>
+        <button onClick={() => setAttention("attention")} className={chipCls(attention === "attention")}>Needs attention</button>
+        <button onClick={() => setAttention("unpaid")} className={chipCls(attention === "unpaid")}>Unpaid</button>
+        <button onClick={() => setAttention("refund")} className={chipCls(attention === "refund")}>Refund owed</button>
+        <button onClick={() => setAttention("cancellation")} className={chipCls(attention === "cancellation")}>Cancellations</button>
+        <span className="font-sans text-xs text-muted-foreground ml-auto">
+          {visible.length} of {items.length} order{items.length !== 1 ? "s" : ""}
+          {hasFilters && <button onClick={clearFilters} className="ml-2 text-primary hover:underline">Clear</button>}
+        </span>
+      </div>
+
       {loading && <p className="text-sm text-muted-foreground font-sans">Loading…</p>}
       {!loading && items.length === 0 && <p className="text-sm text-muted-foreground font-sans">No orders yet.</p>}
+      {!loading && items.length > 0 && visible.length === 0 && (
+        <p className="text-sm text-muted-foreground font-sans">No orders match your filters. <button onClick={clearFilters} className="text-primary hover:underline">Clear filters</button></p>
+      )}
 
-      <div className="space-y-6">
-        {customers.map(c => (
-          <div key={c.email} className="border border-border rounded-xl overflow-hidden">
-            <div className="px-4 py-3 bg-muted/40 border-b border-border flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <p className="font-sans text-sm font-semibold text-foreground">{c.name}</p>
-                <p className="font-sans text-xs text-muted-foreground">{c.email}</p>
-              </div>
-              <span className="font-sans text-xs text-muted-foreground shrink-0">
-                {c.orders.length} order{c.orders.length !== 1 ? "s" : ""}
-              </span>
-            </div>
-            <table className="w-full text-sm">
+      {visible.length > 0 && (
+        <div className="border border-border rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[860px]">
               <thead>
-                <tr className="bg-muted/10">
-                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Order #</th>
-                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Date</th>
-                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Type</th>
-                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Total</th>
-                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Payment</th>
-                  <th className="text-left px-4 py-2 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Tracking status</th>
-                  <th className="px-4 py-2" />
+                <tr className="bg-muted/40 border-b border-border text-left">
+                  <SortTh label="Order #" k="order" />
+                  {!groupByCustomer && <th className="px-4 py-2.5 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Customer</th>}
+                  <SortTh label="Date" k="date" />
+                  <th className="px-4 py-2.5 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Type</th>
+                  <th className="px-4 py-2.5 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Items</th>
+                  <SortTh label="Total" k="total" />
+                  <SortTh label="Payment" k="payment" />
+                  <th className="px-4 py-2.5 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Refund</th>
+                  <th className="px-4 py-2.5 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">Tracking status</th>
+                  <th className="px-4 py-2.5" />
                 </tr>
               </thead>
               <tbody>
-                {c.orders.map(o => (
-                  <Fragment key={o.id}>
-                    <tr className="border-t border-border hover:bg-muted/20 transition-colors">
-                      <td className="px-4 py-3 font-sans font-medium text-foreground whitespace-nowrap">
-                        {o.tracking_number}
-                        {o.cancellation_status === "requested" && (
-                          <span className="block font-sans text-[10px] font-semibold mt-1 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 w-fit">
-                            Cancellation pending
-                          </span>
-                        )}
-                        {o.refund_status === "pending" && (
-                          <span className="block font-sans text-[10px] font-semibold mt-1 px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 w-fit">
-                            Refund owed
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 font-sans text-muted-foreground whitespace-nowrap">{new Date(o.created_at).toLocaleDateString()}</td>
-                      <td className="px-4 py-3 font-sans capitalize text-muted-foreground">{o.fulfillment_type}</td>
-                      <td className="px-4 py-3 font-sans text-foreground whitespace-nowrap">
-                        {currency(o.total)}
-                        {Number(o.discount_percent) > 0 && (
-                          <span className="text-muted-foreground text-xs"> ({o.discount_percent}% off)</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className={`font-sans text-xs font-medium px-2 py-0.5 rounded-full ${
-                          o.payment_status === "paid" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-                        }`}>
-                          {o.payment_status === "paid" ? "Paid" : o.payment_status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <select
-                          value={o.status}
-                          disabled={savingId === o.id}
-                          onChange={e => handleStatusChange(o, e.target.value)}
-                          className="px-2 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
-                        >
-                          {ORDER_STAGES[o.fulfillment_type].map(stage => (
-                            <option key={stage} value={stage}>{stage}</option>
-                          ))}
-                        </select>
-                        <LastNotified title={o.last_notification_title} at={o.last_notification_at} />
-                      </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <button
-                          onClick={() => setExpandedId(p => p === o.id ? null : o.id)}
-                          className="font-sans text-xs text-primary hover:underline"
-                        >
-                          {expandedId === o.id ? "Hide details" : "View details"}
-                        </button>
-                      </td>
-                    </tr>
-                    {expandedId === o.id && (
-                      <tr className="border-t border-border bg-muted/10">
-                        <td colSpan={7} className="px-4 py-4">
-                          <OrderDetailPanel order={o} onUpdate={(updated) => setItems(prev => prev.map(x => x.id === updated.id ? updated : x))} />
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                ))}
+                {groupByCustomer
+                  ? groups.map(g => {
+                      const isCollapsed = collapsed.has(g.user_id);
+                      const owed = g.orders.filter(o => refundInfo(o).kind === "owed").length;
+                      const pendingCancel = g.orders.filter(o => o.cancellation_status === "requested").length;
+                      return (
+                        <Fragment key={g.user_id}>
+                          <tr className="bg-muted/20 border-t border-border cursor-pointer hover:bg-muted/30" onClick={() => toggleCollapse(g.user_id)}>
+                            <td colSpan={colCount} className="px-4 py-2.5">
+                              <div className="flex items-center gap-3 flex-wrap">
+                                <span className={`text-muted-foreground text-[10px] transition-transform ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
+                                <span className="font-sans text-sm font-semibold text-foreground">{g.name}</span>
+                                <span className="font-sans text-xs text-muted-foreground">{g.email}</span>
+                                <span className="font-sans text-xs text-muted-foreground">· {g.orders.length} order{g.orders.length !== 1 ? "s" : ""}</span>
+                                {owed > 0 && <span className="font-sans text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700">{owed} refund{owed !== 1 ? "s" : ""} owed</span>}
+                                {pendingCancel > 0 && <span className="font-sans text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">{pendingCancel} cancellation{pendingCancel !== 1 ? "s" : ""}</span>}
+                              </div>
+                            </td>
+                          </tr>
+                          {!isCollapsed && g.orders.map(o => renderRow(o, false))}
+                        </Fragment>
+                      );
+                    })
+                  : visible.map(o => renderRow(o, true))}
               </tbody>
             </table>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1717,6 +1956,10 @@ const ReturnsPanel = () => {
     try {
       await updateReturnStatus(id, status);
       setItems(prev => prev.map(r => r.id === id ? { ...r, status } : r));
+      // A status change moves the refund-reminder clock server-side (approved
+      // starts it, refunded/rejected resolves it) — resync so the "Refund due"
+      // badges and KPI reflect the new state immediately.
+      getOpsOverview().then(o => setRefundsDue(o.refunds_due)).catch(() => {});
       toast({ title: "Return updated — customer notified" });
     } catch (err) {
       toast({ title: err instanceof Error ? err.message : "Error", variant: "destructive" });
@@ -1725,45 +1968,118 @@ const ReturnsPanel = () => {
 
   const STATUS_OPTIONS: AdminReturnRecord["status"][] = ["requested", "approved", "rejected", "refunded"];
 
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | AdminReturnRecord["status"]>("all");
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { requested: 0, approved: 0, rejected: 0, refunded: 0 };
+    for (const r of items) c[r.status] = (c[r.status] || 0) + 1;
+    return c;
+  }, [items]);
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return items.filter(r => {
+      if (statusFilter !== "all" && r.status !== statusFilter) return false;
+      if (q) {
+        const hay = [r.product_name, r.user_name, r.user_email, r.reason].join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [items, search, statusFilter]);
+
+  const STATUS_TONE: Record<AdminReturnRecord["status"], string> = {
+    requested: "bg-amber-100 text-amber-700",
+    approved: "bg-blue-100 text-blue-700",
+    rejected: "bg-muted text-muted-foreground",
+    refunded: "bg-green-100 text-green-700",
+  };
+
   return (
     <div className="space-y-6">
-      <SectionHeading title="Returns & Refunds" desc="Customer return requests submitted from the Returns & Refunds page." />
-      <p className="text-sm text-muted-foreground font-sans">{items.length} request{items.length !== 1 ? "s" : ""}</p>
+      <SectionHeading title="Returns & Refunds" desc="Customer return requests submitted from the Returns & Refunds page. Update a status to notify the customer." />
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <StatTile label="Total requests" value={items.length} onClick={() => setStatusFilter("all")} active={statusFilter === "all"} />
+        <StatTile label="Requested" value={counts.requested} tone="amber" onClick={() => setStatusFilter("requested")} active={statusFilter === "requested"} />
+        <StatTile label="Approved" value={counts.approved} onClick={() => setStatusFilter("approved")} active={statusFilter === "approved"} />
+        <StatTile label="Refunded" value={counts.refunded} tone="green" onClick={() => setStatusFilter("refunded")} active={statusFilter === "refunded"} />
+        <StatTile label="Refunds due" value={refundsDue.length} tone="red" />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">⌕</span>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search product, customer, reason…"
+            className="w-full pl-8 pr-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40" />
+        </div>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
+          className="px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-xs capitalize focus:outline-none focus:ring-2 focus:ring-primary/40">
+          <option value="all">Any status</option>
+          {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <button onClick={load} className="font-sans text-xs font-medium px-3 py-2 rounded-lg border border-border text-foreground hover:bg-muted transition-colors">Refresh</button>
+        <span className="font-sans text-xs text-muted-foreground ml-auto">{visible.length} of {items.length}</span>
+      </div>
+
       {loading && <p className="text-sm text-muted-foreground font-sans">Loading…</p>}
       {!loading && items.length === 0 && <p className="text-sm text-muted-foreground font-sans">No return requests yet.</p>}
-      <div className="space-y-4">
-        {items.map(r => (
-          <div key={r.id} className="rounded-xl border border-border bg-card p-5 space-y-2">
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1 flex-1 min-w-0">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <span className="font-sans text-sm font-semibold text-foreground">{r.product_name}</span>
-                  <span className="font-sans text-xs text-muted-foreground">{r.user_name || r.user_email}</span>
-                </div>
-                <p className="font-sans text-sm text-foreground leading-relaxed">{r.reason}</p>
-                <p className="font-sans text-xs text-muted-foreground">{new Date(r.created_at).toLocaleString()}</p>
-                {refundDueFor(r.id) && (
-                  <span className="inline-block font-sans text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
-                    Refund due — {refundDueFor(r.id)!.days_elapsed}d since approved
-                  </span>
-                )}
-              </div>
-              <div className="shrink-0 text-right">
-                <select
-                  value={r.status}
-                  disabled={r.status === "refunded"}
-                  onChange={(e) => handleStatusChange(r.id, e.target.value as AdminReturnRecord["status"])}
-                  className="px-3 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs capitalize disabled:opacity-60 disabled:cursor-not-allowed"
-                  title={r.status === "refunded" ? "Refunded is final — this can't be changed further." : undefined}
-                >
-                  {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <LastNotified title={r.last_notification_title} at={r.last_notification_at} />
-              </div>
-            </div>
+      {!loading && items.length > 0 && visible.length === 0 && <p className="text-sm text-muted-foreground font-sans">No returns match your filters.</p>}
+
+      {visible.length > 0 && (
+        <div className="border border-border rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[820px]">
+              <thead>
+                <tr className="bg-muted/40 border-b border-border text-left">
+                  {["Date", "Product", "Customer", "Reason", "Status"].map(h => (
+                    <th key={h} className="px-4 py-2.5 text-xs font-sans font-medium text-muted-foreground uppercase tracking-wider">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map(r => {
+                  const due = refundDueFor(r.id);
+                  return (
+                    <tr key={r.id} className="border-t border-border hover:bg-muted/20 transition-colors align-top">
+                      <td className="px-4 py-3 font-sans text-muted-foreground whitespace-nowrap">{new Date(r.created_at).toLocaleDateString()}</td>
+                      <td className="px-4 py-3 font-sans font-medium text-foreground">{r.product_name}</td>
+                      <td className="px-4 py-3">
+                        <div className="font-sans text-sm text-foreground whitespace-nowrap">{r.user_name || "—"}</div>
+                        <div className="font-sans text-xs text-muted-foreground">{r.user_email}</div>
+                      </td>
+                      <td className="px-4 py-3 font-sans text-sm text-foreground max-w-[320px]">
+                        <p className="leading-relaxed">{r.reason}</p>
+                        {due && (
+                          <span className="inline-block mt-1 font-sans text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+                            Refund due — {due.days_elapsed}d since approved
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className="flex flex-col items-start gap-1">
+                          <span className={`font-sans text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize ${STATUS_TONE[r.status]}`}>{r.status}</span>
+                          <select
+                            value={r.status}
+                            disabled={r.status === "refunded"}
+                            onChange={(e) => handleStatusChange(r.id, e.target.value as AdminReturnRecord["status"])}
+                            className="px-2 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs capitalize disabled:opacity-60 disabled:cursor-not-allowed"
+                            title={r.status === "refunded" ? "Refunded is final — this can't be changed further." : undefined}
+                          >
+                            {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                          <LastNotified title={r.last_notification_title} at={r.last_notification_at} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -2239,6 +2555,7 @@ const SubscribersPanel = ({
   subscribers: Subscriber[];
   onDelete: (id: string) => void;
 }) => {
+  const [search, setSearch] = useState("");
   const exportCSV = () => {
     const csv = ["Email,Subscribed At", ...subscribers.map((s) => `${s.email},${s.subscribed_at}`)].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -2250,13 +2567,18 @@ const SubscribersPanel = ({
     URL.revokeObjectURL(url);
   };
 
+  const visible = subscribers.filter(s => s.email.toLowerCase().includes(search.trim().toLowerCase()));
+
   return (
     <div className="space-y-6">
       <SectionHeading title="Subscribers" desc="Email addresses collected via the newsletter form." />
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground font-sans">
-          {subscribers.length} subscriber{subscribers.length !== 1 ? "s" : ""}
-        </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">⌕</span>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search email…"
+            className="w-full pl-8 pr-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40" />
+        </div>
+        <span className="font-sans text-xs text-muted-foreground">{visible.length} of {subscribers.length}</span>
         <button
           onClick={exportCSV}
           className="px-4 py-2 rounded-lg border border-border text-sm font-sans text-foreground hover:bg-muted transition-colors"
@@ -2274,7 +2596,7 @@ const SubscribersPanel = ({
             </tr>
           </thead>
           <tbody>
-            {subscribers.map((sub) => (
+            {visible.map((sub) => (
               <tr key={sub.id} className="border-t border-border hover:bg-muted/30 transition-colors">
                 <td className="px-4 py-3 text-sm font-sans text-foreground">{sub.email}</td>
                 <td className="px-4 py-3 text-sm font-sans text-muted-foreground">
@@ -2290,10 +2612,10 @@ const SubscribersPanel = ({
                 </td>
               </tr>
             ))}
-            {subscribers.length === 0 && (
+            {visible.length === 0 && (
               <tr>
                 <td colSpan={3} className="px-4 py-8 text-center text-sm text-muted-foreground font-sans">
-                  No subscribers yet
+                  {subscribers.length === 0 ? "No subscribers yet" : "No subscribers match your search"}
                 </td>
               </tr>
             )}
@@ -2309,13 +2631,25 @@ const SubscribersPanel = ({
 const UsersPanel = () => {
   const [users, setUsers] = useState<AppUserRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
   useEffect(() => {
     getAdminUsers().then(u => { setUsers(u); setLoading(false); }).catch(() => setLoading(false));
   }, []);
+  const visible = users.filter(u => {
+    const q = search.trim().toLowerCase();
+    return !q || [u.full_name, u.email, u.provider].join(" ").toLowerCase().includes(q);
+  });
   return (
     <div className="space-y-6">
       <SectionHeading title="Signed Up Users" desc="All users who have registered via email or OAuth." />
-      <p className="text-sm text-muted-foreground font-sans">{users.length} user{users.length !== 1 ? "s" : ""} registered</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">⌕</span>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, email, provider…"
+            className="w-full pl-8 pr-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40" />
+        </div>
+        <span className="font-sans text-xs text-muted-foreground">{visible.length} of {users.length} user{users.length !== 1 ? "s" : ""}</span>
+      </div>
       <div className="border border-border rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>
@@ -2329,7 +2663,8 @@ const UsersPanel = () => {
           <tbody>
             {loading && <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-muted-foreground font-sans">Loading…</td></tr>}
             {!loading && users.length === 0 && <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-muted-foreground font-sans">No users yet</td></tr>}
-            {users.map(u => (
+            {!loading && users.length > 0 && visible.length === 0 && <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-muted-foreground font-sans">No users match your search</td></tr>}
+            {visible.map(u => (
               <tr key={u.id} className="border-t border-border hover:bg-muted/30 transition-colors">
                 <td className="px-4 py-3 text-sm font-sans text-foreground flex items-center gap-2">
                   {u.avatar_url
@@ -2354,6 +2689,8 @@ const UsersPanel = () => {
 const FeedbackPanel = () => {
   const [items, setItems] = useState<FeedbackRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [ratingFilter, setRatingFilter] = useState<"all" | "5" | "4" | "3" | "2" | "1">("all");
   const { toast } = useToast();
 
   const load = () => {
@@ -2370,14 +2707,34 @@ const FeedbackPanel = () => {
 
   const stars = (n: number) => "★".repeat(n) + "☆".repeat(5 - n);
 
+  const avg = items.length ? (items.reduce((s, f) => s + f.rating, 0) / items.length).toFixed(1) : "—";
+  const visible = items.filter(f => {
+    if (ratingFilter !== "all" && f.rating !== Number(ratingFilter)) return false;
+    const q = search.trim().toLowerCase();
+    return !q || [f.name, f.email, f.message].join(" ").toLowerCase().includes(q);
+  });
+
   return (
     <div className="space-y-6">
       <SectionHeading title="Customer Feedback" desc="Reviews and feedback submitted by customers on the homepage." />
-      <p className="text-sm text-muted-foreground font-sans">{items.length} review{items.length !== 1 ? "s" : ""}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">⌕</span>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, email, message…"
+            className="w-full pl-8 pr-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40" />
+        </div>
+        <select value={ratingFilter} onChange={e => setRatingFilter(e.target.value as typeof ratingFilter)}
+          className="px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40">
+          <option value="all">Any rating</option>
+          {[5, 4, 3, 2, 1].map(n => <option key={n} value={String(n)}>{n} ★</option>)}
+        </select>
+        <span className="font-sans text-xs text-muted-foreground">{visible.length} of {items.length} · avg {avg}★</span>
+      </div>
       {loading && <p className="text-sm text-muted-foreground font-sans">Loading…</p>}
       {!loading && items.length === 0 && <p className="text-sm text-muted-foreground font-sans">No feedback yet.</p>}
-      <div className="space-y-4">
-        {items.map(f => (
+      {!loading && items.length > 0 && visible.length === 0 && <p className="text-sm text-muted-foreground font-sans">No feedback matches your filters.</p>}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {visible.map(f => (
           <div key={f.id} className="rounded-xl border border-border bg-card p-5 space-y-3">
             <div className="flex items-start justify-between gap-4">
               <div className="space-y-1 flex-1 min-w-0">
@@ -2949,6 +3306,12 @@ const NAV_GROUPS: NavGroup[] = [
 const groupIdForTab = (tab: TabId): string =>
   NAV_GROUPS.find((g) => g.items.some((i) => i.id === tab))?.id ?? NAV_GROUPS[0].id;
 
+// Tabs that render dense tables/dashboards rather than a settings form — these
+// get the full working width so nothing is clipped.
+const WIDE_TABS = new Set<TabId>([
+  "shopCategories", "deals", "subscribers", "users", "feedback", "orders", "returns", "ops",
+]);
+
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
 
 const AdminDashboard = () => {
@@ -3147,7 +3510,8 @@ const AdminDashboard = () => {
 
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-8">
-          <div className="max-w-2xl mx-auto">
+          {/* Data-heavy panels need the full width; form editors read better in a narrow column. */}
+          <div className={`mx-auto ${WIDE_TABS.has(activeTab) ? "max-w-[1400px]" : "max-w-2xl"}`}>
             {activeTab === "shopCategories" && <ShopEditor categories={shopCategories} allProducts={content.products.items} onRefresh={loadData} saving={saving} setSaving={setSaving} onError={handleError} />}
             {activeTab === "deals"         && <DealsEditor allProducts={content.products.items} saving={saving} setSaving={setSaving} onError={handleError} />}
             {activeTab === "announcementBar" && <AnnouncementBarEditor data={content.announcementBar} onChange={update("announcementBar")} onSave={() => handleSave("announcementBar")} saving={saving} />}

@@ -6,6 +6,7 @@ import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
+import { formatPrice } from "@/lib/cart";
 import CartDrawer from "@/components/CartDrawer";
 import AccountDropdown from "@/components/AccountDropdown";
 import logo from "@/assets/logo.jpg";
@@ -254,7 +255,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
                             <p className="font-sans text-xs truncate" style={{ color: "#666" }}>{p.description}</p>
                           )}
                         </div>
-                        <span className="font-sans text-sm font-semibold shrink-0" style={{ color: "#6b3520" }}>{p.price}</span>
+                        <span className="font-sans text-sm font-semibold shrink-0" style={{ color: "#6b3520" }}>{formatPrice(p.price)}</span>
                       </button>
                     );
                   })}
