@@ -34,6 +34,12 @@ backend/node_modules
 # Vite temp timestamps
 vite.config.ts.timestamp-*.mjs
 
+# Playwright E2E artifacts (generated on every run)
+test-results/
+backend/test-results/
+playwright-report/
+playwright/.cache/
+
 # Editor / AI tool configs
 .claude/
 .cursorrules
@@ -51,3 +57,7 @@ backend/uploads/
 .venv/
 .gemini/
 .qoder/
+
+# e2e isolated Postgres data
+.e2e-pgdata/
+playwright-report/

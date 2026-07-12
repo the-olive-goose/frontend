@@ -300,6 +300,9 @@ export interface CheckoutInput {
   fulfillment_type: FulfillmentType;
   shipping_address?: DeliveryAddress;
   contact_phone?: string;
+  // Analytics visitor/session ids — lets the backend attribute the eventual
+  // purchase event to the browsing session that started this checkout.
+  analytics?: { visitor_id: string; session_id: string };
 }
 
 // Starts a Stripe Checkout session for the current basket and returns the hosted

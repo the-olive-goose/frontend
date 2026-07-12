@@ -7,6 +7,7 @@ import { getContent } from "@/lib/api";
 import { createCheckoutSession, SessionExpiredError, type DeliveryAddress, type FulfillmentType } from "@/lib/userApi";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
+import { track, getAnalyticsIds } from "@/lib/analytics";
 import { getBundleNudges } from "@/lib/bundleNudges";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
@@ -105,11 +106,13 @@ const CheckoutPage = () => {
       return;
     }
     setPlacing(true);
+    track("begin_checkout", { total: +grandTotal.toFixed(2), items: count, fulfillment_type: fulfillment });
     try {
       const { url } = await createCheckoutSession({
         fulfillment_type: fulfillment,
         shipping_address: isPickup ? undefined : address,
         contact_phone: isPickup ? contactPhone : undefined,
+        analytics: getAnalyticsIds(),
       });
       window.location.href = url;
     } catch (err) {

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { subscribe } from "@/lib/api";
+import { track } from "@/lib/analytics";
 import { useToast } from "@/hooks/use-toast";
 
 const EmailCapture = () => {
@@ -15,6 +16,7 @@ const EmailCapture = () => {
     setIsLoading(true);
     try {
       await subscribe(email.trim().toLowerCase());
+      track("newsletter_signup");
       setIsSuccess(true);
       setEmail("");
     } catch (err: unknown) {

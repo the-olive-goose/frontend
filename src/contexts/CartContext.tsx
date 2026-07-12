@@ -4,6 +4,7 @@ import { useAuth } from "./AuthContext";
 import {
   fetchCart, apiAddToCart, apiUpdateCartItem, apiRemoveCartItem, apiClearCart,
 } from "@/lib/userApi";
+import { track } from "@/lib/analytics";
 
 export interface CartItem {
   product: Product;
@@ -47,6 +48,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   const addToCart = async (product: Product) => {
     if (!user) return;
     await apiAddToCart(product.id, product, 1);
+    track("add_to_cart", { product_id: product.id, name: product.name, price: product.price });
     setItems(prev => {
       const existing = prev.find(i => i.product.id === product.id);
       if (existing) return prev.map(i => i.product.id === product.id ? { ...i, quantity: i.quantity + 1 } : i);
@@ -56,6 +58,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
 
   const removeFromCart = async (productId: string) => {
     await apiRemoveCartItem(productId);
+    track("remove_from_cart", { product_id: productId });
     setItems(prev => prev.filter(i => i.product.id !== productId));
   };
 

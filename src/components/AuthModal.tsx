@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { getAuthProviders } from "@/lib/userApi";
+import { track } from "@/lib/analytics";
 
 type View = "signin" | "signup" | "verify" | "forgot" | "reset";
 
@@ -163,6 +164,7 @@ const AuthModal = () => {
     try {
       if (view === "signin") {
         await signInWithEmail(email, password, remember);
+        track("login", { method: "email" });
         closeAuthModal();
       } else {
         if (!fullName.trim()) { setError("Please enter your name."); setLoading(false); return; }
@@ -179,6 +181,7 @@ const AuthModal = () => {
     setLoading(true);
     try {
       await verifySignup(email, otp.trim());
+      track("signup", { method: "email" });
       closeAuthModal();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Verification failed.");

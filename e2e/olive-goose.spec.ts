@@ -9,10 +9,10 @@
 
 import { test, expect, Page } from "@playwright/test";
 
-const BASE     = "http://localhost:8080";
-const API      = "http://localhost:3001";
-const ADMIN_EMAIL    = "admin@theolivegoose.ie";
-const ADMIN_PASSWORD = "OliveGoose2026!";
+const BASE     = process.env.E2E_BASE ?? "http://localhost:8080";
+const API      = process.env.E2E_API ?? "http://localhost:3001";
+const ADMIN_EMAIL    = process.env.E2E_ADMIN_EMAIL ?? "admin@theolivegoose.ie";
+const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "OliveGoose2026!";
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
 
@@ -30,8 +30,9 @@ async function adminLogin(page: Page) {
 test.describe("Homepage", () => {
   test("loads and shows navbar", async ({ page }) => {
     await page.goto(BASE);
-    await expect(page.locator("nav")).toBeVisible();
-    await expect(page.getByText("The Olive Goose")).toBeVisible();
+    // The page has two <nav> landmarks (header + footer), so scope to the first.
+    await expect(page.locator("nav").first()).toBeVisible();
+    await expect(page.getByText("The Olive Goose").first()).toBeVisible();
   });
 
   test("announcement bar rotates messages", async ({ page }) => {
@@ -43,7 +44,9 @@ test.describe("Homepage", () => {
   test("hero section visible with CTAs", async ({ page }) => {
     await page.goto(BASE);
     await expect(page.locator("#hero")).toBeVisible();
-    const primary = page.getByRole("link", { name: /shop the collection/i });
+    // The hero CTA renders as a <button> (opens the auth modal) for guests and an
+    // <a> to /shop once signed in — so assert by its text, not a fixed role.
+    const primary = page.locator("#hero").getByText(/shop the collection/i).first();
     await expect(primary).toBeVisible();
   });
 
@@ -53,16 +56,26 @@ test.describe("Homepage", () => {
   });
 
   test("products section renders cards", async ({ page }) => {
-    await page.goto(BASE);
-    await page.locator("#collection, [id*=collection]").first().scrollIntoViewIfNeeded().catch(() => {});
-    // At least one product card with Add to Cart
-    const addBtns = page.getByRole("button", { name: /add to cart/i });
-    await expect(addBtns.first()).toBeVisible({ timeout: 6000 });
+    await page.goto(BASE, { waitUntil: "domcontentloaded" });
+    // Product cards load after their content fetch. A guest sees "Buy Now"; a
+    // signed-in shopper sees "Add to Cart" (ScrapbookSection renders one per card).
+    const addBtns = page.getByRole("button", { name: /add to cart|buy now/i });
+    await expect(addBtns.first()).toBeVisible({ timeout: 20_000 });
   });
 
-  test("Live in the moment pill is visible", async ({ page }) => {
+  test("moment pill renders its configured copy", async ({ page, request }) => {
+    // The pill's text is admin-editable content, so assert whatever line 1 is
+    // currently configured actually renders — rather than a hardcoded phrase
+    // that breaks the moment marketing edits the copy.
+    const pill = await (await request.get(`${API}/api/content/momentPill`)).json();
+    const line1 = (pill?.text1 || "").trim();
     await page.goto(BASE);
-    await expect(page.getByText(/live in the moment/i)).toBeVisible();
+    if (line1) {
+      await expect(page.getByText(line1, { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+    } else {
+      // No content configured — the section still renders from defaults.
+      await expect(page.getByText(/welcome to the olive goose/i)).toBeVisible();
+    }
   });
 
   test("Welcome / Our Story section visible", async ({ page }) => {
@@ -105,10 +118,12 @@ test.describe("Navigation", () => {
     await expect(page.locator("#story")).toBeVisible({ timeout: 4000 });
   });
 
-  test("Shop Now CTA link works", async ({ page }) => {
+  test("Shop nav link points to /shop", async ({ page }) => {
     await page.goto(BASE);
-    const shopBtn = page.getByRole("link", { name: /shop now/i }).first();
-    await expect(shopBtn).toBeVisible();
+    // The navbar carries a top-level "Shop" link to the storefront.
+    const shopLink = page.locator("nav").first().getByRole("link", { name: /^shop$/i }).first();
+    await expect(shopLink).toBeVisible();
+    await expect(shopLink).toHaveAttribute("href", /\/shop/);
   });
 });
 
@@ -122,7 +137,7 @@ test.describe("Candle Care page", () => {
 
   test("has navbar and footer", async ({ page }) => {
     await page.goto(`${BASE}/candle-care`);
-    await expect(page.locator("nav")).toBeVisible();
+    await expect(page.locator("nav").first()).toBeVisible();
     await expect(page.locator("footer")).toBeVisible();
   });
 });
@@ -174,11 +189,15 @@ test.describe("Backend API", () => {
     expect(body).toHaveProperty("headline");
   });
 
-  test("GET /api/content/footer returns data", async ({ request }) => {
+  test("GET /api/content/footer responds (null until an admin saves it)", async ({ request }) => {
+    // Footer content is optional managed content: the storefront renders a
+    // hardcoded footer when none is saved, so the endpoint returns null until
+    // an admin edits it. Assert it responds cleanly, and that when content DOES
+    // exist it carries links — never a 500.
     const res = await request.get(`${API}/api/content/footer`);
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
-    expect(body).toHaveProperty("links");
+    if (body !== null) expect(body).toHaveProperty("links");
   });
 
   test("PUT /api/content/hero requires auth", async ({ request }) => {
@@ -245,7 +264,8 @@ test.describe("Admin Dashboard", () => {
 
     // Save
     await page.getByRole("button", { name: /save changes/i }).click();
-    await expect(page.getByText(/saved|success/i)).toBeVisible({ timeout: 5000 });
+    // Both an inline confirmation and a toast render "Saved!" — assert either.
+    await expect(page.getByText(/saved|success/i).first()).toBeVisible({ timeout: 5000 });
 
     // Check homepage shows it
     const homePage = await page.context().newPage();
@@ -260,14 +280,18 @@ test.describe("Admin Dashboard", () => {
 
   test("Hero tab saves headline", async ({ page }) => {
     await adminLogin(page);
-    await page.getByRole("button", { name: /^hero$/i }).click();
+    // Sidebar item is labelled "Hero Banner" (with an icon prefix).
+    await page.getByRole("button", { name: /hero banner/i }).click();
 
-    const headline = page.getByLabel(/headline/i).first();
+    // The Field component doesn't associate <label> with its <input> (no htmlFor),
+    // so getByLabel can't resolve it — target the input inside the "Headline" Field.
+    const headline = page.locator('div:has(> label:text-is("Headline")) > input').first();
+    await expect(headline).toBeVisible({ timeout: 10_000 });
     const original = await headline.inputValue();
 
     await headline.fill("Admin E2E Headline Test");
     await page.getByRole("button", { name: /save changes/i }).click();
-    await expect(page.getByText(/saved|success/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/saved|success/i).first()).toBeVisible({ timeout: 5000 });
 
     // Restore
     await headline.fill(original);

@@ -18,6 +18,7 @@ import {
   updateReturnStatus,
   getAdminOrders,
   updateOrderStatus,
+  updateOrderPaymentStatus,
   getAdminOrderDetail,
   decideCancellation,
   markRefundDone,
@@ -77,6 +78,7 @@ import {
 } from "@/lib/defaults";
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
+import AnalyticsPanel from "@/components/admin/AnalyticsPanel";
 import logo from "@/assets/logo.jpg";
 import { DEFAULT_SCRAPBOOK_SETTINGS, type ScrapbookSettings } from "@/components/sections/ScrapbookSection";
 
@@ -1324,6 +1326,7 @@ const EVENT_ICON: Record<string, string> = {
   order_placed: "🧾", status_changed: "📦", cancellation_requested: "⚠️",
   cancellation_approved: "✅", cancellation_rejected: "🚫", return_requested: "↩",
   return_status_changed: "↩", message: "✉", refund_completed: "💳",
+  payment_status_changed: "💶",
 };
 
 const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpdate: (o: AdminOrderRecord) => void }) => {
@@ -1331,6 +1334,7 @@ const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpda
   const [deciding, setDeciding] = useState(false);
   const [decisionNote, setDecisionNote] = useState("");
   const [markingRefund, setMarkingRefund] = useState(false);
+  const [markingPaid, setMarkingPaid] = useState(false);
   const [msgSubject, setMsgSubject] = useState("");
   const [msgBody, setMsgBody] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
@@ -1373,6 +1377,20 @@ const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpda
     }
   };
 
+  const handleSetPaymentStatus = async (paymentStatus: "paid" | "unpaid") => {
+    setMarkingPaid(true);
+    try {
+      const updated = await updateOrderPaymentStatus(order.id, paymentStatus);
+      onUpdate(updated);
+      load();
+      toast({ title: paymentStatus === "paid" ? "Order marked as paid" : "Order marked as unpaid" });
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Could not update payment status", variant: "destructive" });
+    } finally {
+      setMarkingPaid(false);
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!msgSubject.trim() || !msgBody.trim()) return;
     setSendingMsg(true);
@@ -1395,6 +1413,7 @@ const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpda
   const cancellationEvent = lastEventOf(["cancellation_approved", "cancellation_rejected"]);
   const refundEvent = lastEventOf(["refund_completed"]);
   const lastMessage = lastEventOf(["message"]);
+  const paymentEvent = lastEventOf(["payment_status_changed"]);
 
   return (
     <div className="space-y-4">
@@ -1411,6 +1430,32 @@ const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpda
             .filter(Boolean).join(", ") || "—"}
         </p>
       </div>
+
+      {order.payment_status !== "paid" && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 flex items-center justify-between gap-3">
+          <p className="font-sans text-xs text-amber-800">
+            Unpaid — €{Number(order.total).toFixed(2)} outstanding.
+            {order.fulfillment_type === "pickup"
+              ? " If the customer paid in store (cash/card), mark it as paid so it counts toward revenue."
+              : " Mark it as paid once payment is settled outside Stripe."}
+          </p>
+          <button onClick={() => handleSetPaymentStatus("paid")} disabled={markingPaid}
+            className="font-sans text-xs font-medium px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 shrink-0">
+            {markingPaid ? "Saving…" : "Mark as paid"}
+          </button>
+        </div>
+      )}
+      {order.payment_status === "paid" && !order.stripe_payment_intent_id && paymentEvent && (
+        <div className="rounded-lg border border-border bg-muted/20 p-3 flex items-center justify-between gap-3">
+          <p className="font-sans text-xs text-muted-foreground">
+            ✅ Marked paid by admin {new Date(paymentEvent.created_at).toLocaleString()} (settled outside Stripe)
+          </p>
+          <button onClick={() => handleSetPaymentStatus("unpaid")} disabled={markingPaid}
+            className="font-sans text-xs font-medium px-2.5 py-1 rounded-lg border border-border hover:bg-muted disabled:opacity-50 shrink-0">
+            {markingPaid ? "Saving…" : "Undo"}
+          </button>
+        </div>
+      )}
 
       {order.cancellation_status === "requested" && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
@@ -3231,7 +3276,8 @@ type TabId =
   | "feedback"
   | "orders"
   | "returns"
-  | "ops";
+  | "ops"
+  | "analytics";
 
 type NavItem = { id: TabId; label: string; icon: string };
 type NavGroup = { id: string; label: string; icon: string; items: NavItem[] };
@@ -3298,6 +3344,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "⚙️",
     items: [
       { id: "ops", label: "Ops Overview", icon: "📊" },
+      { id: "analytics", label: "Analytics", icon: "📈" },
       { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
     ],
   },
@@ -3309,7 +3356,7 @@ const groupIdForTab = (tab: TabId): string =>
 // Tabs that render dense tables/dashboards rather than a settings form — these
 // get the full working width so nothing is clipped.
 const WIDE_TABS = new Set<TabId>([
-  "shopCategories", "deals", "subscribers", "users", "feedback", "orders", "returns", "ops",
+  "shopCategories", "deals", "subscribers", "users", "feedback", "orders", "returns", "ops", "analytics",
 ]);
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
@@ -3539,6 +3586,7 @@ const AdminDashboard = () => {
             {activeTab === "orders"       && <OrdersPanel />}
             {activeTab === "returns"      && <ReturnsPanel />}
             {activeTab === "ops"          && <OpsPanel />}
+            {activeTab === "analytics"    && <AnalyticsPanel />}
           </div>
         </main>
       </div>

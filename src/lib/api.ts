@@ -318,6 +318,7 @@ export interface AdminOrderRecord extends LastNotificationFields {
   discount_amount: string;
   status: string;
   payment_status: string;
+  stripe_payment_intent_id: string | null;
   tracking: { stages: string[]; stage_index: number; delivered: boolean; cancelled: boolean };
   cancellation_status: 'none' | 'requested' | 'approved' | 'rejected';
   cancellation_reason: string;
@@ -365,6 +366,16 @@ export const updateOrderStatus = async (id: string, status: string): Promise<Adm
     method: 'PUT', headers: authHeaders(true), body: JSON.stringify({ status }),
   }));
   if (!res.ok) throw new Error('Failed to update order status');
+  return res.json();
+};
+
+// Only for orders settled outside Stripe (no payment intent) — e.g. a pickup
+// order paid in store. The backend rejects Stripe-managed orders.
+export const updateOrderPaymentStatus = async (id: string, payment_status: 'paid' | 'unpaid'): Promise<AdminOrderRecord> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/orders/${id}/payment-status`, {
+    method: 'PUT', headers: authHeaders(true), body: JSON.stringify({ payment_status }),
+  }));
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as { error?: string }).error || 'Failed to update payment status'); }
   return res.json();
 };
 
@@ -493,6 +504,73 @@ export const dismissDecision = async (id: string): Promise<void> => {
 export const getResolvedDecisions = async (): Promise<(AdminDecision & { resolved_at: string })[]> => {
   const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/decisions/resolved`, { headers: authHeaders(true) }));
   if (!res.ok) throw new Error('Failed to load decision history');
+  return res.json();
+};
+
+// ── Analytics (admin) ───────────────────────────────────────────────────────────
+
+export interface AnalyticsOverview {
+  start: string; // YYYY-MM-DD, inclusive
+  end: string;   // YYYY-MM-DD, inclusive
+  days: number;
+  filters: { device: string | null; source: string | null; attr: 'source' | 'medium' | 'campaign' };
+  // True when device/source filters are active — sales are then attributed via
+  // tracked purchase sessions rather than read exactly from the orders table.
+  attributed: boolean;
+  abandoned: { checkout_sessions: number; abandoned_sessions: number; lost_revenue: number };
+  traffic: {
+    visitors: number; sessions: number; pageviews: number;
+    pages_per_session: number; bounce_rate: number;
+    new_visitors: number; returning_visitors: number;
+    prev: { visitors: number; sessions: number; pageviews: number };
+  };
+  sales: {
+    revenue: number; orders: number; aov: number; conversion_rate: number;
+    prev: { revenue: number; orders: number; aov: number };
+  };
+  customers: {
+    total_customers: number; lifetime_repeat_customers: number;
+    new_customers: number; returning_customers: number;
+    avg_lifetime_value: number; avg_orders_per_customer: number;
+  };
+  funnel: Array<{ stage: string; sessions: number }>;
+  daily: Array<{ day: string; visitors: number; sessions: number; pageviews: number; orders: number; revenue: number }>;
+  top_products: Array<{ name: string; units: number; revenue: number; add_to_carts: number }>;
+  top_pages: Array<{ path: string; views: number; sessions: number }>;
+  sources: Array<{ source: string; sessions: number; orders: number; revenue: number }>;
+  devices: Array<{ device: string; sessions: number }>;
+  web_vitals: Array<{ metric: string; p75: number; samples: number }>;
+}
+
+export interface AnalyticsQuery {
+  start: string;
+  end: string;
+  device?: string;  // mobile | tablet | desktop
+  source?: string;  // a traffic-source name as shown in the sources table
+  attr?: 'source' | 'medium' | 'campaign';
+}
+
+// Fetch analytics for an explicit calendar window (both dates inclusive) — the
+// backend compares it against the equally-sized period immediately before it.
+export const getAdminAnalytics = async (q: AnalyticsQuery): Promise<AnalyticsOverview> => {
+  const params = new URLSearchParams({ start: q.start, end: q.end });
+  if (q.device) params.set('device', q.device);
+  if (q.source) params.set('source', q.source);
+  if (q.attr) params.set('attr', q.attr);
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics?${params}`, { headers: authHeaders(true) }));
+  if (!res.ok) throw new Error('Failed to load analytics');
+  return res.json();
+};
+
+export interface AnalyticsLive {
+  active_sessions: number;
+  active_visitors: number;
+  top_pages: Array<{ path: string; sessions: number }>;
+}
+
+export const getAdminAnalyticsLive = async (): Promise<AnalyticsLive> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics/live`, { headers: authHeaders(true) }));
+  if (!res.ok) throw new Error('Failed to load live analytics');
   return res.json();
 };
 

@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { CartProvider } from "@/contexts/CartContext";
+import AnalyticsTracker from "@/components/AnalyticsTracker";
 import AuthModal from "@/components/AuthModal";
 import CookieConsent from "@/components/CookieConsent";
 import Layout from "@/components/Layout";
@@ -41,6 +42,7 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
+        <AnalyticsTracker />
         <AuthProvider>
           <CartProvider>
             <Routes>
