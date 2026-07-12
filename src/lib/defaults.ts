@@ -208,6 +208,21 @@ export interface PickupSettingsContent {
   flat_shipping_rate: number;
 }
 
+// Bottom-left signup playcard shown once per session to first-time visitors on
+// the home page. Copy fields may include a {discount} token — it renders as the
+// configured discount percent.
+export interface SubscribePopupContent {
+  enabled: boolean;
+  discount_percent: number;
+  eyebrow: string;
+  headline: string;
+  subtext: string;
+  placeholder: string;
+  cta_text: string;
+  success_text: string;
+  delay_seconds: number;
+}
+
 export interface SiteContent {
   announcementBar: AnnouncementBarContent;
   navbar: NavbarContent;
@@ -225,6 +240,7 @@ export interface SiteContent {
   giftCards: GiftCardsContent;
   customerService: CustomerServiceContent;
   pickupSettings: PickupSettingsContent;
+  subscribePopup: SubscribePopupContent;
   privacyPolicy: LegalPageContent;
   termsOfService: LegalPageContent;
   shippingPolicy: LegalPageContent;
@@ -508,6 +524,18 @@ export const DEFAULT_CONTENT: SiteContent = {
     notes: "Bring your order confirmation email — we'll have it ready and waiting.",
     free_shipping_threshold: 65,
     flat_shipping_rate: 4.99,
+  },
+
+  subscribePopup: {
+    enabled: true,
+    discount_percent: 10,
+    eyebrow: "✨ psst… it's giving savings",
+    headline: "wanna be an insider?",
+    subtext: "drop your email & score {discount}% off your first order. no spam, just main-character candle content. 🕯️",
+    placeholder: "your email, bestie",
+    cta_text: "claim my {discount}% off",
+    success_text: "you're in! 🎉 welcome to the soft life.",
+    delay_seconds: 3,
   },
 
   privacyPolicy: {

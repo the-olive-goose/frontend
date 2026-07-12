@@ -4,6 +4,7 @@ import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
 import logo from "@/assets/logo.jpg";
 import FeedbackModal      from "@/components/FeedbackModal";
+import SubscribePopupCard from "@/components/SubscribePopupCard";
 import HeroSection        from "@/components/sections/HeroSection";
 import SmellsLikeSection  from "@/components/sections/SmellsLikeSection";
 import ScrapbookSection  from "@/components/sections/ScrapbookSection";
@@ -35,6 +36,7 @@ const Index = () => {
           testimonials,
           newsletter,
           footer,
+          subscribePopup,
         ] = await Promise.all([
           getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
           getContent("navbar",          DEFAULT_CONTENT.navbar),
@@ -48,11 +50,13 @@ const Index = () => {
           getContent("testimonials",    DEFAULT_CONTENT.testimonials),
           getContent("newsletter",      DEFAULT_CONTENT.newsletter),
           getContent("footer",          DEFAULT_CONTENT.footer),
+          getContent("subscribePopup",  DEFAULT_CONTENT.subscribePopup),
         ]);
-        setContent({
+        setContent((prev) => ({
+          ...prev,
           announcementBar, navbar, hero, momentPill, welcomeClub,
-          products, candleCare, brandStory, videos, testimonials, newsletter, footer,
-        });
+          products, candleCare, brandStory, videos, testimonials, newsletter, footer, subscribePopup,
+        }));
       } catch {
         /* fall back to defaults */
       } finally {
@@ -123,6 +127,9 @@ const Index = () => {
 
         {/* Global feedback modal */}
         <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+
+        {/* First-visit subscribe playcard — bottom left, once per session */}
+        <SubscribePopupCard data={content.subscribePopup} />
       </div>
     </div>
   );

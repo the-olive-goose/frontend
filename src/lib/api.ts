@@ -161,14 +161,64 @@ export const saveSettings = async (data: HeroSettings): Promise<void> => {
 };
 
 // ── Subscribers ────────────────────────────────────────────────────────────────
-export const subscribe = async (email: string): Promise<void> => {
+
+// Returned when the signup-popup discount is enabled and a code is available.
+// `code` is always present so the signup card can show it even if the welcome
+// email failed to send; `email_delivered` says whether the email actually went.
+export interface SubscribeDiscount {
+  discount_percent: number;
+  email_delivered: boolean;
+  code?: string;
+}
+
+export interface SubscribeResult {
+  discount: SubscribeDiscount | null;
+  // True when the email was already on the list but still had an unused code we
+  // handed back (vs. a brand-new signup).
+  alreadySubscribed: boolean;
+}
+
+// Thrown when the email is already subscribed and there's no code left to give
+// (already redeemed, or the offer is off). `alreadyUsed` distinguishes the two
+// so the card can say "you've used your welcome offer" vs. a generic message.
+export class AlreadySubscribedError extends Error {
+  code = '23505';
+  alreadyUsed: boolean;
+  constructor(alreadyUsed: boolean) {
+    super('already_subscribed');
+    this.name = 'AlreadySubscribedError';
+    this.alreadyUsed = alreadyUsed;
+  }
+}
+
+export const subscribe = async (email: string): Promise<SubscribeResult> => {
   const res = await fetchWithTimeout(`${API_URL}/api/subscribers`, {
     method: 'POST', headers: authHeaders(), body: JSON.stringify({ email }),
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw { code: res.status === 409 ? '23505' : 'unknown', message: err.error };
+    const err = await res.json().catch(() => ({}));
+    if (res.status === 409) throw new AlreadySubscribedError(!!(err as { already_used?: boolean }).already_used);
+    throw { code: 'unknown', message: (err as { error?: string }).error };
   }
+  const body = await res.json().catch(() => ({})) as { discount?: SubscribeDiscount; already_subscribed?: boolean };
+  return { discount: body.discount ?? null, alreadySubscribed: !!body.already_subscribed };
+};
+
+export interface DiscountCodeRecord {
+  id: string;
+  code: string;
+  email: string;
+  discount_percent: string;
+  source: string;
+  redeemed_at: string | null;
+  order_id: string | null;
+  created_at: string;
+}
+
+export const getAdminDiscountCodes = async (): Promise<{ codes: DiscountCodeRecord[]; stats: { issued: number; redeemed: number } }> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/discount-codes`, { headers: authHeaders(true) }));
+  if (!res.ok) throw new Error('Failed to load discount codes');
+  return res.json();
 };
 
 export const getSubscribers = async (): Promise<Subscriber[]> => {

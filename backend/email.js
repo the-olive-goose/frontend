@@ -97,6 +97,28 @@ export async function sendOtpEmail(to, code) {
   return sendEmail({ to, subject, html, text });
 }
 
+/**
+ * Send a subscriber their single-use welcome discount code.
+ * @returns {Promise<{ delivered: boolean }>}
+ */
+export async function sendDiscountCodeEmail(to, { code, discountPercent, shopUrl }) {
+  const subject = `Here's your ${discountPercent}% off code 🎉`;
+  const text =
+    `Welcome to The Olive Goose! Use code ${code} at checkout for ${discountPercent}% off your first order.\n` +
+    `It's single-use and tied to you, so keep it handy. Shop now: ${shopUrl}`;
+  const html = `
+  <div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1e2918">
+    <p style="font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:#6b7a5e;margin:0 0 4px">The Olive Goose</p>
+    <h1 style="font-size:22px;margin:0 0 12px;color:#1e2918">You're in — enjoy ${discountPercent}% off ✨</h1>
+    <p style="font-size:15px;line-height:1.5;margin:0 0 18px">Thanks for subscribing! Here's your welcome code — use it at checkout for <strong>${discountPercent}% off your first order</strong>.</p>
+    <div style="font-size:26px;font-weight:700;letter-spacing:0.14em;text-align:center;background:#f1f5ee;border:1px dashed #1e2918;border-radius:10px;padding:18px 0;margin:0 0 18px;color:#1e2918">${code}</div>
+    <a href="${shopUrl}" style="display:inline-block;margin-bottom:18px;padding:12px 22px;background:#1e2918;color:#fff;border-radius:8px;font-size:14px;font-weight:600;text-decoration:none">Start shopping</a>
+    <p style="font-size:13px;line-height:1.5;color:#6b7a5e;margin:0">This code is single-use and can only be applied to one order. One welcome discount per customer.</p>
+  </div>`;
+
+  return sendEmail({ to, subject, html, text });
+}
+
 // ── Order lifecycle emails ─────────────────────────────────────────────────────
 // Every field below that can originate from a customer or admin free-text field
 // (return/cancellation reasons, admin notes, message subject/body) must be

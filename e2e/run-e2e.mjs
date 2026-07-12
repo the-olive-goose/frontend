@@ -107,6 +107,9 @@ function runPlaywright(specs, extraEnv) {
         ...process.env,
         E2E_BASE: BASE_URL, E2E_API: API_URL,
         E2E_ADMIN_EMAIL: ADMIN.email, E2E_ADMIN_PASSWORD: ADMIN.password,
+        // Test-mode Stripe key so the discount spec can retrieve a Checkout
+        // Session and assert the discount actually reached the payment amount.
+        STRIPE_SECRET_KEY: backendEnvValue("STRIPE_SECRET_KEY") || "",
         ...extraEnv,
       },
     }
@@ -133,7 +136,7 @@ async function main() {
 
   log("starting backend (schema init) + frontend…");
   // First boot creates the schema and seeds the admin; then seed content/users.
-  const boot = startBackend({ AUTH_RATE_LIMIT_MAX: "100000", API_RATE_LIMIT_MAX: "100000" });
+  const boot = startBackend({ AUTH_RATE_LIMIT_MAX: "100000", API_RATE_LIMIT_MAX: "100000", PUBLIC_WRITE_RATE_LIMIT_MAX: "100000" });
   await waitForPort(BACKEND_PORT);
   startFrontend();
   await waitForPort(FRONTEND_PORT);
@@ -146,7 +149,7 @@ async function main() {
   // Phase 1 — login-heavy + admin/API suites, rate limiters raised.
   log("PHASE 1: storefront + customer + admin suites (raised limits)");
   ok = runPlaywright(
-    ["e2e/olive-goose.spec.ts", "e2e/customer-journey.spec.ts", "e2e/admin-journey.spec.ts", "e2e/admin-payment-status.spec.ts"],
+    ["e2e/olive-goose.spec.ts", "e2e/customer-journey.spec.ts", "e2e/admin-journey.spec.ts", "e2e/admin-payment-status.spec.ts", "e2e/discount-codes.spec.ts"],
     {}
   ) && ok;
 

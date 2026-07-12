@@ -300,10 +300,35 @@ export interface CheckoutInput {
   fulfillment_type: FulfillmentType;
   shipping_address?: DeliveryAddress;
   contact_phone?: string;
+  // A welcome/subscriber discount code the shopper applied, if any. Re-validated
+  // and held server-side before checkout starts — never trusted from here.
+  discount_code?: string;
   // Analytics visitor/session ids — lets the backend attribute the eventual
   // purchase event to the browsing session that started this checkout.
   analytics?: { visitor_id: string; session_id: string };
 }
+
+export interface DiscountValidation {
+  valid: boolean;
+  message?: string;
+  code?: string;
+  discount_percent?: number;
+}
+
+// Read-only pre-checkout check so the summary can show the discount before the
+// shopper commits. The binding hold + authoritative re-check happen server-side
+// when the Stripe session is created.
+export const validateDiscountCode = async (code: string): Promise<DiscountValidation> => {
+  const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/discount/validate`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    credentials: CREDENTIALS,
+    body: JSON.stringify({ code }),
+  }));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Could not validate code');
+  return data;
+};
 
 // Starts a Stripe Checkout session for the current basket and returns the hosted
 // payment page URL to redirect the browser to. No order is created yet — that

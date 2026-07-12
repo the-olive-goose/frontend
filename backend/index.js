@@ -15,7 +15,7 @@ import Stripe from 'stripe';
 import { sendOtpEmail, sendPasswordResetEmail, sendOrderConfirmationEmail, sendOrderStatusUpdateEmail,
   sendCancellationRequestedEmail, sendCancellationRequestAdminAlert, sendCancellationDecisionEmail,
   sendReturnRequestedEmail, sendReturnDecisionEmail, sendRefundCompletedEmail, sendCustomerMessageEmail,
-  sendBackInStockEmail, sendAdminPasswordResetEmail } from './email.js';
+  sendBackInStockEmail, sendAdminPasswordResetEmail, sendDiscountCodeEmail } from './email.js';
 import { startRefundReminderScheduler } from './scheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -307,7 +307,9 @@ app.use('/api', apiLimiter);
 // tighter budget — nothing legitimate submits these dozens of times.
 const publicWriteLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  // Overridable (like the API/auth limiters) so the e2e suite — which subscribes
+  // and submits feedback many times from one IP — can raise it; 10 in production.
+  max: Number(process.env.PUBLIC_WRITE_RATE_LIMIT_MAX) || 10,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many submissions. Please try again later.' },
@@ -449,6 +451,169 @@ const parsePrice = (price) => {
 const bundleIsSatisfied = (bundle, items) =>
   !!bundle.is_active && !!bundle.product_ids?.length &&
   bundle.product_ids.every(pid => items.some(i => i.product_id === pid));
+
+// ── Discount codes ───────────────────────────────────────────────────────────
+// Unambiguous alphabet — no 0/O/1/I/L so a code read off an email can't be
+// mistyped into an ambiguous variant.
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const genDiscountCode = () => {
+  const bytes = crypto.randomBytes(8);
+  let body = '';
+  for (let i = 0; i < 8; i++) body += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  return `OG-${body}`;
+};
+
+const DISCOUNT_RESERVATION_MINUTES = 30;
+
+// Normalize any user-entered code to the canonical stored form so "og-abc123 "
+// and "OG-ABC123" resolve to the same row.
+const normalizeCode = (raw) => (typeof raw === 'string' ? raw.trim().toUpperCase() : '');
+
+// Issue the one welcome code for a subscriber email. Idempotent on the unique
+// (email, source) index: if a code already exists it's returned rather than a
+// second one being minted. Retries only on the astronomically unlikely event of
+// a random-code collision.
+const issueSubscriberDiscountCode = async (email, discountPercent) => {
+  const existing = await pool.query(
+    `SELECT * FROM discount_codes WHERE email = $1 AND source = 'subscribe'`, [email]
+  );
+  if (existing.rows.length) return existing.rows[0];
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO discount_codes (code, email, discount_percent, source)
+         VALUES ($1, $2, $3, 'subscribe') RETURNING *`,
+        [genDiscountCode(), email, discountPercent]
+      );
+      return rows[0];
+    } catch (err) {
+      // 23505 on (email, source) → another request just issued it; return that.
+      if (err.code === '23505') {
+        const { rows } = await pool.query(
+          `SELECT * FROM discount_codes WHERE email = $1 AND source = 'subscribe'`, [email]
+        );
+        if (rows.length) return rows[0];
+        // else it was a code collision — loop and try a fresh code.
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error('Could not generate a unique discount code');
+};
+
+// Read-only validation for the pre-checkout "apply code" UX. Never mutates —
+// the authoritative check + hold happens in reserveDiscountCode at session time.
+const inspectDiscountCode = async (code, userId) => {
+  const normalized = normalizeCode(code);
+  if (!normalized) return { valid: false, message: 'Enter a code to apply.' };
+
+  const { rows } = await pool.query('SELECT * FROM discount_codes WHERE code = $1', [normalized]);
+  const row = rows[0];
+  if (!row) return { valid: false, message: "That code isn't valid." };
+  if (row.redeemed_at) return { valid: false, message: 'This code has already been used.' };
+
+  // Already spent (or actively reserving) a welcome discount on this account?
+  const { rows: usedRows } = await pool.query(
+    `SELECT 1 FROM discount_codes
+      WHERE source = 'subscribe' AND code <> $2
+        AND ( redeemed_by_user_id = $1
+              OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
+                   AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
+      LIMIT 1`,
+    [userId, normalized]
+  );
+  if (usedRows.length) return { valid: false, message: "You've already used a welcome discount." };
+
+  // Held by someone else's in-flight checkout right now.
+  const heldByOther = row.reserved_at &&
+    !row.redeemed_at &&
+    row.reserved_by_user_id !== userId &&
+    new Date(row.reserved_at).getTime() > Date.now() - DISCOUNT_RESERVATION_MINUTES * 60_000;
+  if (heldByOther) return { valid: false, message: 'This code is being used in another checkout right now.' };
+
+  return { valid: true, code: normalized, discount_percent: Number(row.discount_percent) };
+};
+
+// Authoritative validate + hold, run in a transaction at checkout-session time.
+// Returns { ok:true, percent } or { ok:false, message }. The two guards close the
+// loopholes: (1) the per-user check stops one account from stacking two welcome
+// codes across parallel checkouts; (2) the conditional UPDATE is atomic, so two
+// checkouts racing for the *same* code can't both win.
+const reserveDiscountCode = async (code, userId, sessionId) => {
+  const normalized = normalizeCode(code);
+  if (!normalized) return { ok: false, message: 'Enter a code to apply.' };
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Lock the target row so a concurrent reserve of the same code serializes here.
+    const { rows: targetRows } = await client.query(
+      'SELECT * FROM discount_codes WHERE code = $1 FOR UPDATE', [normalized]
+    );
+    const target = targetRows[0];
+    if (!target) { await client.query('ROLLBACK'); return { ok: false, message: "That code isn't valid." }; }
+    if (target.redeemed_at) { await client.query('ROLLBACK'); return { ok: false, message: 'This code has already been used.' }; }
+
+    // Per-account welcome-discount cap: any *other* subscribe code this user has
+    // already redeemed, or is actively holding, blocks a second one.
+    const { rows: usedRows } = await client.query(
+      `SELECT 1 FROM discount_codes
+        WHERE source = 'subscribe' AND code <> $2
+          AND ( redeemed_by_user_id = $1
+                OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
+                     AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
+        LIMIT 1`,
+      [userId, normalized]
+    );
+    if (usedRows.length) { await client.query('ROLLBACK'); return { ok: false, message: "You've already used a welcome discount." }; }
+
+    // Claim it: succeeds only if free, already ours, or a stale hold.
+    const { rows: claimed } = await client.query(
+      `UPDATE discount_codes
+          SET reserved_at = NOW(), reserved_by_user_id = $1, reserved_session_id = $3
+        WHERE code = $2 AND redeemed_at IS NULL
+          AND ( reserved_at IS NULL
+                OR reserved_by_user_id = $1
+                OR reserved_at < NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' )
+        RETURNING discount_percent`,
+      [userId, normalized, sessionId]
+    );
+    if (!claimed.length) {
+      await client.query('ROLLBACK');
+      return { ok: false, message: 'This code is being used in another checkout right now.' };
+    }
+
+    await client.query('COMMIT');
+    return { ok: true, code: normalized, percent: Number(claimed[0].discount_percent) };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
+// Spend the code for good, at order finalization. Idempotent and defensive: the
+// per-user NOT EXISTS guard is a second line of defence behind the reservation
+// so a redeem can never hand one account a second welcome discount.
+const redeemDiscountCode = async (code, userId, orderId) => {
+  const normalized = normalizeCode(code);
+  if (!normalized) return;
+  await pool.query(
+    `UPDATE discount_codes dc
+        SET redeemed_at = NOW(), redeemed_by_user_id = $1, order_id = $3,
+            reserved_at = NULL, reserved_by_user_id = NULL, reserved_session_id = NULL
+      WHERE dc.code = $2 AND dc.redeemed_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM discount_codes o
+           WHERE o.source = 'subscribe' AND o.id <> dc.id
+             AND o.redeemed_by_user_id = $1 )`,
+    [userId, normalized, orderId]
+  );
+};
 
 const DEFAULT_AUTOMATION_SETTINGS = {
   refund_reminder_days: [1, 5, 7],
@@ -613,6 +778,17 @@ const finalizeCheckoutSession = async (sessionId) => {
     const order = rows[0];
     await addOrderEvent(order.id, { type: 'order_placed', actor: 'system', title: 'Order placed', detail: `Order #${order.tracking_number} received` });
     await decrementStock(p.items);
+
+    // Spend the welcome code (if one was applied) now that payment is confirmed
+    // and the order exists. Best-effort — the money's already been charged at the
+    // discounted amount by Stripe, so a bookkeeping hiccup must never fail the order.
+    if (p.discount_code) {
+      try {
+        await redeemDiscountCode(p.discount_code, order.user_id, order.id);
+      } catch (err) {
+        console.error('[redeemDiscountCode]', err);
+      }
+    }
 
     // Server-authored purchase event — the only place 'purchase' rows are
     // created, keyed to the browsing session that started this checkout (if the
@@ -1551,8 +1727,21 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
       return sum + (b.discount_type === 'percentage' ? base * (b.discount_value / 100) : b.discount_value);
     }, 0);
 
+    // Welcome / subscriber discount code (optional). Reserved here so the hold is
+    // in place before the shopper is handed to Stripe; it's only spent for good
+    // once the order finalizes. An invalid or already-used code is a hard error —
+    // never a silent full-price charge after the shopper applied one.
+    let codeDiscountAmount = 0;
+    let appliedCode = null;
+    if (req.body.discount_code) {
+      const reservation = await reserveDiscountCode(req.body.discount_code, req.user.userId, null);
+      if (!reservation.ok) return res.status(400).json({ error: reservation.message });
+      appliedCode = reservation.code;
+      codeDiscountAmount = subtotal * (reservation.percent / 100);
+    }
+
     const pickupDiscountAmount = subtotal * (discountPercent / 100);
-    const discountAmount = +(pickupDiscountAmount + bundleSavings).toFixed(2);
+    const discountAmount = +(pickupDiscountAmount + bundleSavings + codeDiscountAmount).toFixed(2);
     const total = +(subtotal - discountAmount + shipping).toFixed(2);
     if (total <= 0) return res.status(400).json({ error: 'Order total must be greater than zero.' });
     const trackingNumber = genTrackingNumber();
@@ -1594,6 +1783,7 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
       items, subtotal, shipping, total, tracking_number: trackingNumber,
       shipping_address: shippingAddress, fulfillment_type: fulfillmentType,
       discount_percent: discountPercent, discount_amount: discountAmount,
+      discount_code: appliedCode,
       analytics: analyticsIds,
     };
 
@@ -2763,15 +2953,94 @@ app.post('/api/subscribers', publicWriteLimiter, async (req, res) => {
   if (!EMAIL_RE.test(email) || email.length > 254)
     return res.status(400).json({ error: 'Please enter a valid email address.' });
   try {
-    const { rows } = await pool.query(
-      'INSERT INTO subscribers (email) VALUES ($1) RETURNING *',
-      [email.trim().toLowerCase()]
+    // Insert the subscriber if new; a duplicate is fine — an already-subscribed
+    // person who never received (or lost) their unused welcome code should still
+    // be able to get it, not be stonewalled. This also backfills everyone who
+    // subscribed before the discount feature existed.
+    const insert = await pool.query(
+      `INSERT INTO subscribers (email) VALUES ($1)
+       ON CONFLICT (email) DO NOTHING RETURNING id`,
+      [email]
     );
-    res.status(201).json(rows[0]);
+    const isNew = insert.rows.length > 0;
+
+    // Resolve the welcome discount for this email, driven by the admin's signup-
+    // popup settings. Best-effort throughout: a mail hiccup must never 500.
+    let discount = null;   // code available to show/apply
+    let alreadyUsed = false; // subscribed, but the welcome code is already spent
+    try {
+      const { rows: popupRows } = await pool.query(
+        `SELECT value FROM site_settings WHERE key = 'content_subscribePopup'`
+      );
+      const popup = popupRows[0]?.value || {};
+      const percent = Number(popup.discount_percent) || 0;
+      const offerOn = popup.enabled !== false && percent > 0;
+      if (offerOn) {
+        // Idempotent: returns the existing code for this email, or mints one.
+        const codeRow = await issueSubscriberDiscountCode(email, percent);
+        if (codeRow.redeemed_at) {
+          alreadyUsed = true;
+        } else {
+          const { delivered } = await sendDiscountCodeEmail(email, {
+            code: codeRow.code,
+            discountPercent: Number(codeRow.discount_percent),
+            shopUrl: `${FRONTEND_URL}/shop`,
+          }).catch((err) => {
+            // Log the actual Resend failure (unverified sending domain, restricted
+            // key, invalid recipient, etc.) so a "no email arrived" report is
+            // diagnosable from the server logs rather than a silent swallow.
+            console.error('[sendDiscountCodeEmail] delivery failed:', err?.message || err);
+            return { delivered: false };
+          });
+          // Always return the code so the signup card can show it right away — the
+          // email is a nice-to-have, but the customer must never be left without
+          // their discount just because mail delivery is flaky or misconfigured.
+          // (Single-use, per-email welcome code, so echoing it here is low-risk.)
+          discount = { discount_percent: Number(codeRow.discount_percent), email_delivered: delivered, code: codeRow.code };
+        }
+      }
+    } catch (err) {
+      console.error('[issueSubscriberDiscountCode]', err);
+    }
+
+    if (isNew) return res.status(201).json({ email, already_subscribed: false, discount });
+    // Already on the list. If there's still an unused code, hand it over (200);
+    // otherwise there's genuinely nothing to give (used, or offer off) → 409, and
+    // the signup card invites them to try a different email.
+    if (discount) return res.status(200).json({ email, already_subscribed: true, discount });
+    return res.status(409).json({ error: 'already_subscribed', already_used: alreadyUsed });
   } catch (err) {
-    if (err.code === '23505') res.status(409).json({ error: 'already_subscribed' });
-    else                      sendServerError(res, err);
+    sendServerError(res, err);
   }
+});
+
+// ── POST /api/discount/validate — pre-checkout "apply code" check (customer) ──
+// Read-only: tells the checkout page whether a code is usable and for what %.
+// The binding hold + authoritative re-check happen at session creation.
+app.post('/api/discount/validate', requireUserAuth, async (req, res) => {
+  try {
+    const result = await inspectDiscountCode(req.body?.code, req.user.userId);
+    res.json(result);
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── GET /api/admin/discount-codes (admin only) ───────────────────────────────
+app.get('/api/admin/discount-codes', requireAuth, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, code, email, discount_percent, source,
+              redeemed_at, order_id, created_at
+         FROM discount_codes
+        ORDER BY created_at DESC
+        LIMIT 500`
+    );
+    const { rows: stat } = await pool.query(
+      `SELECT COUNT(*)::int AS issued,
+              COUNT(*) FILTER (WHERE redeemed_at IS NOT NULL)::int AS redeemed
+         FROM discount_codes`
+    );
+    res.json({ codes: rows, stats: stat[0] || { issued: 0, redeemed: 0 } });
+  } catch (err) { sendServerError(res, err); }
 });
 
 // ── GET /api/admin/users (admin only) ────────────────────────────────────────
@@ -3119,6 +3388,33 @@ async function initDb() {
       created_at        TIMESTAMPTZ DEFAULT NOW(),
       consumed_at       TIMESTAMPTZ
     );
+
+    -- Single-use welcome discount codes. One 'subscribe' code is issued per
+    -- subscriber email (enforced by the unique index below), emailed to them, and
+    -- redeemable exactly once — see the reserve/redeem logic around checkout for
+    -- how double-spend and per-account stacking are prevented. Defined here,
+    -- after users + orders, because it references both.
+    CREATE TABLE IF NOT EXISTS discount_codes (
+      id                  UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      code                TEXT        UNIQUE NOT NULL,
+      email               TEXT        NOT NULL,
+      discount_percent    NUMERIC     NOT NULL DEFAULT 0,
+      source              TEXT        NOT NULL DEFAULT 'subscribe',
+      -- Held while an in-flight checkout is using the code, so a second parallel
+      -- checkout can't spend it too. Goes stale after 30 min (see reserveDiscountCode).
+      reserved_at         TIMESTAMPTZ,
+      reserved_by_user_id UUID        REFERENCES users(id) ON DELETE SET NULL,
+      reserved_session_id TEXT,
+      -- Set once, at order finalization. A non-null redeemed_at means spent for good.
+      redeemed_at         TIMESTAMPTZ,
+      redeemed_by_user_id UUID        REFERENCES users(id) ON DELETE SET NULL,
+      order_id            UUID        REFERENCES orders(id) ON DELETE SET NULL,
+      created_at          TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- One welcome code per email address: makes re-subscribing (or racing two
+    -- signups) unable to mint a second code for the same person.
+    CREATE UNIQUE INDEX IF NOT EXISTS discount_codes_email_source_uidx
+      ON discount_codes (email, source);
 
     CREATE TABLE IF NOT EXISTS returns (
       id           UUID        DEFAULT gen_random_uuid() PRIMARY KEY,

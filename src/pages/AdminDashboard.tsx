@@ -6,6 +6,8 @@ import {
   saveContent,
   getSubscribers,
   deleteSubscriber,
+  getAdminDiscountCodes,
+  type DiscountCodeRecord,
   getAdminUsers,
   getAdminFeedback,
   deleteAdminFeedback,
@@ -69,6 +71,7 @@ import {
   type GiftCardsContent,
   type CustomerServiceContent,
   type PickupSettingsContent,
+  type SubscribePopupContent,
   type LegalPageContent,
   type CandleCareCard,
   type VideoItem,
@@ -2596,11 +2599,26 @@ const DealsEditor = ({
 const SubscribersPanel = ({
   subscribers,
   onDelete,
+  popup,
+  onPopupChange,
+  onPopupSave,
+  saving,
 }: {
   subscribers: Subscriber[];
   onDelete: (id: string) => void;
+  popup: SubscribePopupContent;
+  onPopupChange: (d: SubscribePopupContent) => void;
+  onPopupSave: () => void;
+  saving: boolean;
 }) => {
   const [search, setSearch] = useState("");
+  const [codes, setCodes] = useState<DiscountCodeRecord[]>([]);
+  const [codeStats, setCodeStats] = useState<{ issued: number; redeemed: number }>({ issued: 0, redeemed: 0 });
+  useEffect(() => {
+    getAdminDiscountCodes()
+      .then(({ codes, stats }) => { setCodes(codes); setCodeStats(stats); })
+      .catch(() => { /* non-fatal — panel still shows subscribers */ });
+  }, []);
   const exportCSV = () => {
     const csv = ["Email,Subscribed At", ...subscribers.map((s) => `${s.email},${s.subscribed_at}`)].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -2616,7 +2634,114 @@ const SubscribersPanel = ({
 
   return (
     <div className="space-y-6">
-      <SectionHeading title="Subscribers" desc="Email addresses collected via the newsletter form." />
+      <SectionHeading title="Subscribers & Signup Popup" desc="The home-page signup playcard offer, and every email it (and the newsletter form) has collected." />
+
+      {/* ── Signup popup settings ─────────────────────────────────────────── */}
+      <div className="border border-border rounded-xl bg-card p-5 space-y-4 max-w-2xl">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="font-sans text-sm font-semibold text-foreground">Signup popup</p>
+            <p className="font-sans text-xs text-muted-foreground">
+              A playcard shown once per session, bottom-left of the home page, to visitors who aren't signed in.
+              Use <code>{"{discount}"}</code> in any text field to insert the discount percent.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 font-sans text-sm shrink-0">
+            <input
+              type="checkbox"
+              checked={popup.enabled}
+              onChange={(e) => onPopupChange({ ...popup, enabled: e.target.checked })}
+              className="accent-primary"
+            />
+            Enabled
+          </label>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Field label="Discount (%)" hint="The offer shown on the card — the {discount} token everywhere renders as this.">
+            <Input
+              type="number" min={0} max={100}
+              value={popup.discount_percent}
+              onChange={(e) => onPopupChange({ ...popup, discount_percent: Number(e.target.value) })}
+            />
+          </Field>
+          <Field label="Delay before showing (seconds)">
+            <Input
+              type="number" min={0}
+              value={popup.delay_seconds}
+              onChange={(e) => onPopupChange({ ...popup, delay_seconds: Number(e.target.value) })}
+            />
+          </Field>
+          <Field label="Eyebrow line">
+            <Input value={popup.eyebrow} onChange={(e) => onPopupChange({ ...popup, eyebrow: e.target.value })} />
+          </Field>
+          <Field label="Headline">
+            <Input value={popup.headline} onChange={(e) => onPopupChange({ ...popup, headline: e.target.value })} />
+          </Field>
+          <Field label="Email placeholder">
+            <Input value={popup.placeholder} onChange={(e) => onPopupChange({ ...popup, placeholder: e.target.value })} />
+          </Field>
+          <Field label="Button text">
+            <Input value={popup.cta_text} onChange={(e) => onPopupChange({ ...popup, cta_text: e.target.value })} />
+          </Field>
+        </div>
+        <Field label="Subtext">
+          <Textarea rows={2} value={popup.subtext} onChange={(e) => onPopupChange({ ...popup, subtext: e.target.value })} />
+        </Field>
+        <Field label="Success message" hint="Shown after a visitor subscribes from the card.">
+          <Input value={popup.success_text} onChange={(e) => onPopupChange({ ...popup, success_text: e.target.value })} />
+        </Field>
+        <SaveButton onClick={onPopupSave} saving={saving} />
+      </div>
+
+      {/* ── Welcome discount codes ─────────────────────────────────────────── */}
+      <div className="border border-border rounded-xl bg-card p-5 space-y-3 max-w-2xl">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="font-sans text-sm font-semibold text-foreground">Welcome discount codes</p>
+            <p className="font-sans text-xs text-muted-foreground">Single-use codes emailed to new subscribers and redeemed at checkout.</p>
+          </div>
+          <div className="flex gap-4 shrink-0 text-right">
+            <div>
+              <p className="font-serif text-lg text-foreground leading-none">{codeStats.issued}</p>
+              <p className="font-sans text-[11px] text-muted-foreground">issued</p>
+            </div>
+            <div>
+              <p className="font-serif text-lg text-foreground leading-none">{codeStats.redeemed}</p>
+              <p className="font-sans text-[11px] text-muted-foreground">redeemed</p>
+            </div>
+          </div>
+        </div>
+        {codes.length > 0 && (
+          <div className="border border-border rounded-lg overflow-hidden">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-muted/50">
+                  <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">Code</th>
+                  <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">Email</th>
+                  <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">%</th>
+                  <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {codes.slice(0, 25).map((c) => (
+                  <tr key={c.id} className="border-t border-border">
+                    <td className="px-3 py-2 text-xs font-mono text-foreground">{c.code}</td>
+                    <td className="px-3 py-2 text-xs font-sans text-muted-foreground truncate max-w-[180px]">{c.email}</td>
+                    <td className="px-3 py-2 text-xs font-sans text-foreground">{Number(c.discount_percent)}%</td>
+                    <td className="px-3 py-2 text-xs font-sans">
+                      {c.redeemed_at
+                        ? <span className="px-2 py-0.5 rounded-full" style={{ background: "#eef6ee", color: "#007600" }}>Redeemed</span>
+                        : <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">Unused</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Subscriber list ───────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[220px]">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">⌕</span>
@@ -3331,7 +3456,6 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Customers & Orders",
     icon: "👥",
     items: [
-      { id: "subscribers", label: "Subscribers",       icon: "◉" },
       { id: "users",       label: "Signed Up Users",   icon: "👤" },
       { id: "feedback",    label: "Customer Feedback", icon: "💬" },
       { id: "orders",      label: "Orders",            icon: "🧾" },
@@ -3345,6 +3469,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "ops", label: "Ops Overview", icon: "📊" },
       { id: "analytics", label: "Analytics", icon: "📈" },
+      { id: "subscribers", label: "Subscribers & Signup Popup", icon: "◉" },
       { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
     ],
   },
@@ -3377,7 +3502,7 @@ const AdminDashboard = () => {
 
   const loadData = useCallback(async () => {
     // ── Content sections (getContent never throws — falls back to defaults) ──
-    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, privacyPolicy, termsOfService, shippingPolicy] =
+    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy] =
       await Promise.all([
         getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
         getContent("navbar",          DEFAULT_CONTENT.navbar),
@@ -3395,11 +3520,12 @@ const AdminDashboard = () => {
         getContent("giftCards",       DEFAULT_CONTENT.giftCards),
         getContent("customerService", DEFAULT_CONTENT.customerService),
         getContent("pickupSettings",  DEFAULT_CONTENT.pickupSettings),
+        getContent("subscribePopup",  DEFAULT_CONTENT.subscribePopup),
         getContent("privacyPolicy",   DEFAULT_CONTENT.privacyPolicy),
         getContent("termsOfService",  DEFAULT_CONTENT.termsOfService),
         getContent("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
       ]);
-    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, privacyPolicy, termsOfService, shippingPolicy });
+    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy });
 
     // ── Shop categories ───────────────────────────────────────────────────────
     try {
@@ -3580,7 +3706,7 @@ const AdminDashboard = () => {
             {activeTab === "privacyPolicy"   && <LegalPageEditor title="Privacy Policy"   desc="Content shown on the Privacy Policy page."   data={content.privacyPolicy}  onChange={update("privacyPolicy")}  onSave={() => handleSave("privacyPolicy")}  saving={saving} />}
             {activeTab === "termsOfService"  && <LegalPageEditor title="Terms of Service" desc="Content shown on the Terms of Service page." data={content.termsOfService} onChange={update("termsOfService")} onSave={() => handleSave("termsOfService")} saving={saving} />}
             {activeTab === "shippingPolicy"  && <LegalPageEditor title="Shipping Policy"  desc="Content shown on the Shipping Policy page."  data={content.shippingPolicy} onChange={update("shippingPolicy")} onSave={() => handleSave("shippingPolicy")} saving={saving} />}
-            {activeTab === "subscribers"  && <SubscribersPanel   subscribers={subscribers}   onDelete={handleDeleteSubscriber} />}
+            {activeTab === "subscribers"  && <SubscribersPanel   subscribers={subscribers}   onDelete={handleDeleteSubscriber} popup={content.subscribePopup} onPopupChange={update("subscribePopup")} onPopupSave={() => handleSave("subscribePopup")} saving={saving} />}
             {activeTab === "users"        && <UsersPanel />}
             {activeTab === "feedback"     && <FeedbackPanel />}
             {activeTab === "orders"       && <OrdersPanel />}

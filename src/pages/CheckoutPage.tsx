@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
-import { createCheckoutSession, SessionExpiredError, type DeliveryAddress, type FulfillmentType } from "@/lib/userApi";
+import { createCheckoutSession, validateDiscountCode, SessionExpiredError, type DeliveryAddress, type FulfillmentType } from "@/lib/userApi";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
 import { track, getAnalyticsIds } from "@/lib/analytics";
@@ -30,6 +30,10 @@ const CheckoutPage = () => {
   const [fulfillment, setFulfillment] = useState<FulfillmentType>("delivery");
   const [address, setAddress] = useState<DeliveryAddress>({});
   const [contactPhone, setContactPhone] = useState("");
+  const [codeInput, setCodeInput] = useState("");
+  const [appliedCode, setAppliedCode] = useState<{ code: string; percent: number } | null>(null);
+  const [codeError, setCodeError] = useState("");
+  const [validatingCode, setValidatingCode] = useState(false);
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState(
     searchParams.get("canceled") ? "Payment was canceled — your basket is still here whenever you're ready." : ""
@@ -77,7 +81,8 @@ const CheckoutPage = () => {
     return sum + (b.discount_type === "percentage" ? base * (b.discount_value / 100) : b.discount_value);
   }, 0);
 
-  const discountAmount = pickupDiscountAmount + bundleSavings;
+  const codeDiscountAmount = appliedCode ? subtotalNum * (appliedCode.percent / 100) : 0;
+  const discountAmount = pickupDiscountAmount + bundleSavings + codeDiscountAmount;
   const flatShipping = pickup.flat_shipping_rate ?? 4.99;
   const shipping = isPickup ? 0 : (subtotalNum >= pickup.free_shipping_threshold ? 0 : flatShipping);
   const grandTotal = Math.max(0, subtotalNum - discountAmount + shipping);
@@ -87,6 +92,37 @@ const CheckoutPage = () => {
   // Single best "almost complete" deal — checkout is high-intent, low-real-estate,
   // so only the top-ranked bundle nudge is surfaced here (see getBundleNudges).
   const [bestNudge] = getBundleNudges(bundles, items, allProducts, 1);
+
+  const applyCode = async () => {
+    const code = codeInput.trim();
+    if (!code) return;
+    setValidatingCode(true);
+    setCodeError("");
+    try {
+      const result = await validateDiscountCode(code);
+      if (result.valid && result.discount_percent != null) {
+        setAppliedCode({ code: result.code ?? code.toUpperCase(), percent: result.discount_percent });
+        setCodeInput("");
+      } else {
+        setAppliedCode(null);
+        setCodeError(result.message ?? "That code isn't valid.");
+      }
+    } catch (err) {
+      if (err instanceof SessionExpiredError) {
+        requireAuth(() => applyCode());
+      } else {
+        setCodeError(err instanceof Error ? err.message : "Could not validate code");
+      }
+    } finally {
+      setValidatingCode(false);
+    }
+  };
+
+  const removeCode = () => {
+    setAppliedCode(null);
+    setCodeError("");
+    setCodeInput("");
+  };
 
   const handleAddNudge = async () => {
     if (!bestNudge) return;
@@ -112,6 +148,7 @@ const CheckoutPage = () => {
         fulfillment_type: fulfillment,
         shipping_address: isPickup ? undefined : address,
         contact_phone: isPickup ? contactPhone : undefined,
+        discount_code: appliedCode?.code,
         analytics: getAnalyticsIds(),
       });
       window.location.href = url;
@@ -119,7 +156,14 @@ const CheckoutPage = () => {
       if (err instanceof SessionExpiredError) {
         requireAuth(() => handlePlaceOrder());
       } else {
-        setError(err instanceof Error ? err.message : "Could not start checkout");
+        const msg = err instanceof Error ? err.message : "Could not start checkout";
+        setError(msg);
+        // A code that passed the pre-check but was consumed/blocked by the time
+        // checkout started — drop it so the shopper can retry at the real price.
+        if (appliedCode && /code|discount|welcome/i.test(msg)) {
+          setAppliedCode(null);
+          setCodeError(msg);
+        }
       }
       setPlacing(false);
     }
@@ -315,12 +359,52 @@ const CheckoutPage = () => {
                       </span>
                     </div>
                   ))}
+                  {appliedCode && (
+                    <div className="flex justify-between font-sans text-sm font-semibold" style={{ color: "#007600" }}>
+                      <span>🎉 Code {appliedCode.code} ({appliedCode.percent}%)</span>
+                      <span>−€{codeDiscountAmount.toFixed(2)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between font-sans text-sm" style={{ color: "#0F1111" }}>
                     <span>Shipping</span>
                     <span className="font-semibold" style={{ color: shipping === 0 ? "#007600" : undefined }}>
                       {shipping === 0 ? "FREE" : `€${shipping.toFixed(2)}`}
                     </span>
                   </div>
+                  {/* Discount code */}
+                  <div className="pt-2" style={{ borderTop: "1px solid #EEE" }}>
+                    {appliedCode ? (
+                      <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg" style={{ background: "#eef6ee", border: "1px solid #cfe6cf" }}>
+                        <span className="font-sans text-xs font-semibold" style={{ color: "#007600" }}>
+                          Code applied · {appliedCode.percent}% off
+                        </span>
+                        <button onClick={removeCode} className="font-sans text-xs underline shrink-0" style={{ color: "#555" }}>
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="font-sans text-xs font-semibold block mb-1" style={{ color: "#555" }}>Discount code</label>
+                        <div className="flex gap-2">
+                          <input
+                            value={codeInput}
+                            onChange={e => { setCodeInput(e.target.value); setCodeError(""); }}
+                            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); applyCode(); } }}
+                            placeholder="e.g. OG-ABCD2345"
+                            className="flex-1 min-w-0 px-3 py-2 rounded-lg font-sans text-sm outline-none uppercase"
+                            style={inputStyle}
+                          />
+                          <button onClick={applyCode} disabled={validatingCode || !codeInput.trim()}
+                            className="shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
+                            style={{ background: "#e7e7e7", border: "1px solid #ccc", color: "#111" }}>
+                            {validatingCode ? "…" : "Apply"}
+                          </button>
+                        </div>
+                        {codeError && <p className="font-sans text-xs mt-1" style={{ color: "#C7511F" }}>{codeError}</p>}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="pt-2" style={{ borderTop: "1px solid #EEE" }}>
                     <div className="flex justify-between font-sans font-bold text-base" style={{ color: "#0F1111" }}>
                       <span>Order total</span>
