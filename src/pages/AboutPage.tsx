@@ -41,7 +41,7 @@ const AboutPage = () => {
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
 
       {/* ── Hero ── */}
-      <div className="w-full pt-[112px]" style={{ background: "var(--color-forest-dark)" }}>
+      <div className="w-full pt-[var(--nav-h,112px)]" style={{ background: "var(--color-forest-dark)" }}>
         <div className="max-w-6xl mx-auto px-6 sm:px-12 py-16 sm:py-20 text-center">
           <motion.p {...fadeIn(0)}
             className="font-display text-xs tracking-[0.2em] uppercase mb-5"

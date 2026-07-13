@@ -74,7 +74,7 @@ const BasketPage = () => {
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
 
       {/* Page header */}
-      <div className="pt-[112px]" style={{ background: "#f3f3f3" }}>
+      <div className="pt-[var(--nav-h,112px)]" style={{ background: "#f3f3f3" }}>
         <div className="max-w-6xl mx-auto px-3 sm:px-8 pt-6 sm:pt-8 pb-3">
           <h1 className="font-serif text-3xl font-bold" style={{ color: "#0F1111" }}>
             Your Olive Goose Basket

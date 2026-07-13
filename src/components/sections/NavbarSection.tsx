@@ -135,6 +135,21 @@ const NavbarSection = ({ data, announcement }: Props) => {
       .then(d => setAllProducts(d?.items ?? []));
   }, []);
 
+  // Publish the real navbar height as a CSS var so every page can offset its
+  // content by exactly the right amount. The navbar height varies (mobile wraps
+  // the search onto its own row, desktop adds a nav-links row), so a hardcoded
+  // clearance would tuck page content under the fixed header.
+  useEffect(() => {
+    const el = document.getElementById("site-navbar");
+    if (!el) return;
+    const setVar = () =>
+      document.documentElement.style.setProperty("--nav-h", `${el.offsetHeight}px`);
+    setVar();
+    const observer = new ResizeObserver(setVar);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -189,8 +204,10 @@ const NavbarSection = ({ data, announcement }: Props) => {
 
       <nav style={{ background: "var(--bg-nav)" }}>
 
-        {/* ── Row 1: Logo · Search · Account · Basket ── */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center gap-4">
+        {/* ── Row 1: Logo · Search · Account · Basket ──
+            On mobile the row wraps so the search bar drops to its own full-width
+            line (otherwise it gets squeezed and the placeholder is clipped). ── */}
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap sm:flex-nowrap items-center gap-x-4 gap-y-2.5">
 
           {/* Logo */}
           <a href="/" className="shrink-0 group" onClick={goHome}>
@@ -200,7 +217,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
           </a>
 
           {/* Search bar with live dropdown */}
-          <div ref={searchRef} className="flex-1 min-w-0 relative">
+          <div ref={searchRef} className="relative min-w-0 w-full order-last sm:w-auto sm:flex-1 sm:order-none">
             <form onSubmit={handleSearch} className="flex">
               <div className="flex w-full rounded-lg overflow-hidden" style={{ border: "2px solid var(--color-gold)" }}>
                 <input
@@ -321,7 +338,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
               reach the basket on small screens. */}
           <button
             onClick={() => { if (user) navigate("/basket"); else openAuthModal(); }}
-            className="sm:hidden relative shrink-0 p-1"
+            className="sm:hidden relative shrink-0 p-1 ml-auto"
             style={{ color: "var(--color-white)" }}
             aria-label="Basket"
           >
@@ -340,7 +357,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
 
           {/* Mobile hamburger */}
           <button onClick={() => setMobileOpen(!mobileOpen)}
-            className="sm:hidden p-1 rounded transition-opacity hover:opacity-60 ml-auto"
+            className="sm:hidden p-1 rounded transition-opacity hover:opacity-60"
             style={{ color: "var(--color-white)" }} aria-label="Toggle menu">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}

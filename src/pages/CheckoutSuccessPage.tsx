@@ -57,7 +57,7 @@ const CheckoutSuccessPage = () => {
 
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
-      <div className="pt-[112px]">
+      <div className="pt-[var(--nav-h,112px)]">
         <div className="max-w-2xl mx-auto px-3 sm:px-8 py-16">
           <div className="bg-white rounded-xl p-10 text-center space-y-4"
             style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>

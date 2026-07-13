@@ -3223,6 +3223,35 @@ const ShopEditor = ({
       <div className="rounded-xl border border-border bg-card p-5 space-y-4">
         <p className="font-sans text-sm font-semibold text-foreground">Scrapbook Settings</p>
 
+        {/* Section visibility toggles */}
+        <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
+          <p className="font-sans text-xs font-semibold text-foreground">Homepage visibility</p>
+          <label className="flex items-center justify-between gap-3 font-sans text-sm text-foreground">
+            <span>
+              Show <strong>New Arrivals</strong> section
+              <span className="block text-xs text-muted-foreground">The dedicated New Arrivals cards above the scrapbook.</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={scrapSettings.showNewArrivals}
+              onChange={e => setScrapSettings(s => ({ ...s, showNewArrivals: e.target.checked }))}
+              className="accent-primary shrink-0"
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3 font-sans text-sm text-foreground">
+            <span>
+              Show <strong>Shop By Category</strong> section
+              <span className="block text-xs text-muted-foreground">The flip-book scrapbook of category cards.</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={scrapSettings.showShopByCategory}
+              onChange={e => setScrapSettings(s => ({ ...s, showShopByCategory: e.target.checked }))}
+              className="accent-primary shrink-0"
+            />
+          </label>
+        </div>
+
         <Field
           label="New Arrivals category"
           hint="This category will appear as a dedicated section above the scrapbook on the homepage."

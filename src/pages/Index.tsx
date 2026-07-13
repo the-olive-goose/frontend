@@ -76,7 +76,8 @@ const Index = () => {
 
   return (
     <div className="w-full">
-      {/* Fixed header: announcement bar (38px) + nav (~56px) = 94px */}
+      {/* Fixed header height is published by NavbarSection as the --nav-h CSS var
+          (it varies by breakpoint); the hero measures #site-navbar directly. */}
 
       <div style={{ marginTop: 0, paddingTop: 0 }}>
         {/* 1. Hero — full-width image, flush from top of viewport behind navbar */}

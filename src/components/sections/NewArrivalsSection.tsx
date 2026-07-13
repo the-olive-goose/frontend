@@ -15,6 +15,7 @@ const NewArrivalsSection = () => {
   const [cat, setCat]               = useState<ShopCategory | null>(null);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [candleOffset, setCandleOffset] = useState(0);
+  const [show, setShow]             = useState(true);
 
   useEffect(() => {
     Promise.all([
@@ -26,6 +27,7 @@ const NewArrivalsSection = () => {
       ),
     ]).then(([cats, settings, productsData]) => {
       const id = settings?.newArrivalsCategoryId;
+      setShow(settings?.showNewArrivals ?? true);
       setCat(id ? (cats.find(c => c.id === id && c.is_active) ?? null) : null);
       setAllProducts(productsData?.items ?? []);
     });
@@ -41,7 +43,7 @@ const NewArrivalsSection = () => {
       .filter((p): p is Product => !!p);
   }, [allProducts]);
 
-  if (!cat) return null;
+  if (!show || !cat) return null;
   const products  = resolveProducts(cat);
   const isDark    = cat.bg_color.startsWith("#1") || cat.bg_color.startsWith("#17");
   const maxOffset = Math.max(0, products.length - perView);

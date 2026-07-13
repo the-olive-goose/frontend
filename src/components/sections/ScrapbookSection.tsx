@@ -14,11 +14,15 @@ export interface ScrapbookSettings {
   flipDuration: number;
   autoFlipInterval: number;
   newArrivalsCategoryId: string;
+  showNewArrivals: boolean;
+  showShopByCategory: boolean;
 }
 export const DEFAULT_SCRAPBOOK_SETTINGS: ScrapbookSettings = {
   flipDuration: 0.76,
   autoFlipInterval: 5000,
   newArrivalsCategoryId: "",
+  showNewArrivals: true,
+  showShopByCategory: true,
 };
 
 // ── Fallback categories (shown when DB is empty) ───────────────────────────────
@@ -332,6 +336,7 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
 // ── Main ScrapbookSection ──────────────────────────────────────────────────────
 
 const ScrapbookSection = () => {
+  const isMobile = useIsMobile();
   const [categories, setCategories]   = useState<ShopCategory[]>(FALLBACK_CATS);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [settings, setSettings]       = useState<ScrapbookSettings>(DEFAULT_SCRAPBOOK_SETTINGS);
@@ -424,6 +429,8 @@ const ScrapbookSection = () => {
     );
   };
 
+  if (!settings.showShopByCategory) return null;
+
   return (
     <section
       id="shop-by-category"
@@ -469,8 +476,11 @@ const ScrapbookSection = () => {
                 </div>
               </motion.div>
 
-              {/* Spine */}
-              <div style={{ position:"absolute", left:"26%", top:0, bottom:0, width:4, background:"linear-gradient(to right,rgba(0,0,0,0.14),rgba(0,0,0,0.04),transparent)", zIndex:15, pointerEvents:"none" }} />
+              {/* Spine — aligns with the 26% sidebar on desktop; hidden on mobile
+                  where the page uses a top-strip column layout (no vertical crease) */}
+              {!isMobile && (
+                <div style={{ position:"absolute", left:"26%", top:0, bottom:0, width:4, background:"linear-gradient(to right,rgba(0,0,0,0.14),rgba(0,0,0,0.04),transparent)", zIndex:15, pointerEvents:"none" }} />
+              )}
             </div>
 
             {/* Page-curl corner hint */}

@@ -11,7 +11,7 @@ interface Props {
 // (Privacy Policy, Terms of Service, Shipping Policy).
 const LegalPageLayout = ({ eyebrow, data }: Props) => (
   <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
-    <div className="pt-[112px]">
+    <div className="pt-[var(--nav-h,112px)]">
       <PageHero eyebrow={eyebrow} title={data.heading} subtitle={data.intro} />
 
       <div className="max-w-3xl mx-auto px-6 sm:px-12 py-12 sm:py-16">

@@ -77,7 +77,7 @@ const ReturnPolicyPage = () => {
 
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
-      <div className="pt-[112px]">
+      <div className="pt-[var(--nav-h,112px)]">
         <PageHero eyebrow="Shipping & Returns" title={policy.heading} subtitle={policy.intro} />
 
         <div className="max-w-3xl mx-auto px-6 sm:px-12 py-12 sm:py-16 space-y-6">

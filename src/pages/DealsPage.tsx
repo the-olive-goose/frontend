@@ -165,7 +165,7 @@ const DealsPage = () => {
   return (
     <div className="min-h-screen" style={{ background: "var(--color-cream-section)" }}>
 
-      <div className="pt-[112px]">
+      <div className="pt-[var(--nav-h,112px)]">
         {/* Hero */}
         <div style={{ background: "var(--color-forest-dark)", padding: "clamp(40px,6vw,72px) 0" }}>
           <div className="max-w-5xl mx-auto px-6 text-center">

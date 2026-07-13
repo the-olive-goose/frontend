@@ -63,7 +63,7 @@ const SecurityPage = () => {
 
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
-      <div className="pt-[112px]">
+      <div className="pt-[var(--nav-h,112px)]">
         <div className="max-w-3xl mx-auto px-3 sm:px-8 pt-6 sm:pt-8 pb-3">
           <h1 className="font-serif text-3xl font-bold" style={{ color: "#0F1111" }}>Login &amp; Security</h1>
           <div className="mt-3 mb-5" style={{ height: 1, background: "#DDD" }} />

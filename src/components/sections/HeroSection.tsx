@@ -43,7 +43,7 @@ const HeroSection = ({ data }: Props) => {
     >
       {/* ── Image fills a responsive fixed height so the centered text overlay
              always has room, regardless of the image's own aspect ratio ── */}
-      <div className="relative w-full h-[560px] sm:h-[620px] lg:h-[760px]">
+      <div className="relative w-full h-[440px] sm:h-[620px] lg:h-[760px]">
         <img
           src={bgImage}
           alt="Hero background"
@@ -68,29 +68,33 @@ const HeroSection = ({ data }: Props) => {
 
         {/* Floating stickers */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
-          <span style={{ position:"absolute", top:"12%", right:"8%",  fontSize:"2.8rem", transform:"rotate(15deg)",  filter:"drop-shadow(0 3px 8px rgba(0,0,0,0.35))", opacity:0.9  }}>✨</span>
-          <span style={{ position:"absolute", top:"22%", right:"14%", fontSize:"1.6rem", transform:"rotate(-8deg)",  filter:"drop-shadow(0 2px 6px rgba(0,0,0,0.3))",  opacity:0.85 }}>🌿</span>
-          <span style={{ position:"absolute", bottom:"22%",right:"6%",fontSize:"2.2rem", transform:"rotate(-18deg)", filter:"drop-shadow(0 3px 8px rgba(0,0,0,0.35))", opacity:0.88 }}>🕯️</span>
-          <div style={{
-            position:"absolute", top:"10%", right:"4%",
-            width:88, height:88, borderRadius:"50%",
-            background:"var(--color-gold)",
-            border:"3px dashed rgba(255,255,255,0.6)",
-            display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-            transform:"rotate(-12deg)",
-            boxShadow:"var(--shadow-stamp)",
-          }}>
-            <span style={{ fontSize:"0.55rem", fontWeight:700, letterSpacing:"0.12em", color:"var(--color-forest-dark)", textTransform:"uppercase", lineHeight:1.4, textAlign:"center", padding:"0 6px" }}>
+          {/* Decorative emoji — hidden on small screens so they don't cover the photo */}
+          <div className="hidden sm:block">
+            <span style={{ position:"absolute", top:"12%", right:"8%",  fontSize:"2.8rem", transform:"rotate(15deg)",  filter:"drop-shadow(0 3px 8px rgba(0,0,0,0.35))", opacity:0.9  }}>✨</span>
+            <span style={{ position:"absolute", top:"22%", right:"14%", fontSize:"1.6rem", transform:"rotate(-8deg)",  filter:"drop-shadow(0 2px 6px rgba(0,0,0,0.3))",  opacity:0.85 }}>🌿</span>
+            <span style={{ position:"absolute", bottom:"22%",right:"6%",fontSize:"2.2rem", transform:"rotate(-18deg)", filter:"drop-shadow(0 3px 8px rgba(0,0,0,0.35))", opacity:0.88 }}>🕯️</span>
+          </div>
+          {/* SMALL BATCH stamp — smaller and tucked into the corner on mobile */}
+          <div
+            className="absolute flex flex-col items-center justify-center rotate-[-12deg] w-[60px] h-[60px] top-2 right-2 sm:w-[88px] sm:h-[88px] sm:top-[10%] sm:right-[4%]"
+            style={{
+              borderRadius:"50%",
+              background:"var(--color-gold)",
+              border:"3px dashed rgba(255,255,255,0.6)",
+              boxShadow:"var(--shadow-stamp)",
+            }}
+          >
+            <span style={{ fontSize:"0.5rem", fontWeight:700, letterSpacing:"0.12em", color:"var(--color-forest-dark)", textTransform:"uppercase", lineHeight:1.4, textAlign:"center", padding:"0 6px" }} className="sm:!text-[0.55rem]">
               Small{"\n"}Batch
             </span>
-            <span style={{ fontSize:"1.1rem" }}>🫶</span>
+            <span style={{ fontSize:"1rem" }} className="sm:!text-[1.1rem]">🫶</span>
           </div>
         </div>
 
         {/* ── Centered content overlay ── */}
         <div
-          className="absolute inset-0 flex flex-col items-center justify-center text-center"
-          style={{ paddingTop: "clamp(60px,12vw,160px)", paddingBottom: "clamp(24px,6vw,80px)", paddingLeft: "clamp(16px,5vw,48px)", paddingRight: "clamp(16px,5vw,48px)" }}
+          className="absolute inset-0 flex flex-col items-center justify-end sm:justify-center text-center"
+          style={{ paddingTop: "clamp(60px,12vw,160px)", paddingBottom: "clamp(40px,6vw,80px)", paddingLeft: "clamp(16px,5vw,48px)", paddingRight: "clamp(16px,5vw,48px)" }}
         >
           {/* Headline */}
           <h1
@@ -162,7 +166,7 @@ const HeroSection = ({ data }: Props) => {
 
       {/* Scroll hint */}
       <div
-        className="absolute bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 animate-bounce"
+        className="absolute bottom-6 left-1/2 -translate-x-1/2 hidden sm:flex flex-col items-center gap-1 animate-bounce"
         style={{ color: "var(--text-muted-on-dark)", zIndex: 10 }}
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

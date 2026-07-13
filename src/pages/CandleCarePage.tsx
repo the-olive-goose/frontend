@@ -28,7 +28,7 @@ const CandleCarePage = () => {
   return (
     <div className="w-full">
       {/* top padding = announcement bar (38px) + nav (~56px) */}
-      <div className="pt-[112px]">
+      <div className="pt-[var(--nav-h,112px)]">
         <PageHero
           eyebrow="The Guide"
           title={<>{content.candleCare.headline_part1}{" "}<span style={{ color: "var(--color-gold)" }}>{content.candleCare.headline_part2}</span></>}

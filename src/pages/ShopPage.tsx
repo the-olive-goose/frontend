@@ -49,7 +49,7 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
       style={{ background: "var(--color-cream-card)", border: "1px solid var(--color-border)", boxShadow: "0 4px 18px rgba(0,0,0,0.07)" }}
     >
       {/* Image */}
-      <div className="relative overflow-hidden" style={{ aspectRatio: "3/4", background: "var(--color-sage-pale)" }}>
+      <div className="relative overflow-hidden" style={{ aspectRatio: "3/4", background: "rgba(0,0,0,0.04)" }}>
         <img
           src={img}
           alt={product.name}
@@ -173,7 +173,7 @@ const ShopPage = () => {
 
       {/* ── Hero ── */}
       <div
-        className="w-full pt-[112px]"
+        className="w-full pt-[var(--nav-h,112px)]"
         style={{ background: "var(--color-forest-dark)" }}
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 py-10 sm:py-16 lg:py-20 text-center">
