@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
@@ -9,6 +9,10 @@ import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle
 import { cartSubtotal, formatPrice } from "@/lib/cart";
 import { track, getAnalyticsIds } from "@/lib/analytics";
 import { getBundleNudges } from "@/lib/bundleNudges";
+import {
+  COUNTRIES, IRISH_COUNTIES, usesCountyDropdown, postalRuleFor, formatEircode,
+  isPhoneValid, validateDeliveryAddress, type AddressErrors, type AddressField,
+} from "@/lib/addressValidation";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
 import FooterSection from "@/components/sections/FooterSection";
@@ -17,6 +21,18 @@ import m2 from "@/assets/M2.png";
 
 const FALLBACK_IMGS = [m1, m2];
 const inputStyle = { border: "1px solid #ccc", background: "#fff", color: "#111" } as const;
+
+// Red border when a field has a surfaced error, the shared input look otherwise.
+const errStyle = (error?: string) =>
+  error ? { ...inputStyle, border: "1px solid #C7511F" } : inputStyle;
+
+// Wraps a control so its validation message sits directly beneath it.
+const Field = ({ error, children }: { error?: string; children: ReactNode }) => (
+  <div>
+    {children}
+    {error && <p className="font-sans text-xs mt-1" style={{ color: "#C7511F" }}>{error}</p>}
+  </div>
+);
 
 const CheckoutPage = () => {
   const { user, loading: authLoading, openAuthModal, requireAuth } = useAuth();
@@ -29,9 +45,10 @@ const CheckoutPage = () => {
   const [addingNudge, setAddingNudge] = useState(false);
   const [fulfillment, setFulfillment] = useState<FulfillmentType>("delivery");
   const [address, setAddress] = useState<DeliveryAddress>({});
+  const [touched, setTouched] = useState<Partial<Record<AddressField, boolean>>>({});
   const [contactPhone, setContactPhone] = useState("");
   const [codeInput, setCodeInput] = useState("");
-  const [appliedCode, setAppliedCode] = useState<{ code: string; percent: number } | null>(null);
+  const [appliedCode, setAppliedCode] = useState<{ code: string; type: "percentage" | "fixed"; value: number } | null>(null);
   const [codeError, setCodeError] = useState("");
   const [validatingCode, setValidatingCode] = useState(false);
   const [placing, setPlacing] = useState(false);
@@ -81,13 +98,30 @@ const CheckoutPage = () => {
     return sum + (b.discount_type === "percentage" ? base * (b.discount_value / 100) : b.discount_value);
   }, 0);
 
-  const codeDiscountAmount = appliedCode ? subtotalNum * (appliedCode.percent / 100) : 0;
+  const codeDiscountAmount = !appliedCode
+    ? 0
+    : appliedCode.type === "fixed"
+      ? Math.min(appliedCode.value, subtotalNum)
+      : subtotalNum * (appliedCode.value / 100);
+  const codeOffLabel = !appliedCode
+    ? ""
+    : appliedCode.type === "fixed"
+      ? `€${appliedCode.value.toFixed(2)} off`
+      : `${appliedCode.value}% off`;
   const discountAmount = pickupDiscountAmount + bundleSavings + codeDiscountAmount;
   const flatShipping = pickup.flat_shipping_rate ?? 4.99;
   const shipping = isPickup ? 0 : (subtotalNum >= pickup.free_shipping_threshold ? 0 : flatShipping);
   const grandTotal = Math.max(0, subtotalNum - discountAmount + shipping);
 
-  const addressComplete = !!(address.address_line1 && address.city && address.postal_code && address.country);
+  const addressErrors: AddressErrors = fulfillment === "delivery" ? validateDeliveryAddress(address) : {};
+  const addressComplete = Object.keys(addressErrors).length === 0;
+  const postalRule = postalRuleFor(address.country);
+
+  // Show a field's error once the shopper has left it, or after a submit attempt
+  // marks every field touched — never on a pristine, untouched field.
+  const fieldError = (f: AddressField): string | undefined => (touched[f] ? addressErrors[f] : undefined);
+  const setField = (f: AddressField, v: string) => setAddress(a => ({ ...a, [f]: v }));
+  const markTouched = (f: AddressField) => setTouched(t => ({ ...t, [f]: true }));
 
   // Single best "almost complete" deal — checkout is high-intent, low-real-estate,
   // so only the top-ranked bundle nudge is surfaced here (see getBundleNudges).
@@ -100,8 +134,11 @@ const CheckoutPage = () => {
     setCodeError("");
     try {
       const result = await validateDiscountCode(code);
-      if (result.valid && result.discount_percent != null) {
-        setAppliedCode({ code: result.code ?? code.toUpperCase(), percent: result.discount_percent });
+      // Prefer the general type/value; fall back to legacy discount_percent.
+      const type = result.discount_type ?? "percentage";
+      const value = result.discount_value ?? result.discount_percent;
+      if (result.valid && value != null) {
+        setAppliedCode({ code: result.code ?? code.toUpperCase(), type, value });
         setCodeInput("");
       } else {
         setAppliedCode(null);
@@ -137,8 +174,11 @@ const CheckoutPage = () => {
   // CheckoutSuccessPage), so there's no way to end up with an unpaid order.
   const handlePlaceOrder = async () => {
     setError("");
-    if (isPickup ? false : !addressComplete) {
-      setError("Please fill in your delivery address.");
+    if (!isPickup && !addressComplete) {
+      // Reveal every field's error at once, then point at the first problem.
+      setTouched({ full_name: true, phone: true, address_line1: true, city: true, state: true, postal_code: true, country: true });
+      const firstError = Object.values(addressErrors)[0];
+      setError(firstError ?? "Please complete your delivery address.");
       return;
     }
     setPlacing(true);
@@ -248,25 +288,69 @@ const CheckoutPage = () => {
                   <div className="bg-white rounded-xl p-5 space-y-4" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                     <h2 className="font-serif text-lg font-bold" style={{ color: "#0F1111" }}>2. Delivery Address</h2>
                     <div className="grid sm:grid-cols-2 gap-3">
-                      <input placeholder="Full name" value={address.full_name ?? ""} onChange={e => setAddress(a => ({ ...a, full_name: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                      <input placeholder="Phone" value={address.phone ?? ""} onChange={e => setAddress(a => ({ ...a, phone: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
+                      <Field error={fieldError("full_name")}>
+                        <input placeholder="Full name" value={address.full_name ?? ""} autoComplete="name"
+                          onChange={e => setField("full_name", e.target.value)} onBlur={() => markTouched("full_name")}
+                          className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={errStyle(fieldError("full_name"))} />
+                      </Field>
+                      <Field error={fieldError("phone")}>
+                        <input placeholder="Phone" value={address.phone ?? ""} inputMode="tel" autoComplete="tel"
+                          onChange={e => setField("phone", e.target.value)} onBlur={() => markTouched("phone")}
+                          className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={errStyle(fieldError("phone"))} />
+                      </Field>
                     </div>
-                    <input placeholder="Address line 1" value={address.address_line1 ?? ""} onChange={e => setAddress(a => ({ ...a, address_line1: e.target.value }))}
+                    <Field error={fieldError("address_line1")}>
+                      <input placeholder="Address line 1" value={address.address_line1 ?? ""} autoComplete="address-line1"
+                        onChange={e => setField("address_line1", e.target.value)} onBlur={() => markTouched("address_line1")}
+                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={errStyle(fieldError("address_line1"))} />
+                    </Field>
+                    <input placeholder="Address line 2 (optional)" value={address.address_line2 ?? ""} autoComplete="address-line2"
+                      onChange={e => setField("address_line2", e.target.value)}
                       className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                    <input placeholder="Address line 2 (optional)" value={address.address_line2 ?? ""} onChange={e => setAddress(a => ({ ...a, address_line2: e.target.value }))}
-                      className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
+                    {/* Country first: it drives the region field and the postal-code rules below it. */}
+                    <Field error={fieldError("country")}>
+                      <select value={address.country ?? ""} autoComplete="country-name"
+                        onChange={e => setAddress(a => ({ ...a, country: e.target.value, state: usesCountyDropdown(e.target.value) === usesCountyDropdown(a.country) ? a.state : "" }))}
+                        onBlur={() => markTouched("country")}
+                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none"
+                        style={{ ...errStyle(fieldError("country")), color: address.country ? "#111" : "#888" }}>
+                        <option value="">Select country…</option>
+                        {COUNTRIES.map(c => <option key={c.code} value={c.name} style={{ color: "#111" }}>{c.name}</option>)}
+                      </select>
+                    </Field>
                     <div className="grid sm:grid-cols-3 gap-3">
-                      <input placeholder="City" value={address.city ?? ""} onChange={e => setAddress(a => ({ ...a, city: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                      <input placeholder="State / Region" value={address.state ?? ""} onChange={e => setAddress(a => ({ ...a, state: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                      <input placeholder="Postal code" value={address.postal_code ?? ""} onChange={e => setAddress(a => ({ ...a, postal_code: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
+                      <Field error={fieldError("city")}>
+                        <input placeholder="City" value={address.city ?? ""} autoComplete="address-level2"
+                          onChange={e => setField("city", e.target.value)} onBlur={() => markTouched("city")}
+                          className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={errStyle(fieldError("city"))} />
+                      </Field>
+                      <Field error={fieldError("state")}>
+                        {usesCountyDropdown(address.country) ? (
+                          <select value={address.state ?? ""} autoComplete="address-level1"
+                            onChange={e => setField("state", e.target.value)} onBlur={() => markTouched("state")}
+                            className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none"
+                            style={{ ...errStyle(fieldError("state")), color: address.state ? "#111" : "#888" }}>
+                            <option value="">County (optional)</option>
+                            {IRISH_COUNTIES.map(c => <option key={c} value={c} style={{ color: "#111" }}>{c}</option>)}
+                          </select>
+                        ) : (
+                          <input placeholder="State / Region (optional)" value={address.state ?? ""} autoComplete="address-level1"
+                            onChange={e => setField("state", e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
+                        )}
+                      </Field>
+                      <Field error={fieldError("postal_code")}>
+                        <input placeholder={postalRule.label} value={address.postal_code ?? ""} autoComplete="postal-code"
+                          onChange={e => setField("postal_code", e.target.value)}
+                          onBlur={() => {
+                            markTouched("postal_code");
+                            // Tidy a valid Eircode into its canonical "D18 K7W2" form.
+                            if (usesCountyDropdown(address.country) && address.postal_code)
+                              setField("postal_code", formatEircode(address.postal_code));
+                          }}
+                          className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none uppercase" style={errStyle(fieldError("postal_code"))} />
+                      </Field>
                     </div>
-                    <input placeholder="Country" value={address.country ?? ""} onChange={e => setAddress(a => ({ ...a, country: e.target.value }))}
-                      className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
                   </div>
                 ) : (
                   <div className="bg-white rounded-xl p-5 space-y-3" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
@@ -280,8 +364,13 @@ const CheckoutPage = () => {
                     {pickup.notes && <p className="font-sans text-xs" style={{ color: "#555" }}>{pickup.notes}</p>}
                     <div>
                       <label className="font-sans text-xs font-semibold block mb-1" style={{ color: "#555" }}>Contact phone (for pickup notice)</label>
-                      <input value={contactPhone} onChange={e => setContactPhone(e.target.value)}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
+                      <input value={contactPhone} inputMode="tel" autoComplete="tel"
+                        onChange={e => setContactPhone(e.target.value)} onBlur={() => markTouched("phone")}
+                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none"
+                        style={errStyle(contactPhone.trim() && !isPhoneValid(contactPhone) ? "invalid" : undefined)} />
+                      {contactPhone.trim() && !isPhoneValid(contactPhone) && (
+                        <p className="font-sans text-xs mt-1" style={{ color: "#C7511F" }}>Enter a valid phone number (7–15 digits).</p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -361,7 +450,7 @@ const CheckoutPage = () => {
                   ))}
                   {appliedCode && (
                     <div className="flex justify-between font-sans text-sm font-semibold" style={{ color: "#007600" }}>
-                      <span>🎉 Code {appliedCode.code} ({appliedCode.percent}%)</span>
+                      <span>🎉 Code {appliedCode.code} ({codeOffLabel})</span>
                       <span>−€{codeDiscountAmount.toFixed(2)}</span>
                     </div>
                   )}
@@ -376,7 +465,7 @@ const CheckoutPage = () => {
                     {appliedCode ? (
                       <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg" style={{ background: "#eef6ee", border: "1px solid #cfe6cf" }}>
                         <span className="font-sans text-xs font-semibold" style={{ color: "#007600" }}>
-                          Code applied · {appliedCode.percent}% off
+                          Code applied · {codeOffLabel}
                         </span>
                         <button onClick={removeCode} className="font-sans text-xs underline shrink-0" style={{ color: "#555" }}>
                           Remove

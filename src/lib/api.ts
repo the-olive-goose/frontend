@@ -207,8 +207,14 @@ export const subscribe = async (email: string): Promise<SubscribeResult> => {
 export interface DiscountCodeRecord {
   id: string;
   code: string;
-  email: string;
+  email: string | null;
   discount_percent: string;
+  discount_type: 'percentage' | 'fixed';
+  discount_value: string;
+  max_redemptions: number;
+  redemption_count: number;
+  is_active: boolean;
+  label: string | null;
   source: string;
   redeemed_at: string | null;
   order_id: string | null;
@@ -219,6 +225,34 @@ export const getAdminDiscountCodes = async (): Promise<{ codes: DiscountCodeReco
   const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/discount-codes`, { headers: authHeaders(true) }));
   if (!res.ok) throw new Error('Failed to load discount codes');
   return res.json();
+};
+
+export interface CreateDiscountCodeInput {
+  code?: string;
+  discount_type: 'percentage' | 'fixed';
+  discount_value: number;
+  max_redemptions?: number;
+  label?: string;
+}
+
+// Mint a custom promo code. Throws with the server's message (e.g. duplicate
+// code, bad value) so the admin UI can surface it inline.
+export const createDiscountCode = async (input: CreateDiscountCodeInput): Promise<DiscountCodeRecord> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/discount-codes`, {
+    method: 'POST', headers: authHeaders(true), body: JSON.stringify(input),
+  }));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error || 'Failed to create discount code');
+  return body as DiscountCodeRecord;
+};
+
+export const setDiscountCodeActive = async (id: string, isActive: boolean): Promise<DiscountCodeRecord> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/discount-codes/${id}`, {
+    method: 'PATCH', headers: authHeaders(true), body: JSON.stringify({ is_active: isActive }),
+  }));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error || 'Failed to update discount code');
+  return body as DiscountCodeRecord;
 };
 
 export const getSubscribers = async (): Promise<Subscriber[]> => {

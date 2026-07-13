@@ -469,6 +469,15 @@ const DISCOUNT_RESERVATION_MINUTES = 30;
 // and "OG-ABC123" resolve to the same row.
 const normalizeCode = (raw) => (typeof raw === 'string' ? raw.trim().toUpperCase() : '');
 
+// Euro value of a code against a given subtotal. Percentage scales with the
+// basket; fixed is a flat amount, clamped so it can never exceed the subtotal
+// (which would drive the order total negative).
+const computeCodeDiscount = (type, value, subtotal) => {
+  const v = Number(value) || 0;
+  if (type === 'fixed') return Math.min(v, subtotal);
+  return subtotal * (v / 100);
+};
+
 // Issue the one welcome code for a subscriber email. Idempotent on the unique
 // (email, source) index: if a code already exists it's returned rather than a
 // second one being minted. Retries only on the astronomically unlikely event of
@@ -482,8 +491,8 @@ const issueSubscriberDiscountCode = async (email, discountPercent) => {
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const { rows } = await pool.query(
-        `INSERT INTO discount_codes (code, email, discount_percent, source)
-         VALUES ($1, $2, $3, 'subscribe') RETURNING *`,
+        `INSERT INTO discount_codes (code, email, discount_percent, discount_value, discount_type, source)
+         VALUES ($1, $2, $3, $3, 'percentage', 'subscribe') RETURNING *`,
         [genDiscountCode(), email, discountPercent]
       );
       return rows[0];
@@ -512,28 +521,45 @@ const inspectDiscountCode = async (code, userId) => {
   const { rows } = await pool.query('SELECT * FROM discount_codes WHERE code = $1', [normalized]);
   const row = rows[0];
   if (!row) return { valid: false, message: "That code isn't valid." };
-  if (row.redeemed_at) return { valid: false, message: 'This code has already been used.' };
+  if (!row.is_active) return { valid: false, message: 'This code is no longer active.' };
+  const singleUse = Number(row.max_redemptions) <= 1;
+  if (row.redemption_count >= row.max_redemptions) {
+    return { valid: false, message: singleUse ? 'This code has already been used.' : 'This code has been fully redeemed.' };
+  }
 
-  // Already spent (or actively reserving) a welcome discount on this account?
-  const { rows: usedRows } = await pool.query(
-    `SELECT 1 FROM discount_codes
-      WHERE source = 'subscribe' AND code <> $2
-        AND ( redeemed_by_user_id = $1
-              OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
-                   AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
-      LIMIT 1`,
-    [userId, normalized]
-  );
-  if (usedRows.length) return { valid: false, message: "You've already used a welcome discount." };
+  // The one-welcome-per-account cap only applies when the code being applied is
+  // itself a subscribe code — admin promo codes are exempt, and holding a welcome
+  // code must never block an admin code.
+  if (row.source === 'subscribe') {
+    const { rows: usedRows } = await pool.query(
+      `SELECT 1 FROM discount_codes
+        WHERE source = 'subscribe' AND code <> $2
+          AND ( redeemed_by_user_id = $1
+                OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
+                     AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
+        LIMIT 1`,
+      [userId, normalized]
+    );
+    if (usedRows.length) return { valid: false, message: "You've already used a welcome discount." };
+  }
 
-  // Held by someone else's in-flight checkout right now.
-  const heldByOther = row.reserved_at &&
-    !row.redeemed_at &&
+  // Held by someone else's in-flight checkout right now. Only single-use codes
+  // take an exclusive hold; multi-use codes rely on the atomic redeem cap instead.
+  const heldByOther = singleUse &&
+    row.reserved_at &&
+    row.redemption_count < row.max_redemptions &&
     row.reserved_by_user_id !== userId &&
     new Date(row.reserved_at).getTime() > Date.now() - DISCOUNT_RESERVATION_MINUTES * 60_000;
   if (heldByOther) return { valid: false, message: 'This code is being used in another checkout right now.' };
 
-  return { valid: true, code: normalized, discount_percent: Number(row.discount_percent) };
+  return {
+    valid: true,
+    code: normalized,
+    discount_type: row.discount_type,
+    discount_value: Number(row.discount_value),
+    // Retained for older clients that still read discount_percent.
+    discount_percent: row.discount_type === 'percentage' ? Number(row.discount_value) : 0,
+  };
 };
 
 // Authoritative validate + hold, run in a transaction at checkout-session time.
@@ -555,30 +581,42 @@ const reserveDiscountCode = async (code, userId, sessionId) => {
     );
     const target = targetRows[0];
     if (!target) { await client.query('ROLLBACK'); return { ok: false, message: "That code isn't valid." }; }
-    if (target.redeemed_at) { await client.query('ROLLBACK'); return { ok: false, message: 'This code has already been used.' }; }
+    if (!target.is_active) { await client.query('ROLLBACK'); return { ok: false, message: 'This code is no longer active.' }; }
+    const singleUse = Number(target.max_redemptions) <= 1;
+    if (target.redemption_count >= target.max_redemptions) {
+      await client.query('ROLLBACK');
+      return { ok: false, message: singleUse ? 'This code has already been used.' : 'This code has been fully redeemed.' };
+    }
 
     // Per-account welcome-discount cap: any *other* subscribe code this user has
-    // already redeemed, or is actively holding, blocks a second one.
-    const { rows: usedRows } = await client.query(
-      `SELECT 1 FROM discount_codes
-        WHERE source = 'subscribe' AND code <> $2
-          AND ( redeemed_by_user_id = $1
-                OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
-                     AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
-        LIMIT 1`,
-      [userId, normalized]
-    );
-    if (usedRows.length) { await client.query('ROLLBACK'); return { ok: false, message: "You've already used a welcome discount." }; }
+    // already redeemed, or is actively holding, blocks a second one. Only enforced
+    // when the target itself is a subscribe code — admin codes are exempt and must
+    // not be blocked by a welcome code the user happens to hold.
+    if (target.source === 'subscribe') {
+      const { rows: usedRows } = await client.query(
+        `SELECT 1 FROM discount_codes
+          WHERE source = 'subscribe' AND code <> $2
+            AND ( redeemed_by_user_id = $1
+                  OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
+                       AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
+          LIMIT 1`,
+        [userId, normalized]
+      );
+      if (usedRows.length) { await client.query('ROLLBACK'); return { ok: false, message: "You've already used a welcome discount." }; }
+    }
 
-    // Claim it: succeeds only if free, already ours, or a stale hold.
+    // Claim it. For single-use codes the hold is exclusive (free, already ours,
+    // or a stale hold). Multi-use codes skip the exclusive hold — capacity is
+    // enforced atomically at redeem — so parallel shoppers can all reserve.
     const { rows: claimed } = await client.query(
       `UPDATE discount_codes
           SET reserved_at = NOW(), reserved_by_user_id = $1, reserved_session_id = $3
-        WHERE code = $2 AND redeemed_at IS NULL
-          AND ( reserved_at IS NULL
+        WHERE code = $2 AND is_active AND redemption_count < max_redemptions
+          AND ( max_redemptions > 1
+                OR reserved_at IS NULL
                 OR reserved_by_user_id = $1
                 OR reserved_at < NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' )
-        RETURNING discount_percent`,
+        RETURNING discount_type, discount_value`,
       [userId, normalized, sessionId]
     );
     if (!claimed.length) {
@@ -587,7 +625,12 @@ const reserveDiscountCode = async (code, userId, sessionId) => {
     }
 
     await client.query('COMMIT');
-    return { ok: true, code: normalized, percent: Number(claimed[0].discount_percent) };
+    return {
+      ok: true,
+      code: normalized,
+      discount_type: claimed[0].discount_type,
+      discount_value: Number(claimed[0].discount_value),
+    };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -604,13 +647,16 @@ const redeemDiscountCode = async (code, userId, orderId) => {
   if (!normalized) return;
   await pool.query(
     `UPDATE discount_codes dc
-        SET redeemed_at = NOW(), redeemed_by_user_id = $1, order_id = $3,
+        SET redemption_count = dc.redemption_count + 1,
+            redeemed_at = CASE WHEN dc.redemption_count + 1 >= dc.max_redemptions
+                               THEN NOW() ELSE dc.redeemed_at END,
+            redeemed_by_user_id = $1, order_id = $3,
             reserved_at = NULL, reserved_by_user_id = NULL, reserved_session_id = NULL
-      WHERE dc.code = $2 AND dc.redeemed_at IS NULL
-        AND NOT EXISTS (
+      WHERE dc.code = $2 AND dc.redemption_count < dc.max_redemptions
+        AND ( dc.source <> 'subscribe' OR NOT EXISTS (
           SELECT 1 FROM discount_codes o
            WHERE o.source = 'subscribe' AND o.id <> dc.id
-             AND o.redeemed_by_user_id = $1 )`,
+             AND o.redeemed_by_user_id = $1 ) )`,
     [userId, normalized, orderId]
   );
 };
@@ -1737,7 +1783,7 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
       const reservation = await reserveDiscountCode(req.body.discount_code, req.user.userId, null);
       if (!reservation.ok) return res.status(400).json({ error: reservation.message });
       appliedCode = reservation.code;
-      codeDiscountAmount = subtotal * (reservation.percent / 100);
+      codeDiscountAmount = computeCodeDiscount(reservation.discount_type, reservation.discount_value, subtotal);
     }
 
     const pickupDiscountAmount = subtotal * (discountPercent / 100);
@@ -3028,7 +3074,8 @@ app.post('/api/discount/validate', requireUserAuth, async (req, res) => {
 app.get('/api/admin/discount-codes', requireAuth, async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, code, email, discount_percent, source,
+      `SELECT id, code, email, discount_percent, discount_type, discount_value,
+              max_redemptions, redemption_count, is_active, label, source,
               redeemed_at, order_id, created_at
          FROM discount_codes
         ORDER BY created_at DESC
@@ -3036,10 +3083,77 @@ app.get('/api/admin/discount-codes', requireAuth, async (_req, res) => {
     );
     const { rows: stat } = await pool.query(
       `SELECT COUNT(*)::int AS issued,
-              COUNT(*) FILTER (WHERE redeemed_at IS NOT NULL)::int AS redeemed
+              COALESCE(SUM(redemption_count), 0)::int AS redeemed
          FROM discount_codes`
     );
     res.json({ codes: rows, stats: stat[0] || { issued: 0, redeemed: 0 } });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── POST /api/admin/discount-codes (admin only) ──────────────────────────────
+// Mint a custom promo code. `code` optional — omit it to auto-generate an
+// unguessable one. Percentage or fixed-euro; single-use by default.
+app.post('/api/admin/discount-codes', requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const discountType = body.discount_type === 'fixed' ? 'fixed' : 'percentage';
+    const discountValue = Number(body.discount_value);
+    if (!Number.isFinite(discountValue) || discountValue <= 0)
+      return res.status(400).json({ error: 'Enter a discount value greater than zero.' });
+    if (discountType === 'percentage' && discountValue > 100)
+      return res.status(400).json({ error: 'A percentage discount cannot exceed 100%.' });
+
+    let maxRedemptions = body.max_redemptions == null ? 1 : Math.floor(Number(body.max_redemptions));
+    if (!Number.isFinite(maxRedemptions) || maxRedemptions < 1)
+      return res.status(400).json({ error: 'Max uses must be a whole number of at least 1.' });
+
+    const label = typeof body.label === 'string' ? body.label.trim().slice(0, 120) : null;
+
+    // Custom code: normalize + charset-check. Otherwise generate one.
+    let code;
+    if (body.code != null && String(body.code).trim() !== '') {
+      code = normalizeCode(body.code);
+      if (!/^[A-Z0-9-]{3,32}$/.test(code))
+        return res.status(400).json({ error: 'Code must be 3–32 characters: letters, numbers, or hyphens.' });
+    } else {
+      code = genDiscountCode();
+    }
+
+    // discount_percent kept in sync for percentage codes so any legacy reader
+    // still sees the right number; fixed codes leave it at 0.
+    const legacyPercent = discountType === 'percentage' ? discountValue : 0;
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO discount_codes
+           (code, email, source, discount_type, discount_value, discount_percent, max_redemptions, label)
+         VALUES ($1, NULL, 'admin', $2, $3, $4, $5, $6)
+         RETURNING id, code, email, discount_percent, discount_type, discount_value,
+                   max_redemptions, redemption_count, is_active, label, source,
+                   redeemed_at, order_id, created_at`,
+        [code, discountType, discountValue, legacyPercent, maxRedemptions, label]
+      );
+      res.status(201).json(rows[0]);
+    } catch (err) {
+      if (err.code === '23505') return res.status(409).json({ error: 'That code already exists.' });
+      throw err;
+    }
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── PATCH /api/admin/discount-codes/:id (admin only) — activate/deactivate ────
+app.patch('/api/admin/discount-codes/:id', requireAuth, async (req, res) => {
+  try {
+    if (typeof req.body?.is_active !== 'boolean')
+      return res.status(400).json({ error: 'is_active must be true or false.' });
+    const { rows } = await pool.query(
+      `UPDATE discount_codes SET is_active = $2 WHERE id = $1
+       RETURNING id, code, email, discount_percent, discount_type, discount_value,
+                 max_redemptions, redemption_count, is_active, label, source,
+                 redeemed_at, order_id, created_at`,
+      [req.params.id, req.body.is_active]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Code not found.' });
+    res.json(rows[0]);
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -3412,9 +3526,28 @@ async function initDb() {
       created_at          TIMESTAMPTZ DEFAULT NOW()
     );
     -- One welcome code per email address: makes re-subscribing (or racing two
-    -- signups) unable to mint a second code for the same person.
+    -- signups) unable to mint a second code for the same person. NULL emails
+    -- (admin-created campaign codes) are treated as distinct by Postgres, so any
+    -- number of them coexist under source='admin'.
     CREATE UNIQUE INDEX IF NOT EXISTS discount_codes_email_source_uidx
       ON discount_codes (email, source);
+
+    -- Generalization from welcome-only codes to admin-created promo codes:
+    -- percentage OR fixed-euro value, an optional multi-use cap (default 1 =
+    -- single-use, preserving the original guarantee), an active toggle, and an
+    -- admin label. discount_percent is retained for back-compat; new code paths
+    -- read discount_type/discount_value.
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS discount_type    TEXT    NOT NULL DEFAULT 'percentage';
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS discount_value   NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS max_redemptions  INT     NOT NULL DEFAULT 1;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS redemption_count INT     NOT NULL DEFAULT 0;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS is_active        BOOLEAN NOT NULL DEFAULT true;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS label            TEXT;
+    -- Backfill existing (percentage) rows into the canonical value column.
+    UPDATE discount_codes SET discount_value = discount_percent
+      WHERE discount_value = 0 AND discount_percent > 0;
+    -- Admin codes carry no email; welcome codes still do.
+    ALTER TABLE discount_codes ALTER COLUMN email DROP NOT NULL;
 
     CREATE TABLE IF NOT EXISTS returns (
       id           UUID        DEFAULT gen_random_uuid() PRIMARY KEY,

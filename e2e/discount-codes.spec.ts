@@ -258,6 +258,114 @@ test.describe("No loopholes", () => {
   });
 });
 
+// ─── 4b. Admin-created custom codes ───────────────────────────────────────────
+
+test.describe("Admin custom codes", () => {
+  const uniqueCode = (tag: string) => `E2E-${tag}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`.toUpperCase();
+
+  const createCode = (data: Record<string, unknown>) =>
+    admin.post(`/api/admin/discount-codes`, { headers: auth(TOKEN), data });
+
+  test("percentage code: created, validates for a shopper, exempt from the welcome cap", async () => {
+    const code = uniqueCode("pct");
+    const created = await createCode({ code, discount_type: "percentage", discount_value: 25, max_redemptions: 5, label: "e2e pct" });
+    expect(created.status()).toBe(201);
+    const row = await created.json();
+    expect(row.code).toBe(code);
+    expect(row.discount_type).toBe("percentage");
+    expect(Number(row.discount_value)).toBe(25);
+    expect(row.max_redemptions).toBe(5);
+    expect(row.is_active).toBe(true);
+
+    // shopper2 is holding a welcome code from earlier serial cases — an admin code
+    // must NOT be blocked by that welcome hold.
+    const v = await (await shopper2.post(`/api/discount/validate`, { data: { code } })).json();
+    expect(v.valid).toBe(true);
+    expect(v.discount_type).toBe("percentage");
+    expect(Number(v.discount_value)).toBe(25);
+  });
+
+  test("auto-generates an unguessable code when none is supplied", async () => {
+    const created = await createCode({ discount_type: "percentage", discount_value: 10 });
+    expect(created.status()).toBe(201);
+    expect((await created.json()).code).toMatch(/^OG-[A-Z2-9]{8}$/);
+  });
+
+  test("rejects bad input and duplicate codes", async () => {
+    expect((await createCode({ discount_type: "percentage", discount_value: 0 })).status()).toBe(400);
+    expect((await createCode({ discount_type: "percentage", discount_value: 150 })).status()).toBe(400);
+    expect((await createCode({ discount_type: "fixed", discount_value: 5, max_redemptions: 0 })).status()).toBe(400);
+
+    const code = uniqueCode("dupe");
+    expect((await createCode({ code, discount_type: "fixed", discount_value: 5 })).status()).toBe(201);
+    const again = await createCode({ code, discount_type: "fixed", discount_value: 5 });
+    expect(again.status()).toBe(409);
+  });
+
+  test("a single-use admin code held by one checkout blocks another shopper", async () => {
+    const code = uniqueCode("single");
+    expect((await createCode({ code, discount_type: "percentage", discount_value: 20, max_redemptions: 1 })).status()).toBe(201);
+
+    // shopper reserves it via an in-flight checkout session…
+    await addToCart(shopper);
+    const held = await shopper.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: code } });
+    expect(held.ok()).toBeTruthy();
+
+    // …so shopper2 is now blocked on the same single-use code.
+    const other = await (await shopper2.post(`/api/discount/validate`, { data: { code } })).json();
+    expect(other.valid).toBe(false);
+    expect(other.message).toMatch(/another checkout/i);
+  });
+
+  test("a multi-use admin code can be reserved by two different shoppers", async () => {
+    const code = uniqueCode("multi");
+    expect((await createCode({ code, discount_type: "percentage", discount_value: 10, max_redemptions: 3 })).status()).toBe(201);
+
+    await addToCart(shopper);
+    expect((await shopper.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: code } })).ok()).toBeTruthy();
+    // A second, different shopper is NOT blocked — multi-use codes take no
+    // exclusive hold; capacity is enforced atomically at redeem.
+    const otherShopper = await pwRequest.newContext({ baseURL: API });
+    expect((await otherShopper.post(`/api/user/login`, { data: SHOPPER })).ok()).toBeTruthy();
+    await otherShopper.dispose();
+    const v = await (await shopper2.post(`/api/discount/validate`, { data: { code } })).json();
+    expect(v.valid).toBe(true);
+  });
+
+  test("fixed-amount code reaches the payment as a flat euro discount", async () => {
+    test.skip(!stripeReady, "STRIPE_SECRET_KEY (test mode) not available to the test process");
+    // Fixed €3 off — smaller than the unit price so it isn't clamped to subtotal.
+    const fixedEuros = 3;
+    expect(unitCents).toBeGreaterThan(fixedEuros * 100);
+    const code = uniqueCode("fixed");
+    expect((await createCode({ code, discount_type: "fixed", discount_value: fixedEuros, max_redemptions: 10 })).status()).toBe(201);
+
+    await addToCart(shopper);
+    const withCode = await shopper.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: code } });
+    expect(withCode.ok()).toBeTruthy();
+    const session = await retrieveStripeSession(sessionIdFromUrl((await withCode.json()).url));
+    expect(session.total_details?.amount_discount).toBe(fixedEuros * 100);
+  });
+
+  test("deactivating a code stops it validating; reactivating restores it", async () => {
+    const code = uniqueCode("toggle");
+    const created = await createCode({ code, discount_type: "percentage", discount_value: 15 });
+    const id = (await created.json()).id;
+
+    expect((await (await shopper.post(`/api/discount/validate`, { data: { code } })).json()).valid).toBe(true);
+
+    const off = await admin.patch(`/api/admin/discount-codes/${id}`, { headers: auth(TOKEN), data: { is_active: false } });
+    expect(off.ok()).toBeTruthy();
+    const deactivated = await (await shopper.post(`/api/discount/validate`, { data: { code } })).json();
+    expect(deactivated.valid).toBe(false);
+    expect(deactivated.message).toMatch(/no longer active/i);
+
+    const on = await admin.patch(`/api/admin/discount-codes/${id}`, { headers: auth(TOKEN), data: { is_active: true } });
+    expect(on.ok()).toBeTruthy();
+    expect((await (await shopper.post(`/api/discount/validate`, { data: { code } })).json()).valid).toBe(true);
+  });
+});
+
 // ─── 5. Full UI journey (shopper — clean account, reserves + redeems its own) ──
 
 test.describe("Checkout UI", () => {

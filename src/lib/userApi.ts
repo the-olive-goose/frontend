@@ -312,6 +312,9 @@ export interface DiscountValidation {
   valid: boolean;
   message?: string;
   code?: string;
+  discount_type?: 'percentage' | 'fixed';
+  discount_value?: number;
+  // Legacy: still sent for percentage codes; prefer discount_type/value.
   discount_percent?: number;
 }
 

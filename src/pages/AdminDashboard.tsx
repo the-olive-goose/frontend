@@ -7,6 +7,8 @@ import {
   getSubscribers,
   deleteSubscriber,
   getAdminDiscountCodes,
+  createDiscountCode,
+  setDiscountCodeActive,
   type DiscountCodeRecord,
   getAdminUsers,
   getAdminFeedback,
@@ -2132,6 +2134,177 @@ const ReturnsPanel = () => {
   );
 };
 
+// ── Discount codes (admin-created promo codes) ──────────────────────────────────
+// Mint custom percentage / fixed-euro codes. Single-use by default (max uses = 1),
+// or set a higher cap for a reusable campaign code. Codes are stored alongside the
+// subscriber welcome codes but managed here.
+const DiscountCodesPanel = () => {
+  const { toast } = useToast();
+  const [codes, setCodes] = useState<DiscountCodeRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({
+    code: "",
+    discount_type: "percentage" as "percentage" | "fixed",
+    discount_value: "",
+    max_redemptions: "1",
+    label: "",
+  });
+
+  const load = useCallback(() => {
+    getAdminDiscountCodes()
+      .then(({ codes }) => setCodes(codes.filter((c) => c.source === "admin")))
+      .catch(() => setError("Couldn't load discount codes."))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const create = async () => {
+    setError("");
+    const value = Number(form.discount_value);
+    if (!Number.isFinite(value) || value <= 0) { setError("Enter a discount value greater than zero."); return; }
+    const maxUses = Math.floor(Number(form.max_redemptions || "1"));
+    if (!Number.isFinite(maxUses) || maxUses < 1) { setError("Max uses must be a whole number of at least 1."); return; }
+    setCreating(true);
+    try {
+      const created = await createDiscountCode({
+        code: form.code.trim() || undefined,
+        discount_type: form.discount_type,
+        discount_value: value,
+        max_redemptions: maxUses,
+        label: form.label.trim() || undefined,
+      });
+      setCodes((prev) => [created, ...prev]);
+      setForm({ code: "", discount_type: "percentage", discount_value: "", max_redemptions: "1", label: "" });
+      toast({ title: `Code ${created.code} created` });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create code");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const toggleActive = async (c: DiscountCodeRecord) => {
+    try {
+      const updated = await setDiscountCodeActive(c.id, !c.is_active);
+      setCodes((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Could not update code", variant: "destructive" });
+    }
+  };
+
+  const valueLabel = (c: DiscountCodeRecord) =>
+    c.discount_type === "fixed" ? `€${Number(c.discount_value).toFixed(2)}` : `${Number(c.discount_value)}%`;
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading title="Discount Codes" desc="Create custom promo codes — percentage or fixed-euro, single-use by default. Customers apply them at checkout." />
+
+      {/* ── Create form ──────────────────────────────────────────────────────── */}
+      <div className="border border-border rounded-xl bg-card p-5 space-y-4 max-w-2xl">
+        <p className="font-sans text-sm font-semibold text-foreground">Create a code</p>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Code" hint="Leave blank to auto-generate an unguessable one.">
+            <Input
+              placeholder="e.g. SUMMER20 (optional)"
+              value={form.code}
+              onChange={(e) => setForm((f) => ({ ...f, code: e.target.value.toUpperCase() }))}
+            />
+          </Field>
+          <Field label="Type">
+            <select
+              value={form.discount_type}
+              onChange={(e) => setForm((f) => ({ ...f, discount_type: e.target.value as "percentage" | "fixed" }))}
+              className="w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+            >
+              <option value="percentage">Percentage (%)</option>
+              <option value="fixed">Fixed amount (€)</option>
+            </select>
+          </Field>
+          <Field label={`Value (${form.discount_type === "percentage" ? "%" : "€"})`}>
+            <Input
+              type="number" min={0} step={form.discount_type === "percentage" ? 1 : 0.5}
+              placeholder={form.discount_type === "percentage" ? "20" : "10.00"}
+              value={form.discount_value}
+              onChange={(e) => setForm((f) => ({ ...f, discount_value: e.target.value }))}
+            />
+          </Field>
+          <Field label="Max uses" hint="1 = single-use. Higher = reusable campaign code.">
+            <Input
+              type="number" min={1} step={1}
+              value={form.max_redemptions}
+              onChange={(e) => setForm((f) => ({ ...f, max_redemptions: e.target.value }))}
+            />
+          </Field>
+        </div>
+        <Field label="Label" hint="Optional note for your reference (e.g. “Instagram giveaway”).">
+          <Input
+            placeholder="Optional"
+            value={form.label}
+            onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
+          />
+        </Field>
+        {error && <p className="font-sans text-sm text-red-600">{error}</p>}
+        <button
+          onClick={create}
+          disabled={creating}
+          className="px-6 py-2.5 rounded-lg bg-primary text-primary-foreground font-sans text-sm font-medium hover:bg-olive-light transition-all disabled:opacity-50"
+        >
+          {creating ? "Creating…" : "Create code"}
+        </button>
+      </div>
+
+      {/* ── Existing codes ───────────────────────────────────────────────────── */}
+      {loading && <p className="font-sans text-sm text-muted-foreground">Loading…</p>}
+      {!loading && codes.length === 0 && (
+        <p className="font-sans text-sm text-muted-foreground">No custom codes yet — create one above.</p>
+      )}
+      {codes.length > 0 && (
+        <div className="border border-border rounded-lg overflow-hidden max-w-3xl">
+          <table className="w-full">
+            <thead>
+              <tr className="bg-muted/50">
+                <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">Code</th>
+                <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">Discount</th>
+                <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">Used</th>
+                <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">Label</th>
+                <th className="text-left px-3 py-2 text-[11px] font-sans font-medium text-muted-foreground uppercase tracking-wider">Status</th>
+                <th className="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {codes.map((c) => {
+                const exhausted = c.redemption_count >= c.max_redemptions;
+                return (
+                  <tr key={c.id} className="border-t border-border">
+                    <td className="px-3 py-2 text-xs font-mono text-foreground">{c.code}</td>
+                    <td className="px-3 py-2 text-xs font-sans text-foreground">{valueLabel(c)} off</td>
+                    <td className="px-3 py-2 text-xs font-sans text-muted-foreground">{c.redemption_count}/{c.max_redemptions}</td>
+                    <td className="px-3 py-2 text-xs font-sans text-muted-foreground truncate max-w-[160px]">{c.label || "—"}</td>
+                    <td className="px-3 py-2 text-xs font-sans">
+                      {!c.is_active
+                        ? <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">Inactive</span>
+                        : exhausted
+                          ? <span className="px-2 py-0.5 rounded-full" style={{ background: "#eef6ee", color: "#007600" }}>{c.max_redemptions > 1 ? "Fully used" : "Redeemed"}</span>
+                          : <span className="px-2 py-0.5 rounded-full" style={{ background: "#eef6ee", color: "#007600" }}>Active</span>}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button onClick={() => toggleActive(c)} className="font-sans text-xs underline text-muted-foreground hover:text-foreground">
+                        {c.is_active ? "Deactivate" : "Reactivate"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Ops panel ──────────────────────────────────────────────────────────────────
 // Read-only aggregation over data the order-lifecycle feature already tracks
 // (or that already existed) so nothing needs digging through separate tabs —
@@ -2613,12 +2786,18 @@ const SubscribersPanel = ({
 }) => {
   const [search, setSearch] = useState("");
   const [codes, setCodes] = useState<DiscountCodeRecord[]>([]);
-  const [codeStats, setCodeStats] = useState<{ issued: number; redeemed: number }>({ issued: 0, redeemed: 0 });
   useEffect(() => {
     getAdminDiscountCodes()
-      .then(({ codes, stats }) => { setCodes(codes); setCodeStats(stats); })
+      .then(({ codes }) => setCodes(codes))
       .catch(() => { /* non-fatal — panel still shows subscribers */ });
   }, []);
+  // This card is about subscriber welcome codes only; admin-created promo codes
+  // are managed in Ops → Discount Codes and share the same table server-side.
+  const welcomeCodes = codes.filter((c) => c.source === "subscribe");
+  const codeStats = {
+    issued: welcomeCodes.length,
+    redeemed: welcomeCodes.filter((c) => c.redeemed_at).length,
+  };
   const exportCSV = () => {
     const csv = ["Email,Subscribed At", ...subscribers.map((s) => `${s.email},${s.subscribed_at}`)].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -2711,7 +2890,7 @@ const SubscribersPanel = ({
             </div>
           </div>
         </div>
-        {codes.length > 0 && (
+        {welcomeCodes.length > 0 && (
           <div className="border border-border rounded-lg overflow-hidden">
             <table className="w-full">
               <thead>
@@ -2723,7 +2902,7 @@ const SubscribersPanel = ({
                 </tr>
               </thead>
               <tbody>
-                {codes.slice(0, 25).map((c) => (
+                {welcomeCodes.slice(0, 25).map((c) => (
                   <tr key={c.id} className="border-t border-border">
                     <td className="px-3 py-2 text-xs font-mono text-foreground">{c.code}</td>
                     <td className="px-3 py-2 text-xs font-sans text-muted-foreground truncate max-w-[180px]">{c.email}</td>
@@ -3402,6 +3581,7 @@ type TabId =
   | "orders"
   | "returns"
   | "ops"
+  | "discountCodes"
   | "analytics";
 
 type NavItem = { id: TabId; label: string; icon: string };
@@ -3468,6 +3648,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "⚙️",
     items: [
       { id: "ops", label: "Ops Overview", icon: "📊" },
+      { id: "discountCodes", label: "Discount Codes", icon: "🏷️" },
       { id: "analytics", label: "Analytics", icon: "📈" },
       { id: "subscribers", label: "Subscribers & Signup Popup", icon: "◉" },
       { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
@@ -3481,7 +3662,7 @@ const groupIdForTab = (tab: TabId): string =>
 // Tabs that render dense tables/dashboards rather than a settings form — these
 // get the full working width so nothing is clipped.
 const WIDE_TABS = new Set<TabId>([
-  "shopCategories", "deals", "subscribers", "users", "feedback", "orders", "returns", "ops", "analytics",
+  "shopCategories", "deals", "subscribers", "users", "feedback", "orders", "returns", "ops", "discountCodes", "analytics",
 ]);
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
@@ -3712,6 +3893,7 @@ const AdminDashboard = () => {
             {activeTab === "orders"       && <OrdersPanel />}
             {activeTab === "returns"      && <ReturnsPanel />}
             {activeTab === "ops"          && <OpsPanel />}
+            {activeTab === "discountCodes" && <DiscountCodesPanel />}
             {activeTab === "analytics"    && <AnalyticsPanel />}
           </div>
         </main>
