@@ -1,18 +1,20 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
-import { createCheckoutSession, validateDiscountCode, SessionExpiredError, type DeliveryAddress, type FulfillmentType } from "@/lib/userApi";
+import {
+  createCheckoutSession, validateDiscountCode, SessionExpiredError,
+  fetchAddresses, createAddress,
+  type DeliveryAddress, type FulfillmentType, type SavedAddress,
+} from "@/lib/userApi";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
 import { track, getAnalyticsIds } from "@/lib/analytics";
 import { getBundleNudges } from "@/lib/bundleNudges";
-import {
-  COUNTRIES, IRISH_COUNTIES, usesCountyDropdown, postalRuleFor, formatEircode,
-  isPhoneValid, validateDeliveryAddress, type AddressErrors, type AddressField,
-} from "@/lib/addressValidation";
+import { isPhoneValid, validateDeliveryAddress, type AddressErrors, type AddressField } from "@/lib/addressValidation";
+import AddressFields from "@/components/AddressFields";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
 import FooterSection from "@/components/sections/FooterSection";
@@ -22,17 +24,30 @@ import m2 from "@/assets/M2.png";
 const FALLBACK_IMGS = [m1, m2];
 const inputStyle = { border: "1px solid #ccc", background: "#fff", color: "#111" } as const;
 
+// Sentinel for the picker's "+ Use a new address" option (vs. a saved address id).
+const NEW_ADDRESS = "__new__";
+
+// The delivery fields on a saved address, as the checkout address form wants them.
+const toDeliveryAddress = (a: SavedAddress): DeliveryAddress => ({
+  full_name: a.full_name, phone: a.phone,
+  address_line1: a.address_line1, address_line2: a.address_line2,
+  city: a.city, state: a.state, postal_code: a.postal_code, country: a.country,
+});
+
+// One-line summary of a saved address for the picker rows.
+const formatAddressLine = (a: SavedAddress): string =>
+  [a.address_line1, a.address_line2, a.city, a.state, a.postal_code, a.country]
+    .filter(Boolean).join(", ");
+
+// Two addresses are "the same" for save-offer purposes when every delivery field
+// matches (trimmed). Lets us skip offering to save an address already on file.
+const sameAddress = (a: DeliveryAddress, b: DeliveryAddress): boolean =>
+  (["full_name", "phone", "address_line1", "address_line2", "city", "state", "postal_code", "country"] as const)
+    .every(k => (a[k] ?? "").trim() === (b[k] ?? "").trim());
+
 // Red border when a field has a surfaced error, the shared input look otherwise.
 const errStyle = (error?: string) =>
   error ? { ...inputStyle, border: "1px solid #C7511F" } : inputStyle;
-
-// Wraps a control so its validation message sits directly beneath it.
-const Field = ({ error, children }: { error?: string; children: ReactNode }) => (
-  <div>
-    {children}
-    {error && <p className="font-sans text-xs mt-1" style={{ color: "#C7511F" }}>{error}</p>}
-  </div>
-);
 
 const CheckoutPage = () => {
   const { user, loading: authLoading, openAuthModal, requireAuth } = useAuth();
@@ -46,6 +61,10 @@ const CheckoutPage = () => {
   const [fulfillment, setFulfillment] = useState<FulfillmentType>("delivery");
   const [address, setAddress] = useState<DeliveryAddress>({});
   const [touched, setTouched] = useState<Partial<Record<AddressField, boolean>>>({});
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([]);
+  const [selectedAddressId, setSelectedAddressId] = useState<string>(NEW_ADDRESS);
+  const [saveToAccount, setSaveToAccount] = useState(false);
+  const [saveChoice, setSaveChoice] = useState<"default" | "another">("another");
   const [contactPhone, setContactPhone] = useState("");
   const [codeInput, setCodeInput] = useState("");
   const [appliedCode, setAppliedCode] = useState<{ code: string; type: "percentage" | "fixed"; value: number } | null>(null);
@@ -64,6 +83,9 @@ const CheckoutPage = () => {
 
   useEffect(() => {
     if (!user) return;
+    setContactPhone(user.phone ?? "");
+    // A prefilled baseline from the account's default (mirrored on the user row),
+    // used until the address book loads and/or if the shopper picks "new address".
     setAddress({
       full_name: user.full_name ?? "",
       phone: user.phone ?? "",
@@ -74,8 +96,32 @@ const CheckoutPage = () => {
       postal_code: user.postal_code ?? "",
       country: user.country ?? "",
     });
-    setContactPhone(user.phone ?? "");
+    // Load the address book; select the default (or first) so it's pre-picked.
+    fetchAddresses().then(list => {
+      setSavedAddresses(list);
+      const preferred = list.find(a => a.is_default) ?? list[0];
+      if (preferred) {
+        setSelectedAddressId(preferred.id);
+        setAddress(toDeliveryAddress(preferred));
+      } else {
+        setSelectedAddressId(NEW_ADDRESS);
+      }
+    }).catch(() => { /* fall back to the prefilled baseline above */ });
   }, [user?.id]);
+
+  // Pick a saved address: fill the form from it and stop offering to save it.
+  const selectSavedAddress = (a: SavedAddress) => {
+    setSelectedAddressId(a.id);
+    setAddress(toDeliveryAddress(a));
+    setSaveToAccount(false);
+  };
+
+  // Switch to a blank new address, keeping the account's name/phone as a convenience.
+  const selectNewAddress = () => {
+    setSelectedAddressId(NEW_ADDRESS);
+    setAddress({ full_name: user?.full_name ?? "", phone: user?.phone ?? "" });
+    setTouched({});
+  };
 
   const subtotalNum = cartSubtotal(items);
   const isPickup = fulfillment === "pickup";
@@ -115,12 +161,13 @@ const CheckoutPage = () => {
 
   const addressErrors: AddressErrors = fulfillment === "delivery" ? validateDeliveryAddress(address) : {};
   const addressComplete = Object.keys(addressErrors).length === 0;
-  const postalRule = postalRuleFor(address.country);
 
-  // Show a field's error once the shopper has left it, or after a submit attempt
-  // marks every field touched — never on a pristine, untouched field.
-  const fieldError = (f: AddressField): string | undefined => (touched[f] ? addressErrors[f] : undefined);
-  const setField = (f: AddressField, v: string) => setAddress(a => ({ ...a, [f]: v }));
+  // Offer to save only a complete, brand-new address that isn't already on file.
+  const isNewUnsavedAddress =
+    fulfillment === "delivery" && addressComplete &&
+    selectedAddressId === NEW_ADDRESS &&
+    !savedAddresses.some(a => sameAddress(toDeliveryAddress(a), address));
+
   const markTouched = (f: AddressField) => setTouched(t => ({ ...t, [f]: true }));
 
   // Single best "almost complete" deal — checkout is high-intent, low-real-estate,
@@ -184,6 +231,13 @@ const CheckoutPage = () => {
     setPlacing(true);
     track("begin_checkout", { total: +grandTotal.toFixed(2), items: count, fulfillment_type: fulfillment });
     try {
+      // Persist a newly entered address to the account first, if the shopper opted
+      // in. Best-effort: a save failure shouldn't block paying for the order.
+      if (isNewUnsavedAddress && saveToAccount) {
+        try {
+          await createAddress({ ...address, make_default: saveChoice === "default" });
+        } catch { /* don't block checkout on an address-book write */ }
+      }
       const { url } = await createCheckoutSession({
         fulfillment_type: fulfillment,
         shipping_address: isPickup ? undefined : address,
@@ -211,7 +265,7 @@ const CheckoutPage = () => {
 
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
-      <div className="pt-[112px]">
+      <div className="pt-[var(--nav-h,112px)]">
         <div className="max-w-6xl mx-auto px-3 sm:px-8 pt-6 sm:pt-8 pb-3">
           <h1 className="font-serif text-3xl font-bold" style={{ color: "#0F1111" }}>Checkout</h1>
           <div className="mt-3 mb-0" style={{ height: 1, background: "#DDD" }} />
@@ -287,70 +341,55 @@ const CheckoutPage = () => {
                 {fulfillment === "delivery" ? (
                   <div className="bg-white rounded-xl p-5 space-y-4" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                     <h2 className="font-serif text-lg font-bold" style={{ color: "#0F1111" }}>2. Delivery Address</h2>
-                    <div className="grid sm:grid-cols-2 gap-3">
-                      <Field error={fieldError("full_name")}>
-                        <input placeholder="Full name" value={address.full_name ?? ""} autoComplete="name"
-                          onChange={e => setField("full_name", e.target.value)} onBlur={() => markTouched("full_name")}
-                          className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={errStyle(fieldError("full_name"))} />
-                      </Field>
-                      <Field error={fieldError("phone")}>
-                        <input placeholder="Phone" value={address.phone ?? ""} inputMode="tel" autoComplete="tel"
-                          onChange={e => setField("phone", e.target.value)} onBlur={() => markTouched("phone")}
-                          className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={errStyle(fieldError("phone"))} />
-                      </Field>
-                    </div>
-                    <Field error={fieldError("address_line1")}>
-                      <input placeholder="Address line 1" value={address.address_line1 ?? ""} autoComplete="address-line1"
-                        onChange={e => setField("address_line1", e.target.value)} onBlur={() => markTouched("address_line1")}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={errStyle(fieldError("address_line1"))} />
-                    </Field>
-                    <input placeholder="Address line 2 (optional)" value={address.address_line2 ?? ""} autoComplete="address-line2"
-                      onChange={e => setField("address_line2", e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                    {/* Country first: it drives the region field and the postal-code rules below it. */}
-                    <Field error={fieldError("country")}>
-                      <select value={address.country ?? ""} autoComplete="country-name"
-                        onChange={e => setAddress(a => ({ ...a, country: e.target.value, state: usesCountyDropdown(e.target.value) === usesCountyDropdown(a.country) ? a.state : "" }))}
-                        onBlur={() => markTouched("country")}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none"
-                        style={{ ...errStyle(fieldError("country")), color: address.country ? "#111" : "#888" }}>
-                        <option value="">Select country…</option>
-                        {COUNTRIES.map(c => <option key={c.code} value={c.name} style={{ color: "#111" }}>{c.name}</option>)}
-                      </select>
-                    </Field>
-                    <div className="grid sm:grid-cols-3 gap-3">
-                      <Field error={fieldError("city")}>
-                        <input placeholder="City" value={address.city ?? ""} autoComplete="address-level2"
-                          onChange={e => setField("city", e.target.value)} onBlur={() => markTouched("city")}
-                          className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={errStyle(fieldError("city"))} />
-                      </Field>
-                      <Field error={fieldError("state")}>
-                        {usesCountyDropdown(address.country) ? (
-                          <select value={address.state ?? ""} autoComplete="address-level1"
-                            onChange={e => setField("state", e.target.value)} onBlur={() => markTouched("state")}
-                            className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none"
-                            style={{ ...errStyle(fieldError("state")), color: address.state ? "#111" : "#888" }}>
-                            <option value="">County (optional)</option>
-                            {IRISH_COUNTIES.map(c => <option key={c} value={c} style={{ color: "#111" }}>{c}</option>)}
-                          </select>
-                        ) : (
-                          <input placeholder="State / Region (optional)" value={address.state ?? ""} autoComplete="address-level1"
-                            onChange={e => setField("state", e.target.value)}
-                            className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
+
+                    {/* Saved-address picker — only when the shopper has an address book. */}
+                    {savedAddresses.length > 0 && (
+                      <div className="space-y-2">
+                        {savedAddresses.map(a => (
+                          <label key={a.id} className="flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors"
+                            style={{ border: `2px solid ${selectedAddressId === a.id ? "#e77600" : "#DDD"}`, background: selectedAddressId === a.id ? "#fff8f0" : "#fff" }}>
+                            <input type="radio" name="saved-address" checked={selectedAddressId === a.id} onChange={() => selectSavedAddress(a)} className="mt-1" />
+                            <div className="min-w-0">
+                              <p className="font-sans text-sm font-semibold" style={{ color: "#0F1111" }}>
+                                {a.full_name}
+                                {a.is_default && <span className="ml-2 font-sans text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: "#eef6ee", color: "#007600" }}>Default</span>}
+                              </p>
+                              <p className="font-sans text-xs" style={{ color: "#555" }}>{formatAddressLine(a)}</p>
+                            </div>
+                          </label>
+                        ))}
+                        <label className="flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors"
+                          style={{ border: `2px solid ${selectedAddressId === NEW_ADDRESS ? "#e77600" : "#DDD"}`, background: selectedAddressId === NEW_ADDRESS ? "#fff8f0" : "#fff" }}>
+                          <input type="radio" name="saved-address" checked={selectedAddressId === NEW_ADDRESS} onChange={selectNewAddress} />
+                          <span className="font-sans text-sm font-semibold" style={{ color: "#0F1111" }}>+ Use a new address</span>
+                        </label>
+                      </div>
+                    )}
+
+                    <AddressFields value={address} errors={addressErrors} touched={touched} onChange={setAddress} onTouch={markTouched} />
+
+                    {/* Offer to save a newly entered address to the account. Shown only
+                        when the entered address is complete and isn't already saved. */}
+                    {isNewUnsavedAddress && (
+                      <div className="p-3 rounded-lg space-y-2" style={{ background: "#f8f8f8", border: "1px solid #eee" }}>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={saveToAccount} onChange={e => setSaveToAccount(e.target.checked)} />
+                          <span className="font-sans text-sm font-semibold" style={{ color: "#0F1111" }}>Save this address to my account</span>
+                        </label>
+                        {saveToAccount && (
+                          <div className="pl-6 space-y-1.5">
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input type="radio" name="save-choice" checked={saveChoice === "another"} onChange={() => setSaveChoice("another")} />
+                              <span className="font-sans text-sm" style={{ color: "#333" }}>Save as another address</span>
+                            </label>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input type="radio" name="save-choice" checked={saveChoice === "default"} onChange={() => setSaveChoice("default")} />
+                              <span className="font-sans text-sm" style={{ color: "#333" }}>Save and set as my default</span>
+                            </label>
+                          </div>
                         )}
-                      </Field>
-                      <Field error={fieldError("postal_code")}>
-                        <input placeholder={postalRule.label} value={address.postal_code ?? ""} autoComplete="postal-code"
-                          onChange={e => setField("postal_code", e.target.value)}
-                          onBlur={() => {
-                            markTouched("postal_code");
-                            // Tidy a valid Eircode into its canonical "D18 K7W2" form.
-                            if (usesCountyDropdown(address.country) && address.postal_code)
-                              setField("postal_code", formatEircode(address.postal_code));
-                          }}
-                          className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none uppercase" style={errStyle(fieldError("postal_code"))} />
-                      </Field>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="bg-white rounded-xl p-5 space-y-3" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>

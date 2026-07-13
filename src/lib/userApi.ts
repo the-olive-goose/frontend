@@ -181,6 +181,81 @@ export const updateProfile = async (update: ProfileUpdate): Promise<AppUser> => 
   return data;
 };
 
+// ── Address book ────────────────────────────────────────────────────────────────
+
+// A saved delivery address. Shares the shipping fields with DeliveryAddress, plus
+// its id and whether it's the account's default. The users-row single address is
+// kept mirrored to whichever entry is the default (see backend syncDefaultAddressToUser).
+export interface SavedAddress {
+  id: string;
+  full_name: string;
+  phone: string;
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  country: string;
+  is_default: boolean;
+  created_at: string;
+}
+
+// Fields the client sends when creating/editing an address. make_default asks the
+// backend to promote it to the default (the first address a user saves always is).
+export type AddressInput = DeliveryAddress & { make_default?: boolean };
+
+export const fetchAddresses = async (): Promise<SavedAddress[]> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/user/addresses`, { credentials: CREDENTIALS });
+  if (!res.ok) return [];
+  return res.json();
+};
+
+export const createAddress = async (input: AddressInput): Promise<SavedAddress> => {
+  const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/addresses`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    credentials: CREDENTIALS,
+    body: JSON.stringify(input),
+  }));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Could not save address');
+  return data;
+};
+
+export const updateAddress = async (id: string, input: AddressInput): Promise<SavedAddress> => {
+  const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/addresses/${id}`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    credentials: CREDENTIALS,
+    body: JSON.stringify(input),
+  }));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Could not update address');
+  return data;
+};
+
+export const setDefaultAddress = async (id: string): Promise<void> => {
+  const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/addresses/${id}/default`, {
+    method: 'POST',
+    credentials: CREDENTIALS,
+  }));
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not set default address');
+  }
+};
+
+export const deleteAddress = async (id: string): Promise<void> => {
+  const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/addresses/${id}`, {
+    method: 'DELETE',
+    credentials: CREDENTIALS,
+  }));
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not delete address');
+  }
+};
+
 export const changePassword = async (currentPassword: string, newPassword: string): Promise<void> => {
   const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/me/password`, {
     method: 'PUT',

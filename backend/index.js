@@ -1191,6 +1191,164 @@ app.put('/api/user/me', requireUserAuth, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// ADDRESS BOOK — many delivery addresses per user (see user_addresses table)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Mirror the legacy single-address columns on the users row to whichever address
+// is currently the default, so checkout prefill and GET /api/user/me keep reading
+// one canonical "default address" without knowing this table exists. Only the six
+// address columns are synced — the account's full_name/phone identity is left alone
+// (an address may carry a different recipient name/phone than the account holder).
+async function syncDefaultAddressToUser(userId) {
+  const { rows } = await pool.query(
+    `SELECT address_line1, address_line2, city, state, postal_code, country
+     FROM user_addresses WHERE user_id = $1 AND is_default = true LIMIT 1`,
+    [userId]
+  );
+  const a = rows[0] || { address_line1: '', address_line2: '', city: '', state: '', postal_code: '', country: '' };
+  await pool.query(
+    `UPDATE users SET
+       address_line1 = $1, address_line2 = $2, city = $3,
+       state = $4, postal_code = $5, country = $6
+     WHERE id = $7`,
+    [a.address_line1, a.address_line2, a.city, a.state, a.postal_code, a.country, userId]
+  );
+}
+
+// Required-field gate for a saved address. Mirrors the frontend's required checks
+// (addressValidation.ts) so an address can't be persisted with essentials missing;
+// the per-country postal-format rules stay a frontend concern.
+function validateAddressBody(b) {
+  if (!b.full_name || !b.full_name.trim())         return "Enter the recipient's full name.";
+  if (!b.phone || !b.phone.trim())                 return 'Enter a contact phone number.';
+  if (!b.address_line1 || !b.address_line1.trim()) return 'Enter your street address.';
+  if (!b.city || !b.city.trim())                   return 'Enter your city or town.';
+  if (!b.country || !b.country.trim())             return 'Select a country.';
+  if (!b.postal_code || !b.postal_code.trim())     return 'Enter your postal code.';
+  return null;
+}
+
+const ADDRESS_COLS =
+  'id, full_name, phone, address_line1, address_line2, city, state, postal_code, country, is_default, created_at';
+
+// ── GET /api/user/addresses — list the address book (default first) ─────────────
+app.get('/api/user/addresses', requireUserAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT ${ADDRESS_COLS} FROM user_addresses WHERE user_id = $1
+       ORDER BY is_default DESC, created_at ASC`,
+      [req.user.userId]
+    );
+    res.json(rows);
+  } catch (err) {
+    sendServerError(res, err);
+  }
+});
+
+// ── POST /api/user/addresses — add an address ───────────────────────────────────
+app.post('/api/user/addresses', requireUserAuth, async (req, res) => {
+  const b = req.body || {};
+  const err = validateAddressBody(b);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    // The very first address a user saves is always their default; after that,
+    // only make it default when explicitly asked (make_default).
+    const { rows: countRows } = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM user_addresses WHERE user_id = $1', [req.user.userId]
+    );
+    const makeDefault = b.make_default === true || countRows[0].n === 0;
+    // Clear the old default first — the partial unique index allows only one.
+    if (makeDefault)
+      await pool.query('UPDATE user_addresses SET is_default = false WHERE user_id = $1', [req.user.userId]);
+
+    const { rows } = await pool.query(
+      `INSERT INTO user_addresses
+        (user_id, full_name, phone, address_line1, address_line2, city, state, postal_code, country, is_default)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING ${ADDRESS_COLS}`,
+      [req.user.userId, b.full_name, b.phone, b.address_line1, b.address_line2 || '',
+       b.city, b.state || '', b.postal_code, b.country, makeDefault]
+    );
+    if (makeDefault) await syncDefaultAddressToUser(req.user.userId);
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    sendServerError(res, err);
+  }
+});
+
+// ── PUT /api/user/addresses/:id — edit an address ───────────────────────────────
+app.put('/api/user/addresses/:id', requireUserAuth, async (req, res) => {
+  const b = req.body || {};
+  const err = validateAddressBody(b);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const { rows: owned } = await pool.query(
+      'SELECT is_default FROM user_addresses WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.user.userId]
+    );
+    if (!owned.length) return res.status(404).json({ error: 'Address not found' });
+
+    // Editing keeps whatever default status it had; passing make_default promotes it.
+    // (You clear a default by making a different address the default, not by editing.)
+    const makeDefault = b.make_default === true || owned[0].is_default;
+    if (makeDefault)
+      await pool.query('UPDATE user_addresses SET is_default = false WHERE user_id = $1', [req.user.userId]);
+
+    const { rows } = await pool.query(
+      `UPDATE user_addresses SET
+         full_name=$1, phone=$2, address_line1=$3, address_line2=$4,
+         city=$5, state=$6, postal_code=$7, country=$8, is_default=$9
+       WHERE id=$10 AND user_id=$11
+       RETURNING ${ADDRESS_COLS}`,
+      [b.full_name, b.phone, b.address_line1, b.address_line2 || '', b.city,
+       b.state || '', b.postal_code, b.country, makeDefault, req.params.id, req.user.userId]
+    );
+    await syncDefaultAddressToUser(req.user.userId);
+    res.json(rows[0]);
+  } catch (err) {
+    sendServerError(res, err);
+  }
+});
+
+// ── POST /api/user/addresses/:id/default — make an address the default ──────────
+app.post('/api/user/addresses/:id/default', requireUserAuth, async (req, res) => {
+  try {
+    const { rows: owned } = await pool.query(
+      'SELECT id FROM user_addresses WHERE id = $1 AND user_id = $2', [req.params.id, req.user.userId]
+    );
+    if (!owned.length) return res.status(404).json({ error: 'Address not found' });
+    await pool.query('UPDATE user_addresses SET is_default = false WHERE user_id = $1', [req.user.userId]);
+    await pool.query('UPDATE user_addresses SET is_default = true WHERE id = $1', [req.params.id]);
+    await syncDefaultAddressToUser(req.user.userId);
+    res.json({ success: true });
+  } catch (err) {
+    sendServerError(res, err);
+  }
+});
+
+// ── DELETE /api/user/addresses/:id — remove an address ──────────────────────────
+app.delete('/api/user/addresses/:id', requireUserAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'DELETE FROM user_addresses WHERE id = $1 AND user_id = $2 RETURNING is_default',
+      [req.params.id, req.user.userId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Address not found' });
+    // If the default was removed, promote the most recently added remaining address.
+    if (rows[0].is_default)
+      await pool.query(
+        `UPDATE user_addresses SET is_default = true
+         WHERE id = (SELECT id FROM user_addresses WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1)`,
+        [req.user.userId]
+      );
+    await syncDefaultAddressToUser(req.user.userId);
+    res.json({ success: true });
+  } catch (err) {
+    sendServerError(res, err);
+  }
+});
+
 // ── PUT /api/user/me/password — change password (email accounts only) ───────
 app.put('/api/user/me/password', requireUserAuth, authLimiter, async (req, res) => {
   const { current_password, new_password } = req.body;
@@ -3449,6 +3607,38 @@ async function initDb() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS state          TEXT DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS postal_code    TEXT DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS country        TEXT DEFAULT '';
+
+    -- Address book: many delivery addresses per user. The single address stored on
+    -- the users row above is kept in sync with whichever entry here is is_default
+    -- (see syncDefaultAddressToUser), so checkout prefill and GET /api/user/me keep
+    -- reading one canonical "default address" without knowing about this table.
+    CREATE TABLE IF NOT EXISTS user_addresses (
+      id            UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      user_id       UUID        REFERENCES users(id) ON DELETE CASCADE,
+      full_name     TEXT        DEFAULT '',
+      phone         TEXT        DEFAULT '',
+      address_line1 TEXT        DEFAULT '',
+      address_line2 TEXT        DEFAULT '',
+      city          TEXT        DEFAULT '',
+      state         TEXT        DEFAULT '',
+      postal_code   TEXT        DEFAULT '',
+      country       TEXT        DEFAULT '',
+      is_default    BOOLEAN     NOT NULL DEFAULT false,
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS user_addresses_user_idx ON user_addresses(user_id);
+    -- At most one default per user, enforced at the DB level.
+    CREATE UNIQUE INDEX IF NOT EXISTS user_addresses_one_default_uidx
+      ON user_addresses(user_id) WHERE is_default;
+
+    -- One-time backfill: seed the address book from the legacy single address on
+    -- each users row, so existing customers keep their saved address as the default.
+    INSERT INTO user_addresses
+      (user_id, full_name, phone, address_line1, address_line2, city, state, postal_code, country, is_default)
+    SELECT id, full_name, phone, address_line1, address_line2, city, state, postal_code, country, true
+    FROM users u
+    WHERE COALESCE(u.address_line1, '') <> ''
+      AND NOT EXISTS (SELECT 1 FROM user_addresses a WHERE a.user_id = u.id);
 
     CREATE TABLE IF NOT EXISTS email_otps (
       email      TEXT        NOT NULL,

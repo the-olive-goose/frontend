@@ -2,43 +2,84 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import PageSubNav, { ACCOUNT_NAV } from "@/components/PageSubNav";
 import FooterSection from "@/components/sections/FooterSection";
+import AddressFields from "@/components/AddressFields";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
+import {
+  fetchAddresses, createAddress, updateAddress, deleteAddress, setDefaultAddress,
+  type SavedAddress, type DeliveryAddress,
+} from "@/lib/userApi";
+import { validateDeliveryAddress, type AddressField } from "@/lib/addressValidation";
 
-const inputStyle = { border: "1px solid #ccc", background: "#fff", color: "#111" } as const;
+// One-line summary of a saved address for the list rows.
+const formatAddressLine = (a: SavedAddress): string =>
+  [a.address_line1, a.address_line2, a.city, a.state, a.postal_code, a.country]
+    .filter(Boolean).join(", ");
+
+const ALL_FIELDS: AddressField[] = ["full_name", "phone", "address_line1", "city", "state", "postal_code", "country"];
 
 const AddressesPage = () => {
-  const { user, loading: authLoading, updateProfile, openAuthModal } = useAuth();
-  const [form, setForm] = useState({
-    address_line1: "", address_line2: "", city: "", state: "", postal_code: "", country: "",
-  });
+  const { user, loading: authLoading, openAuthModal } = useAuth();
+  const [addresses, setAddresses] = useState<SavedAddress[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Editing state: `editingId` is null (list view), "new" (adding), or an id (editing).
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<DeliveryAddress>({});
+  const [touched, setTouched] = useState<Partial<Record<AddressField, boolean>>>({});
+  const [makeDefault, setMakeDefault] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null); // row doing set-default/delete
+
+  const refresh = () =>
+    fetchAddresses().then(setAddresses).finally(() => setLoading(false));
 
   useEffect(() => {
-    if (!user) return;
-    setForm({
-      address_line1: user.address_line1 ?? "",
-      address_line2: user.address_line2 ?? "",
-      city: user.city ?? "",
-      state: user.state ?? "",
-      postal_code: user.postal_code ?? "",
-      country: user.country ?? "",
-    });
+    if (!user) { setLoading(false); return; }
+    setLoading(true);
+    refresh();
   }, [user?.id]);
 
-  const handleChange = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm(f => ({ ...f, [key]: e.target.value }));
+  const errors = validateDeliveryAddress(form);
+
+  const openAdd = () => {
+    setEditingId("new");
+    setForm({ full_name: user?.full_name ?? "", phone: user?.phone ?? "" });
+    setTouched({});
+    setMakeDefault(addresses.length === 0); // first address is always the default
+    setError("");
+  };
+
+  const openEdit = (a: SavedAddress) => {
+    setEditingId(a.id);
+    setForm({
+      full_name: a.full_name, phone: a.phone,
+      address_line1: a.address_line1, address_line2: a.address_line2,
+      city: a.city, state: a.state, postal_code: a.postal_code, country: a.country,
+    });
+    setTouched({});
+    setMakeDefault(a.is_default);
+    setError("");
+  };
+
+  const cancelEdit = () => { setEditingId(null); setError(""); };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
     setError("");
-    setSaved(false);
+    // Block save on any validation error — reveal every field's message at once.
+    if (Object.keys(errors).length > 0) {
+      setTouched(Object.fromEntries(ALL_FIELDS.map(f => [f, true])));
+      setError(Object.values(errors)[0] ?? "Please complete the address.");
+      return;
+    }
+    setSaving(true);
     try {
-      await updateProfile(form);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
+      const payload = { ...form, make_default: makeDefault };
+      if (editingId === "new") await createAddress(payload);
+      else if (editingId) await updateAddress(editingId, payload);
+      await refresh();
+      setEditingId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save address");
     } finally {
@@ -46,9 +87,27 @@ const AddressesPage = () => {
     }
   };
 
+  const handleSetDefault = async (id: string) => {
+    setBusyId(id);
+    try { await setDefaultAddress(id); await refresh(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Could not set default"); }
+    finally { setBusyId(null); }
+  };
+
+  const handleDelete = async (a: SavedAddress) => {
+    if (!window.confirm(`Delete this address?\n\n${a.full_name} — ${formatAddressLine(a)}`)) return;
+    setBusyId(a.id);
+    try { await deleteAddress(a.id); await refresh(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Could not delete address"); }
+    finally { setBusyId(null); }
+  };
+
+  const btnPrimary = { background: "#f0c14b", border: "1px solid #a88734", color: "#111" } as const;
+  const btnGhost = { background: "#fff", border: "1px solid #ccc", color: "#111" } as const;
+
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
-      <div className="pt-[112px]">
+      <div className="pt-[var(--nav-h,112px)]">
         <div className="max-w-3xl mx-auto px-3 sm:px-8 pt-6 sm:pt-8 pb-3">
           <h1 className="font-serif text-3xl font-bold" style={{ color: "#0F1111" }}>Your Addresses</h1>
           <div className="mt-3 mb-5" style={{ height: 1, background: "#DDD" }} />
@@ -62,45 +121,113 @@ const AddressesPage = () => {
               <h2 className="font-serif text-xl font-bold mb-2" style={{ color: "#0F1111" }}>Sign in to manage your addresses</h2>
               <button onClick={openAuthModal}
                 className="font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95"
-                style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
+                style={btnPrimary}>
                 Sign in
               </button>
             </div>
           )}
 
           {user && (
-            <form onSubmit={handleSave} className="space-y-4">
-              <div className="bg-white rounded-xl p-6" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-                <h2 className="font-serif text-lg font-bold mb-4" style={{ color: "#0F1111" }}>Default Shipping Address</h2>
-                <div className="grid gap-4">
-                  <input placeholder="Address line 1" value={form.address_line1} onChange={handleChange("address_line1")}
-                    className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                  <input placeholder="Address line 2 (optional)" value={form.address_line2} onChange={handleChange("address_line2")}
-                    className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                  <div className="grid sm:grid-cols-3 gap-4">
-                    <input placeholder="City" value={form.city} onChange={handleChange("city")}
-                      className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                    <input placeholder="State / Region" value={form.state} onChange={handleChange("state")}
-                      className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                    <input placeholder="Postal code" value={form.postal_code} onChange={handleChange("postal_code")}
-                      className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                  </div>
-                  <input placeholder="Country" value={form.country} onChange={handleChange("country")}
-                    className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
-                </div>
-              </div>
+            <div className="space-y-4">
+              {loading ? (
+                <p className="font-sans text-sm" style={{ color: "#555" }}>Loading your addresses…</p>
+              ) : (
+                <>
+                  {/* Saved address cards */}
+                  {addresses.length === 0 && editingId === null && (
+                    <div className="bg-white rounded-xl p-8 text-center" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                      <p className="font-sans text-sm mb-4" style={{ color: "#555" }}>You don't have any saved addresses yet.</p>
+                      <button onClick={openAdd}
+                        className="font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95"
+                        style={btnPrimary}>
+                        Add an address
+                      </button>
+                    </div>
+                  )}
 
-              {error && <p className="font-sans text-sm" style={{ color: "#C7511F" }}>{error}</p>}
+                  {addresses.map(a => (
+                    <div key={a.id} className="bg-white rounded-xl p-5" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-sans text-sm font-bold" style={{ color: "#0F1111" }}>
+                            {a.full_name || "Address"}
+                            {a.is_default && (
+                              <span className="ml-2 font-sans text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: "#eef6ee", color: "#007600" }}>Default</span>
+                            )}
+                          </p>
+                          <p className="font-sans text-sm mt-1" style={{ color: "#555" }}>{formatAddressLine(a)}</p>
+                          {a.phone && <p className="font-sans text-xs mt-0.5" style={{ color: "#888" }}>{a.phone}</p>}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 mt-4">
+                        {!a.is_default && (
+                          <button onClick={() => handleSetDefault(a.id)} disabled={busyId === a.id}
+                            className="font-sans text-xs font-semibold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
+                            style={btnGhost}>
+                            Set as default
+                          </button>
+                        )}
+                        <button onClick={() => openEdit(a)}
+                          className="font-sans text-xs font-semibold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95"
+                          style={btnGhost}>
+                          Edit
+                        </button>
+                        <button onClick={() => handleDelete(a)} disabled={busyId === a.id}
+                          className="font-sans text-xs font-semibold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
+                          style={{ background: "#fff", border: "1px solid #e3b7ad", color: "#C7511F" }}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
 
-              <div className="flex items-center gap-4">
-                <button type="submit" disabled={saving}
-                  className="font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
-                  style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
-                  {saving ? "Saving…" : "Save address"}
-                </button>
-                {saved && <span className="font-sans text-sm font-semibold" style={{ color: "#007600" }}>Saved ✓</span>}
-              </div>
-            </form>
+                  {/* Add / edit form */}
+                  {editingId !== null && (
+                    <form onSubmit={handleSave} className="bg-white rounded-xl p-6 space-y-4" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                      <h2 className="font-serif text-lg font-bold" style={{ color: "#0F1111" }}>
+                        {editingId === "new" ? "Add a new address" : "Edit address"}
+                      </h2>
+
+                      <AddressFields value={form} errors={errors} touched={touched}
+                        onChange={setForm} onTouch={f => setTouched(t => ({ ...t, [f]: true }))} />
+
+                      <label className="flex items-center gap-2 cursor-pointer" style={{ opacity: makeDefault && addresses.length === 0 ? 0.6 : 1 }}>
+                        <input type="checkbox" checked={makeDefault}
+                          disabled={addresses.length === 0}
+                          onChange={e => setMakeDefault(e.target.checked)} />
+                        <span className="font-sans text-sm" style={{ color: "#333" }}>
+                          Set as my default shipping address{addresses.length === 0 ? " (your first address)" : ""}
+                        </span>
+                      </label>
+
+                      {error && <p className="font-sans text-sm" style={{ color: "#C7511F" }}>{error}</p>}
+
+                      <div className="flex items-center gap-3">
+                        <button type="submit" disabled={saving}
+                          className="font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
+                          style={btnPrimary}>
+                          {saving ? "Saving…" : "Save address"}
+                        </button>
+                        <button type="button" onClick={cancelEdit}
+                          className="font-sans text-sm font-semibold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95"
+                          style={btnGhost}>
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {/* Add-another button (hidden while the form is open or the empty-state card shows it) */}
+                  {editingId === null && addresses.length > 0 && (
+                    <button onClick={openAdd}
+                      className="font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95"
+                      style={btnPrimary}>
+                      + Add another address
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
           )}
         </div>
       </div>
