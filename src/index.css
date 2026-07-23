@@ -1,4 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Permanent+Marker&family=Fredoka:wght@400;500;600;700&display=swap');
+/* Fonts are loaded via <link> in index.html (preconnect + non-blocking) —
+   keep them out of CSS @import, which serialises the request chain. */
 
 @tailwind base;
 @tailwind components;

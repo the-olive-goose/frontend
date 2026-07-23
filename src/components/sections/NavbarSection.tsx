@@ -225,7 +225,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
                   value={searchQuery}
                   onChange={e => { setSearchQuery(e.target.value); setSearchOpen(true); }}
                   onFocus={() => setSearchOpen(true)}
-                  placeholder="Search fragrances..."
+                  placeholder="Search candles..."
                   className="flex-1 px-4 py-2 font-sans text-sm outline-none"
                   style={{ background: "rgba(255,255,255,0.96)", color: "#111", minWidth: 0 }}
                 />
@@ -413,7 +413,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
                 <form onSubmit={handleSearch} className="flex mb-4">
                   <div className="flex w-full rounded-lg overflow-hidden" style={{ border: "1.5px solid var(--color-gold)" }}>
                     <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                      placeholder="Search fragrances..."
+                      placeholder="Search candles..."
                       className="flex-1 px-3 py-2 font-sans text-sm outline-none"
                       style={{ background: "rgba(255,255,255,0.96)", color: "#111" }} />
                     <button type="submit" className="px-3 flex items-center" style={{ background: "var(--color-gold)" }}>

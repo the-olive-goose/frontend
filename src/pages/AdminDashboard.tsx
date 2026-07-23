@@ -64,6 +64,7 @@ import {
   type WelcomeClubContent,
   type BrandStoryContent,
   type ProductsContent,
+  type ProductPageContent,
   type CandleCareContent,
   type VideosContent,
   type TestimonialsContent,
@@ -81,6 +82,7 @@ import {
   type NavLink,
   type SocialLink,
 } from "@/lib/defaults";
+import { productSlug } from "@/lib/products";
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
 import AnalyticsPanel from "@/components/admin/AnalyticsPanel";
@@ -471,6 +473,112 @@ const BrandStoryEditor = ({
   </div>
 );
 
+// Everything that only shows on the product page (/products/:slug). Tucked into
+// a collapsed block so the product list stays scannable.
+const ProductPageFields = ({
+  product,
+  allProducts,
+  onChange,
+}: {
+  product: Product;
+  allProducts: Product[];
+  onChange: (p: Product) => void;
+}) => {
+  const gallery    = product.gallery_urls ?? [];
+  const paragraphs = product.detail_paragraphs ?? [];
+  const picks      = product.recommended_ids ?? [];
+
+  const setList = (key: "gallery_urls" | "detail_paragraphs", list: string[]) =>
+    onChange({ ...product, [key]: list });
+
+  return (
+    <details className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+      <summary className="cursor-pointer select-none font-sans text-sm font-medium text-foreground">
+        Product page content
+      </summary>
+
+      <div className="space-y-4 pt-3">
+        <Field
+          label="Page URL"
+          hint={`Leave blank to use the product name. This product opens at /products/${productSlug(product)}`}
+        >
+          <Input
+            placeholder={productSlug(product)}
+            value={product.slug ?? ""}
+            onChange={(e) => onChange({ ...product, slug: e.target.value })}
+          />
+        </Field>
+
+        {/* Gallery */}
+        <div className="space-y-2">
+          <label className="block text-sm font-sans font-medium text-foreground">Extra gallery images</label>
+          <p className="text-xs text-muted-foreground">
+            The main Image URL above is always the first shot. Add more to show the thumbnail strip.
+          </p>
+          {gallery.map((url, gi) => (
+            <div key={gi} className="flex gap-2">
+              <Input
+                placeholder="https://…"
+                value={url}
+                onChange={(e) => setList("gallery_urls", gallery.map((u, j) => (j === gi ? e.target.value : u)))}
+              />
+              <RemoveButton onClick={() => setList("gallery_urls", gallery.filter((_, j) => j !== gi))} />
+            </div>
+          ))}
+          <AddButton label="Add image" onClick={() => setList("gallery_urls", [...gallery, ""])} />
+        </div>
+
+        {/* Long-form copy */}
+        <div className="space-y-2">
+          <label className="block text-sm font-sans font-medium text-foreground">Description paragraphs</label>
+          <p className="text-xs text-muted-foreground">
+            Shown under the buy box. Leave empty to fall back to the short description above.
+          </p>
+          {paragraphs.map((text, pi) => (
+            <div key={pi} className="flex gap-2">
+              <Textarea
+                rows={3}
+                value={text}
+                onChange={(e) => setList("detail_paragraphs", paragraphs.map((t, j) => (j === pi ? e.target.value : t)))}
+              />
+              <RemoveButton onClick={() => setList("detail_paragraphs", paragraphs.filter((_, j) => j !== pi))} />
+            </div>
+          ))}
+          <AddButton label="Add paragraph" onClick={() => setList("detail_paragraphs", [...paragraphs, ""])} />
+        </div>
+
+        {/* Recommendations */}
+        <div className="space-y-2">
+          <label className="block text-sm font-sans font-medium text-foreground">"You may also like" picks</label>
+          <p className="text-xs text-muted-foreground">
+            Optional. Leave all unticked and the page recommends automatically from the rest of the
+            catalogue (same category first, then products bundled with this one).
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {allProducts.filter(p => p.id !== product.id).map(other => (
+              <label key={other.id} className="flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={picks.includes(other.id)}
+                  onChange={(e) =>
+                    onChange({
+                      ...product,
+                      recommended_ids: e.target.checked
+                        ? [...picks, other.id]
+                        : picks.filter(id => id !== other.id),
+                    })
+                  }
+                />
+                {other.name}
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+    </details>
+  );
+};
+
 const ProductsEditor = ({
   data,
   onChange,
@@ -549,6 +657,16 @@ const ProductsEditor = ({
                 onChange({ ...data, items });
               }} />
           </Field>
+
+          <ProductPageFields
+            product={product}
+            allProducts={data.items}
+            onChange={(next) => {
+              const items = [...data.items];
+              items[i] = next;
+              onChange({ ...data, items });
+            }}
+          />
         </Card>
       ))}
       <AddButton
@@ -566,6 +684,78 @@ const ProductsEditor = ({
         }}
       />
     </div>
+
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const ProductPageEditor = ({
+  data, onChange, onSave, saving,
+}: { data: ProductPageContent; onChange: (d: ProductPageContent) => void; onSave: () => void; saving: boolean }) => (
+  <div className="space-y-6">
+    <SectionHeading
+      title="Product Page"
+      desc="Shared copy for every product page (/products/…). Per-product images, description paragraphs and recommendation picks live under each product in the Products section."
+    />
+
+    <Field label="Quantity label" hint={`Above the quantity picker — e.g. "How many would you like?"`}>
+      <Input value={data.quantity_label} onChange={(e) => onChange({ ...data, quantity_label: e.target.value })} />
+    </Field>
+
+    <Field
+      label="Bundle section label"
+      hint="Heading over the bundle picker. The bundles themselves come straight from Today's Deals — any active bundle containing the product shows up here automatically."
+    >
+      <Input value={data.bundle_label} onChange={(e) => onChange({ ...data, bundle_label: e.target.value })} />
+    </Field>
+
+    <div className="grid grid-cols-2 gap-3">
+      <Field label={`"You may also like" headline`}>
+        <Input
+          value={data.recommendations_headline}
+          onChange={(e) => onChange({ ...data, recommendations_headline: e.target.value })}
+        />
+      </Field>
+      <Field label="How many to show" hint="Set 0 to hide the row entirely.">
+        <Input
+          type="number" min={0} max={12}
+          value={data.recommendations_count}
+          onChange={(e) => onChange({ ...data, recommendations_count: Number(e.target.value) || 0 })}
+        />
+      </Field>
+    </div>
+
+    <SectionHeading
+      title="Join the Olive Goose Circle"
+      desc="Signup block at the bottom of every product page. Emails land in the same Subscribers list as the newsletter and signup popup — including the welcome discount code, when that's switched on."
+    />
+
+    <label className="flex items-center gap-2 text-sm text-foreground">
+      <input
+        type="checkbox"
+        checked={data.circle.enabled}
+        onChange={(e) => onChange({ ...data, circle: { ...data.circle, enabled: e.target.checked } })}
+      />
+      Show the Circle signup on product pages
+    </label>
+
+    <Field label="Headline">
+      <Input value={data.circle.headline} onChange={(e) => onChange({ ...data, circle: { ...data.circle, headline: e.target.value } })} />
+    </Field>
+    <Field label="Subtext">
+      <Textarea rows={2} value={data.circle.subtext} onChange={(e) => onChange({ ...data, circle: { ...data.circle, subtext: e.target.value } })} />
+    </Field>
+    <div className="grid grid-cols-2 gap-3">
+      <Field label="Input placeholder">
+        <Input value={data.circle.placeholder} onChange={(e) => onChange({ ...data, circle: { ...data.circle, placeholder: e.target.value } })} />
+      </Field>
+      <Field label="Button text">
+        <Input value={data.circle.cta_text} onChange={(e) => onChange({ ...data, circle: { ...data.circle, cta_text: e.target.value } })} />
+      </Field>
+    </div>
+    <Field label="Success message">
+      <Input value={data.circle.success_text} onChange={(e) => onChange({ ...data, circle: { ...data.circle, success_text: e.target.value } })} />
+    </Field>
 
     <SaveButton onClick={onSave} saving={saving} />
   </div>
@@ -2425,6 +2615,7 @@ const DECISION_LABEL: Record<AdminDecision["type"], string> = {
   fraud_review: "Review this high-value order",
   stuck_order_followup: "Send a check-in email?",
   back_in_stock_notify: "Notify subscribers it's back in stock?",
+  oversell_alert: "Oversold — review fulfillment",
 };
 
 const DecisionsPanel = ({ decisions, onResolved }: { decisions: AdminDecision[]; onResolved: () => void }) => {
@@ -3226,18 +3417,59 @@ const ShopEditor = ({
         {/* Section visibility toggles */}
         <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
           <p className="font-sans text-xs font-semibold text-foreground">Homepage visibility</p>
-          <label className="flex items-center justify-between gap-3 font-sans text-sm text-foreground">
-            <span>
-              Show <strong>New Arrivals</strong> section
-              <span className="block text-xs text-muted-foreground">The dedicated New Arrivals cards above the scrapbook.</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={scrapSettings.showNewArrivals}
-              onChange={e => setScrapSettings(s => ({ ...s, showNewArrivals: e.target.checked }))}
-              className="accent-primary shrink-0"
-            />
-          </label>
+
+          {/* New Arrivals — checkbox + category dropdown grouped as one control */}
+          <div className="space-y-2">
+            <label className="flex items-center justify-between gap-3 font-sans text-sm text-foreground">
+              <span>
+                <strong>Featured category</strong> section
+                <span className="block text-xs text-muted-foreground">Highlights one category as a dedicated card strip above the scrapbook. Turn on and pick which category below.</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={scrapSettings.showNewArrivals}
+                onChange={e => setScrapSettings(s => ({ ...s, showNewArrivals: e.target.checked }))}
+                className="accent-primary shrink-0"
+              />
+            </label>
+
+            {/* Category picker — nested under the toggle so the relationship is clear */}
+            <div className={`pl-1 space-y-1 ${scrapSettings.showNewArrivals ? "" : "opacity-50 pointer-events-none"}`}>
+              <label className="block font-sans text-xs font-medium text-foreground">Which category to feature</label>
+              <select
+                className="w-full px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed"
+                disabled={!scrapSettings.showNewArrivals}
+                value={scrapSettings.newArrivalsCategoryId}
+                onChange={e => setScrapSettings(s => ({ ...s, newArrivalsCategoryId: e.target.value }))}
+              >
+                <option value="">— select a category —</option>
+                {cats.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}{c.is_active ? "" : " (hidden)"}</option>
+                ))}
+              </select>
+              {/* Warn when the toggle is on but the section still won't render */}
+              {scrapSettings.showNewArrivals && (() => {
+                const picked = cats.find(c => c.id === scrapSettings.newArrivalsCategoryId);
+                if (!scrapSettings.newArrivalsCategoryId || !picked) {
+                  return (
+                    <p className="font-sans text-xs text-amber-700">
+                      ⚠️ Pick a category above, or the New Arrivals section won't appear on the homepage
+                      {scrapSettings.newArrivalsCategoryId && !picked ? " (the previously selected category was deleted)" : ""}.
+                    </p>
+                  );
+                }
+                if (!picked.is_active) {
+                  return (
+                    <p className="font-sans text-xs text-amber-700">
+                      ⚠️ “{picked.name}” is hidden — activate the category below, or the section won't appear on the homepage.
+                    </p>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+          </div>
+
           <label className="flex items-center justify-between gap-3 font-sans text-sm text-foreground">
             <span>
               Show <strong>Shop By Category</strong> section
@@ -3251,22 +3483,6 @@ const ShopEditor = ({
             />
           </label>
         </div>
-
-        <Field
-          label="New Arrivals category"
-          hint="This category will appear as a dedicated section above the scrapbook on the homepage."
-        >
-          <select
-            className="w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
-            value={scrapSettings.newArrivalsCategoryId}
-            onChange={e => setScrapSettings(s => ({ ...s, newArrivalsCategoryId: e.target.value }))}
-          >
-            <option value="">— none (hide the section) —</option>
-            {cats.map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </Field>
 
         <Field
           label={`Page flip duration: ${scrapSettings.flipDuration.toFixed(2)}s`}
@@ -3592,6 +3808,7 @@ type TabId =
   | "welcomeClub"
   | "brandStory"
   | "products"
+  | "productPage"
   | "candleCare"
   | "videos"
   | "testimonials"
@@ -3644,6 +3861,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "🛍️",
     items: [
       { id: "shopCategories", label: "Shop By Category", icon: "📖" },
+      { id: "productPage",    label: "Product Page",     icon: "🕯️" },
       { id: "deals",          label: "Today's Deals",    icon: "🏷️" },
     ],
   },
@@ -3712,7 +3930,7 @@ const AdminDashboard = () => {
 
   const loadData = useCallback(async () => {
     // ── Content sections (getContent never throws — falls back to defaults) ──
-    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy] =
+    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, productPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy] =
       await Promise.all([
         getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
         getContent("navbar",          DEFAULT_CONTENT.navbar),
@@ -3721,6 +3939,7 @@ const AdminDashboard = () => {
         getContent("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
         getContent("brandStory",      DEFAULT_CONTENT.brandStory),
         getContent("products",        DEFAULT_CONTENT.products),
+        getContent("productPage",     DEFAULT_CONTENT.productPage),
         getContent("candleCare",      DEFAULT_CONTENT.candleCare),
         getContent("videos",          DEFAULT_CONTENT.videos),
         getContent("testimonials",    DEFAULT_CONTENT.testimonials),
@@ -3735,7 +3954,7 @@ const AdminDashboard = () => {
         getContent("termsOfService",  DEFAULT_CONTENT.termsOfService),
         getContent("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
       ]);
-    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy });
+    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, productPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy });
 
     // ── Shop categories ───────────────────────────────────────────────────────
     try {
@@ -3904,6 +4123,7 @@ const AdminDashboard = () => {
             {activeTab === "hero"         && <HeroEditor         data={content.hero}         onChange={update("hero")}         onSave={() => handleSave("hero")}         saving={saving} />}
             {activeTab === "brandStory"   && <BrandStoryEditor   data={content.brandStory}   onChange={update("brandStory")}   onSave={() => handleSave("brandStory")}   saving={saving} />}
             {activeTab === "products"     && <ProductsEditor     data={content.products}     onChange={update("products")}     onSave={() => handleSave("products")}     saving={saving} />}
+            {activeTab === "productPage"  && <ProductPageEditor  data={content.productPage}  onChange={update("productPage")}  onSave={() => handleSave("productPage")}  saving={saving} />}
             {activeTab === "candleCare"   && <CandleCareEditor   data={content.candleCare}   onChange={update("candleCare")}   onSave={() => handleSave("candleCare")}   saving={saving} />}
             {activeTab === "videos"       && <VideosEditor       data={content.videos}       onChange={update("videos")}       onSave={() => handleSave("videos")}       saving={saving} />}
             {activeTab === "testimonials" && <TestimonialsEditor data={content.testimonials} onChange={update("testimonials")} onSave={() => handleSave("testimonials")} saving={saving} />}

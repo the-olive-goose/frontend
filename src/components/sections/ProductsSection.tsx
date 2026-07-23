@@ -1,10 +1,29 @@
-import { ProductsContent } from "@/lib/defaults";
+import { Link } from "react-router-dom";
+import { toast } from "sonner";
+import { ProductsContent, type Product } from "@/lib/defaults";
 import { formatPrice } from "@/lib/cart";
+import { isOutOfStock, productPath } from "@/lib/products";
+import { useAuth } from "@/contexts/AuthContext";
+import { useCart } from "@/contexts/CartContext";
 
 interface Props { data: ProductsContent }
 
 const ProductsSection = ({ data }: Props) => {
   const items = data.items ?? [];
+  const { user, requireAuth } = useAuth();
+  const { addToCart } = useCart();
+
+  // Same rule as the shop grid: signed out shows "Buy Now" and opens the
+  // sign-in modal (the add replays once sign-in succeeds).
+  const handleAddToCart = (product: Product) => {
+    requireAuth(async () => {
+      await addToCart(product);
+      toast.success(`${product.name} added to cart`, {
+        description: formatPrice(product.price),
+        duration: 2500,
+      });
+    });
+  };
 
   return (
     <section id="collection" style={{ background: "var(--bg-products)" }} className="py-16 lg:py-20">
@@ -31,15 +50,19 @@ const ProductsSection = ({ data }: Props) => {
 
         {/* Products grid */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {items.map((product) => (
+          {items.map((product) => {
+            const outOfStock = isOutOfStock(product);
+            return (
             <div
               key={product.id}
               className="group flex flex-col overflow-hidden transition-transform duration-300 hover:-translate-y-2"
               style={{ borderRadius: "var(--radius-product)", background: "transparent" }}
             >
               {/* Image */}
-              <div
-                className="relative w-full overflow-hidden"
+              <Link
+                to={productPath(product)}
+                aria-label={`View ${product.name}`}
+                className="relative block w-full overflow-hidden"
                 style={{
                   borderRadius: "var(--radius-product)",
                   aspectRatio: "3/4",
@@ -49,7 +72,9 @@ const ProductsSection = ({ data }: Props) => {
                 {product.image_url ? (
                   <img
                     src={product.image_url}
-                    alt={product.name}
+                    alt={`${product.name} — handmade candle by The Olive Goose`}
+                    loading="lazy"
+                    decoding="async"
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                   />
                 ) : (
@@ -60,7 +85,7 @@ const ProductsSection = ({ data }: Props) => {
                     </svg>
                   </div>
                 )}
-                {product.tag && (
+                {product.tag && !outOfStock && (
                   <span
                     className="absolute top-4 left-4 pill-tag"
                     style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
@@ -68,7 +93,15 @@ const ProductsSection = ({ data }: Props) => {
                     {product.tag}
                   </span>
                 )}
-              </div>
+                {outOfStock && (
+                  <span
+                    className="absolute top-4 left-4 pill-tag"
+                    style={{ background: "#6b6b6b", color: "#fff" }}
+                  >
+                    Out of stock
+                  </span>
+                )}
+              </Link>
 
               {/* Info */}
               <div className="pt-4 pb-2 px-1 space-y-1.5 text-center">
@@ -76,7 +109,7 @@ const ProductsSection = ({ data }: Props) => {
                   className="h-rounded"
                   style={{ fontSize: "1.1rem", color: "var(--text-primary)" }}
                 >
-                  {product.name}
+                  <Link to={productPath(product)} className="hover:underline">{product.name}</Link>
                 </h3>
                 <p
                   className="font-sans text-xs"
@@ -91,18 +124,22 @@ const ProductsSection = ({ data }: Props) => {
                   {formatPrice(product.price)}
                 </p>
                 <button
-                  className="mt-1 w-full py-2.5 font-sans text-sm font-semibold transition-all hover:opacity-85 active:scale-95"
+                  onClick={() => handleAddToCart(product)}
+                  disabled={outOfStock}
+                  title={outOfStock ? "Out of stock" : !user ? "Sign in to add to cart" : undefined}
+                  className="mt-1 w-full py-2.5 font-sans text-sm font-semibold transition-all hover:opacity-85 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{
                     background: "var(--btn-dark-bg)",
                     color: "var(--btn-dark-text)",
                     borderRadius: "var(--radius-pill)",
                   }}
                 >
-                  Add to Cart
+                  {outOfStock ? "Out of Stock" : user ? "Add to Cart" : "Buy Now"}
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </section>

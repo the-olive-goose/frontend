@@ -74,7 +74,7 @@ const AboutPage = () => {
               style={{ aspectRatio: "4/5", background: "var(--color-sage-pale)" }}
             >
               {story.image_url ? (
-                <img src={story.image_url} alt="Brand story" className="w-full h-full object-cover" />
+                <img src={story.image_url} alt="The Olive Goose story — hand-poured candles from Dublin" loading="lazy" decoding="async" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <span style={{ fontSize: "6rem", opacity: 0.35 }}>🕯️</span>
@@ -191,7 +191,7 @@ const AboutPage = () => {
               style={{ width: "min(380px, 100%)", aspectRatio: "1/1", background: "var(--color-sage-pale)" }}
             >
               {founder.photo_url ? (
-                <img src={founder.photo_url} alt="Founder" className="w-full h-full object-cover" />
+                <img src={founder.photo_url} alt="The founder of The Olive Goose" loading="lazy" decoding="async" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <span style={{ fontSize: "5rem", opacity: 0.35 }}>🌿</span>

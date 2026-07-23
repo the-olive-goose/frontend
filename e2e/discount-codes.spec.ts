@@ -381,12 +381,14 @@ test.describe("Checkout UI", () => {
     await page.getByRole("button", { name: /add to cart/i }).first().click();
 
     await page.goto(`${BASE}/checkout`);
+    // Country is a <select> (drives the postal rules); pick Ireland first so the
+    // postal field validates as an Eircode.
     await page.getByPlaceholder("Full name").fill("E2E Shopper");
     await page.getByPlaceholder("Phone").fill("+353851234567");
     await page.getByPlaceholder("Address line 1").fill("1 Test Street");
+    await page.locator("select").filter({ hasText: "Select country" }).selectOption("Ireland");
     await page.getByPlaceholder("City").fill("Dublin");
-    await page.getByPlaceholder("Postal code").fill("D01AB12");
-    await page.getByPlaceholder("Country").fill("Ireland");
+    await page.getByPlaceholder("Eircode").fill("D18 K7W2");
 
     // Apply the code in the order summary.
     await page.getByPlaceholder(/OG-/i).fill(code);

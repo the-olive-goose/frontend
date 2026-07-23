@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type CustomerServiceContent } from "@/lib/defaults";
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
+import { Link } from "react-router-dom";
 import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
 
@@ -33,22 +33,19 @@ const CustomerServicePage = () => {
             </div>
           </div>
 
-          {content.faqs.length > 0 && (
-            <div className="bg-white rounded-2xl px-6 sm:px-8" style={{ border: "1px solid var(--color-border)" }}>
-              <Accordion type="single" collapsible>
-                {content.faqs.map((faq, i) => (
-                  <AccordionItem key={i} value={`faq-${i}`}>
-                    <AccordionTrigger className="font-sans text-sm font-semibold text-left" style={{ color: "var(--color-forest-dark)" }}>
-                      {faq.question}
-                    </AccordionTrigger>
-                    <AccordionContent className="font-sans text-sm" style={{ color: "rgba(30,41,24,0.72)" }}>
-                      {faq.answer}
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
-              </Accordion>
-            </div>
-          )}
+          {/* FAQs live on their own page now — point people there. */}
+          <div className="bg-white rounded-2xl p-6 sm:p-8 space-y-2" style={{ border: "1px solid var(--color-border)" }}>
+            <p className="font-sans text-sm font-semibold" style={{ color: "var(--color-forest-dark)" }}>
+              Looking for quick answers?
+            </p>
+            <p className="font-sans text-sm" style={{ color: "rgba(30,41,24,0.72)" }}>
+              Shipping times, order changes and candle safety are covered in our{" "}
+              <Link to="/faq" className="font-semibold underline" style={{ color: "var(--color-forest-dark)" }}>
+                frequently asked questions
+              </Link>
+              .
+            </p>
+          </div>
         </div>
       </div>
       <FooterSection data={DEFAULT_CONTENT.footer} />

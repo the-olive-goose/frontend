@@ -5,6 +5,7 @@ import {
   fetchCart, apiAddToCart, apiUpdateCartItem, apiRemoveCartItem, apiClearCart,
 } from "@/lib/userApi";
 import { track } from "@/lib/analytics";
+import { MAX_CART_QTY } from "@/lib/cart";
 
 export interface CartItem {
   product: Product;
@@ -13,7 +14,7 @@ export interface CartItem {
 
 interface CartContextType {
   items: CartItem[];
-  addToCart: (product: Product) => Promise<void>;
+  addToCart: (product: Product, quantity?: number) => Promise<void>;
   removeFromCart: (productId: string) => Promise<void>;
   updateQuantity: (productId: string, quantity: number) => Promise<void>;
   clearCart: () => Promise<void>;
@@ -45,14 +46,21 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => { loadCart(); }, [loadCart]);
 
-  const addToCart = async (product: Product) => {
+  // `quantity` lets the product page add a chosen amount in one call. The backend
+  // caps the stored total at MAX_CART_QTY, so mirror that ceiling locally too.
+  const addToCart = async (product: Product, quantity = 1) => {
     if (!user) return;
-    await apiAddToCart(product.id, product, 1);
-    track("add_to_cart", { product_id: product.id, name: product.name, price: product.price });
+    const qty = Math.min(Math.max(Math.trunc(quantity) || 1, 1), MAX_CART_QTY);
+    await apiAddToCart(product.id, product, qty);
+    track("add_to_cart", { product_id: product.id, name: product.name, price: product.price, quantity: qty });
     setItems(prev => {
       const existing = prev.find(i => i.product.id === product.id);
-      if (existing) return prev.map(i => i.product.id === product.id ? { ...i, quantity: i.quantity + 1 } : i);
-      return [...prev, { product, quantity: 1 }];
+      if (existing) {
+        return prev.map(i => i.product.id === product.id
+          ? { ...i, quantity: Math.min(i.quantity + qty, MAX_CART_QTY) }
+          : i);
+      }
+      return [...prev, { product, quantity: qty }];
     });
   };
 

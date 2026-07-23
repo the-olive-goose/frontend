@@ -1,5 +1,9 @@
 import type { Product } from "@/lib/defaults";
 
+// Mirrors MAX_CART_QTY in backend/index.js — the server rejects anything higher,
+// so the UI caps quantity pickers and optimistic cart updates at the same value.
+export const MAX_CART_QTY = 99;
+
 // Fallback used only until the admin-configured pickupSettings.free_shipping_threshold loads.
 export const DEFAULT_FREE_SHIPPING_THRESHOLD = 65;
 

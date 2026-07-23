@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { getContent } from "@/lib/api";
@@ -6,6 +7,7 @@ import { DEFAULT_CONTENT, DEFAULT_DEALS, type Product, type Bundle, type DealsCo
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
+import { productPath } from "@/lib/products";
 import FooterSection from "@/components/sections/FooterSection";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -100,10 +102,10 @@ const BundleCard = ({ bundle, allProducts, idx }: { bundle: Bundle; allProducts:
           const img = p.image_url || FALLBACK_IMGS[i % 2];
           return (
             <div key={p.id} style={{ flex: "1 1 0", minWidth: 0, textAlign: "center" }}>
-              <div style={{ aspectRatio: "3/4", borderRadius: 10, overflow: "hidden", marginBottom: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
-                <img src={img} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: "multiply" }} />
-              </div>
-              <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.82rem,1.3vw,1rem)", color: accent, lineHeight: 1.1, marginBottom: 2 }}>{p.name}</p>
+              <Link to={productPath(p)} style={{ display: "block", aspectRatio: "3/4", borderRadius: 10, overflow: "hidden", marginBottom: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+                <img src={img} alt={`${p.name} — handmade candle by The Olive Goose`} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: "multiply" }} />
+              </Link>
+              <Link to={productPath(p)} style={{ display: "block", fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.82rem,1.3vw,1rem)", color: accent, lineHeight: 1.1, marginBottom: 2 }}>{p.name}</Link>
               <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.72rem,1.1vw,0.88rem)", color: "rgba(30,20,10,0.55)", textDecoration: "line-through" }}>{formatPrice(p.price)}</p>
               {i < bundleProducts.length - 1 && (
                 <span style={{ position: "absolute", top: "50%", right: -14, transform: "translateY(-50%)", fontFamily: "'Fredoka',sans-serif", fontSize: "1.2rem", color: accent, zIndex: 3 }}>+</span>

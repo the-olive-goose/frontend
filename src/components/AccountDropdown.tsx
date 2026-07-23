@@ -56,6 +56,12 @@ const ICONS = {
       <path d="M9.5 9a2.5 2.5 0 015 .5c0 1.5-2.5 1.8-2.5 3.5" /><path d="M12 17.5h.01" />
     </svg>
   ),
+  faq: (
+    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M7.9 20A9 9 0 104 16.1L2 22z" />
+      <path d="M9.5 9a2.5 2.5 0 015 .5c0 1.5-2.5 1.8-2.5 3.5" /><path d="M12 16.5h.01" />
+    </svg>
+  ),
 };
 
 const AccountDropdown = ({ onClose }: Props) => {
@@ -90,6 +96,7 @@ const AccountDropdown = ({ onClose }: Props) => {
       title: "More",
       items: [
         { label: "Gift Cards", icon: "gift", path: "/gift-cards", public: true },
+        { label: "FAQs", icon: "faq", path: "/faq", public: true },
         { label: "Customer Service", icon: "help", path: "/customer-service", public: true },
       ],
     },

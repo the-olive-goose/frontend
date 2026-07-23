@@ -26,7 +26,9 @@ const WelcomeSection = ({ data }: Props) => (
           {data.photo_url ? (
             <img
               src={data.photo_url}
-              alt="Founder"
+              alt="The founder of The Olive Goose"
+              loading="lazy"
+              decoding="async"
               className="w-full h-full object-cover"
             />
           ) : (

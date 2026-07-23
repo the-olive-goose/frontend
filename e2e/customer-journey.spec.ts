@@ -173,13 +173,14 @@ test.describe("Purchase journey", () => {
     await page.getByRole("button", { name: /proceed to checkout/i }).click();
     await expect(page).toHaveURL(/\/checkout/);
 
-    // Fill the delivery address
+    // Fill the delivery address. Country is a <select> (it drives the postal-code
+    // rules), so pick Ireland first — that makes the postal field an Eircode.
     await page.getByPlaceholder("Full name").fill("E2E Shopper");
     await page.getByPlaceholder("Phone").fill("+353851234567");
     await page.getByPlaceholder("Address line 1").fill("1 Test Street");
+    await page.locator("select").filter({ hasText: "Select country" }).selectOption("Ireland");
     await page.getByPlaceholder("City").fill("Dublin");
-    await page.getByPlaceholder("Postal code").fill("D01AB12");
-    await page.getByPlaceholder("Country").fill("Ireland");
+    await page.getByPlaceholder("Eircode").fill("D18 K7W2");
 
     // Place order → redirected to Stripe's hosted checkout. This is the
     // security-critical milestone owned by OUR code: a valid, server-priced

@@ -1,14 +1,20 @@
-User-agent: Googlebot
-Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Twitterbot
-Allow: /
-
-User-agent: facebookexternalhit
-Allow: /
+# theolivegoose.ie — online candle store (SPA)
+# Keep private, transactional and faceted/filtered URLs out of the index;
+# everything else is crawlable.
 
 User-agent: *
 Allow: /
+# Private / transactional routes
+Disallow: /admin
+Disallow: /basket
+Disallow: /checkout
+Disallow: /account
+Disallow: /orders
+Disallow: /auth/
+# Internal search & category filter parameters (canonical is the clean /shop URL)
+Disallow: /*?search=
+Disallow: /*?category=
+Disallow: /*&search=
+Disallow: /*&category=
+
+Sitemap: https://theolivegoose.ie/sitemap.xml

@@ -551,7 +551,7 @@ export const saveAutomationSettings = (data: AutomationSettings): Promise<void> 
 
 export interface AdminDecision {
   id: string;
-  type: 'return_approve_suggested' | 'return_reject_suggested' | 'fraud_review' | 'stuck_order_followup' | 'back_in_stock_notify';
+  type: 'return_approve_suggested' | 'return_reject_suggested' | 'fraud_review' | 'stuck_order_followup' | 'back_in_stock_notify' | 'oversell_alert';
   order_id: string | null;
   return_id: string | null;
   product_id: string | null;

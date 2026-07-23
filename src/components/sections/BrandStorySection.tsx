@@ -48,7 +48,9 @@ const BrandStorySection = ({ data }: Props) => (
         {data.image_url ? (
           <img
             src={data.image_url}
-            alt="Brand story"
+            alt="The Olive Goose story — hand-pouring candles in Dublin"
+            loading="lazy"
+            decoding="async"
             className="w-full h-full object-cover"
           />
         ) : (

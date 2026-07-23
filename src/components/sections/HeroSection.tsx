@@ -46,7 +46,11 @@ const HeroSection = ({ data }: Props) => {
       <div className="relative w-full h-[440px] sm:h-[620px] lg:h-[760px]">
         <img
           src={bgImage}
-          alt="Hero background"
+          alt="Handmade café-inspired candles by The Olive Goose, Dublin"
+          // React 18 only passes the LCP fetch hint through as a lowercase DOM
+          // attribute (camelCase fetchPriority lands in React 19).
+          {...({ fetchpriority: "high" } as React.ImgHTMLAttributes<HTMLImageElement>)}
+          decoding="async"
           className="absolute inset-0 w-full h-full object-cover"
           style={{
             opacity: Math.max(0.05, bgOpacity),
@@ -107,7 +111,12 @@ const HeroSection = ({ data }: Props) => {
               maxWidth: 720,
             }}
           >
-            {data.headline}
+            {/* When the admin leaves the headline blank (text baked into the hero
+                image), keep a screen-reader/crawler-visible H1 so the homepage
+                never ships an empty heading. */}
+            {data.headline || (
+              <span className="sr-only">The Olive Goose — handmade café-inspired candles, Dublin</span>
+            )}
           </h1>
 
           {/* Subtext */}

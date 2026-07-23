@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import useIsMobile from "@/hooks/useIsMobile";
@@ -7,6 +8,7 @@ import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
+import { productPath } from "@/lib/products";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
 
@@ -68,21 +70,21 @@ export const CandleCard = ({ product, accent, isDark, idx }: {
       whileHover={{ y: -5, transition: { duration: 0.18 } }}
       style={{ flex: "1 1 0", minWidth: 0, background: cardBg, border: `1px solid ${border}`, borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: isDark ? "0 8px 28px rgba(0,0,0,0.45)" : "0 6px 22px rgba(0,0,0,0.1)", cursor: "pointer" }}
     >
-      {/* Image — 3/4 ratio matches ShopPage */}
-      <div style={{ aspectRatio: "3/4", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)", flexShrink: 0, position: "relative" }}>
-        <img src={img} alt={product.name} style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: isDark ? "lighten" : "multiply", opacity: 0.9 }} />
+      {/* Image — 3/4 ratio matches ShopPage; opens the product page */}
+      <Link to={productPath(product)} aria-label={`View ${product.name}`} style={{ aspectRatio: "3/4", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)", flexShrink: 0, position: "relative", display: "block" }}>
+        <img src={img} alt={`${product.name} — handmade candle by The Olive Goose`} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: isDark ? "lighten" : "multiply", opacity: 0.9 }} />
         {product.tag && (
           <span style={{ position: "absolute", top: 8, left: 8, fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.48rem,0.72vw,0.6rem)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: isDark ? "#0a0a18" : "#fff", background: accent, borderRadius: 20, padding: "2px 8px" }}>
             {product.tag}
           </span>
         )}
-      </div>
+      </Link>
 
       <div style={{ padding: "clamp(8px,1.2vw,12px) clamp(10px,1.4vw,14px) clamp(10px,1.4vw,14px)", flex: 1, display: "flex", flexDirection: "column" }}>
         {/* Name — Fredoka, the unified heading/display font */}
-        <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.92rem,1.45vw,1.1rem)", color: accent, lineHeight: 1.15, marginBottom: 4 }}>
+        <Link to={productPath(product)} style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.92rem,1.45vw,1.1rem)", color: accent, lineHeight: 1.15, marginBottom: 4, display: "block" }}>
           {product.name}
-        </p>
+        </Link>
 
         {/* Description */}
         {product.description && (

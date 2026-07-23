@@ -1,9 +1,12 @@
-import { useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useState, useEffect, forwardRef } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { getContent, getShopCategories, type ShopCategory } from "@/lib/api";
 import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
+import { productPath } from "@/lib/products";
+import { useJsonLd } from "@/hooks/useJsonLd";
+import { SITE_URL, SITE_NAME, parsePriceValue } from "@/lib/seo";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
@@ -15,9 +18,12 @@ const FALLBACK_IMGS = [m1, m2];
 
 // ── Product card ───────────────────────────────────────────────────────────────
 
-const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
+// forwardRef so framer-motion's <AnimatePresence> can attach its measurement ref
+// to the outermost motion.div (otherwise React warns "Function components cannot
+// be given refs" on every render inside the presence group).
+const ProductCard = forwardRef<HTMLDivElement, {
   product: Product; idx: number; accent?: string;
-}) => {
+}>(({ product, idx, accent = "#1D2B1B" }, ref) => {
   const img = product.image_url || FALLBACK_IMGS[idx % 2];
   const { user, openAuthModal } = useAuth();
   const { addToCart } = useCart();
@@ -39,6 +45,7 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
 
   return (
     <motion.div
+      ref={ref}
       layout
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -50,12 +57,16 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
     >
       {/* Image */}
       <div className="relative overflow-hidden" style={{ aspectRatio: "3/4", background: "rgba(0,0,0,0.04)" }}>
-        <img
-          src={img}
-          alt={product.name}
-          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-          style={{ mixBlendMode: "multiply" }}
-        />
+        <Link to={productPath(product)} aria-label={`View ${product.name}`}>
+          <img
+            src={img}
+            alt={`${product.name} — handmade candle by The Olive Goose`}
+            loading="lazy"
+            decoding="async"
+            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+            style={{ mixBlendMode: "multiply" }}
+          />
+        </Link>
         {product.tag && !outOfStock && (
           <span
             className="absolute top-3 left-3 text-xs font-semibold tracking-wider uppercase px-3 py-1 rounded-full"
@@ -81,7 +92,7 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
             className="leading-tight mb-1"
             style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1rem,1.6vw,1.25rem)", color: accent || "var(--color-forest-dark)" }}
           >
-            {product.name}
+            <Link to={productPath(product)} className="hover:underline">{product.name}</Link>
           </h3>
           <p
             className="text-sm leading-relaxed"
@@ -113,7 +124,8 @@ const ProductCard = ({ product, idx, accent = "#1D2B1B" }: {
       </div>
     </motion.div>
   );
-};
+});
+ProductCard.displayName = "ProductCard";
 
 // ── Shop Page ──────────────────────────────────────────────────────────────────
 
@@ -161,6 +173,48 @@ const ShopPage = () => {
   })();
 
   const activeCat = categories.find(c => c.slug === activeSlug);
+
+  // Product/ItemList structured data for the full catalogue (canonical /shop view).
+  // Only real, loaded product data — no fabricated ratings or reviews.
+  useJsonLd(
+    "shop-products",
+    allProducts.length === 0
+      ? null
+      : {
+          "@context": "https://schema.org",
+          "@type": "ItemList",
+          name: "Handmade candles by The Olive Goose",
+          itemListElement: allProducts.map((p, i) => {
+            const price = parsePriceValue(p.price);
+            return {
+              "@type": "ListItem",
+              position: i + 1,
+              item: {
+                "@type": "Product",
+                name: p.name,
+                description: p.description,
+                sku: p.id,
+                ...(p.image_url && {
+                  image: p.image_url.startsWith("http") ? p.image_url : `${SITE_URL}${p.image_url}`,
+                }),
+                brand: { "@type": "Brand", name: SITE_NAME },
+                ...(price && {
+                  offers: {
+                    "@type": "Offer",
+                    price,
+                    priceCurrency: "EUR",
+                    availability:
+                      p.stock !== undefined && p.stock !== null && Number(p.stock) <= 0
+                        ? "https://schema.org/OutOfStock"
+                        : "https://schema.org/InStock",
+                    url: `${SITE_URL}${productPath(p)}`,
+                  },
+                }),
+              },
+            };
+          }),
+        },
+  );
 
   const setCategory = (slug: string) => {
     if (slug === "all") setSearchParams({});

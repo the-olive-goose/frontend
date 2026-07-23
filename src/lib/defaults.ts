@@ -41,6 +41,17 @@ export interface Product {
   // Optional inventory count. Undefined/null means "not tracked" — existing
   // products keep working unchanged unless an admin opts in by setting a number.
   stock?: number | null;
+
+  // ── Product-page fields (all optional — products saved before the product page
+  // existed keep working, the page just falls back to name/description/image) ──
+  /** URL segment for /products/:slug. Blank = slugified name, else the id. */
+  slug?: string;
+  /** Extra images for the gallery thumbnail strip; `image_url` is always first. */
+  gallery_urls?: string[];
+  /** Long-form copy under the buy box — one paragraph per entry. */
+  detail_paragraphs?: string[];
+  /** Manual "You may also like" picks. Empty = auto-recommended. */
+  recommended_ids?: string[];
 }
 
 export interface CandleCareCard {
@@ -100,6 +111,26 @@ export interface ProductsContent {
   headline: string;
   subtext: string;
   items: Product[];
+}
+
+// Shared copy for every /products/:slug page. Per-product copy (gallery,
+// paragraphs, recommendations) lives on the Product itself.
+export interface ProductCircleContent {
+  enabled: boolean;
+  headline: string;
+  subtext: string;
+  placeholder: string;
+  cta_text: string;
+  success_text: string;
+}
+
+export interface ProductPageContent {
+  quantity_label: string;
+  bundle_label: string;
+  recommendations_headline: string;
+  /** How many "You may also like" cards to show (auto-picked unless overridden). */
+  recommendations_count: number;
+  circle: ProductCircleContent;
 }
 
 export interface CandleCareContent {
@@ -231,6 +262,7 @@ export interface SiteContent {
   welcomeClub: WelcomeClubContent;
   brandStory: BrandStoryContent;
   products: ProductsContent;
+  productPage: ProductPageContent;
   candleCare: CandleCareContent;
   videos: VideosContent;
   testimonials: TestimonialsContent;
@@ -342,6 +374,21 @@ export const DEFAULT_CONTENT: SiteContent = {
     ],
   },
 
+  productPage: {
+    quantity_label: "How many would you like?",
+    bundle_label: "BUNDLE DEAL",
+    recommendations_headline: "You may also like",
+    recommendations_count: 4,
+    circle: {
+      enabled: true,
+      headline: "Join the Olive Goose Circle",
+      subtext: "Early access to new pours, small-batch restocks and members-only offers.",
+      placeholder: "your@email.com",
+      cta_text: "Join the Circle",
+      success_text: "You're in the Circle!",
+    },
+  },
+
   candleCare: {
     label: "CANDLECARE",
     headline_part1: "Love it long.",
@@ -441,6 +488,7 @@ export const DEFAULT_CONTENT: SiteContent = {
       { label: "About", href: "/about" },
       { label: "Delivery & Returns", href: "/returns" },
       { label: "Care Instructions", href: "/candle-care" },
+      { label: "FAQs", href: "/faq" },
       { label: "Contacts", href: "/customer-service" },
     ],
     social_links: [

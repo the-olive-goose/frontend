@@ -34,7 +34,7 @@ const InlineImage = ({ src, alt }: { src: string; alt: string }) => {
       }}
     >
       {resolved ? (
-        <img src={resolved} alt={alt} className="w-full h-full object-cover" />
+        <img src={resolved} alt={alt} loading="lazy" decoding="async" className="w-full h-full object-cover" />
       ) : (
         <span className="w-full h-full flex items-center justify-center text-xs" style={{ color: "var(--text-primary)" }}>
           img
@@ -63,9 +63,9 @@ const MomentPillSection = ({ data }: Props) => (
         style={{ fontSize: "clamp(1rem, 2.5vw, 1.25rem)", color: "var(--text-primary)" }}
       >
         {data.text1}
-        <InlineImage src={data.image1_url} alt="moment" />
+        <InlineImage src={data.image1_url} alt="A lit Olive Goose candle at home" />
         {data.text2}
-        <InlineImage src={data.image2_url} alt="nature" />
+        <InlineImage src={data.image2_url} alt="Calm, nature-inspired candlelight" />
       </p>
       <p
         className="font-display text-center w-full"

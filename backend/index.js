@@ -393,21 +393,34 @@ const addOrderEvent = async (orderId, { type, actor = 'system', title, detail = 
 // decrements against the same row — without this, two checkouts completing
 // at the same instant for the last unit(s) of a product can both read the
 // same pre-decrement stock and both succeed, overselling it.
+// Returns `{ shortfalls }` — one entry per tracked product whose ordered quantity
+// exceeded the stock still on hand at decrement time. Stock is validated at
+// checkout-session creation, but that gate is advisory: a concurrent order can
+// take the last unit(s) during the (potentially minutes-long) window the shopper
+// spends on Stripe's hosted page. Payment has already succeeded by the time we
+// get here, so we never reject — we floor stock at 0 and report the shortfall so
+// the caller can surface it for deliberate fulfillment (restock / partial refund)
+// instead of overselling silently.
 const decrementStock = async (items) => {
   const client = await pool.connect();
+  const shortfalls = [];
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
       `SELECT value FROM site_settings WHERE key = 'content_products' FOR UPDATE`
     );
     const content = rows[0]?.value;
-    if (!content?.items?.length) { await client.query('ROLLBACK'); return; }
+    if (!content?.items?.length) { await client.query('ROLLBACK'); return { shortfalls }; }
     let changed = false;
     const updatedItems = content.items.map((p) => {
       const line = items.find(i => i.product_id === p.id);
       if (!line || p.stock === undefined || p.stock === null) return p;
       changed = true;
-      return { ...p, stock: Math.max(0, Number(p.stock) - line.quantity) };
+      const available = Number(p.stock);
+      if (line.quantity > available) {
+        shortfalls.push({ product_id: p.id, name: p.name, requested: line.quantity, available: Math.max(0, available) });
+      }
+      return { ...p, stock: Math.max(0, available - line.quantity) };
     });
     if (changed) {
       await client.query(
@@ -422,6 +435,7 @@ const decrementStock = async (items) => {
   } finally {
     client.release();
   }
+  return { shortfalls };
 };
 
 const genTrackingNumber = () =>
@@ -661,6 +675,26 @@ const redeemDiscountCode = async (code, userId, orderId) => {
   );
 };
 
+// Release an in-flight hold placed by reserveDiscountCode when the checkout it was
+// reserved for never completes (the total resolved to <= 0, or Stripe failed to
+// create the session). Only clears an *unredeemed* hold still owned by this user,
+// so it can never disturb a code that was already spent or one another shopper is
+// actively holding. Best-effort — a failed release just lets the 30-min hold lapse.
+const releaseDiscountReservation = async (code, userId) => {
+  const normalized = normalizeCode(code);
+  if (!normalized) return;
+  try {
+    await pool.query(
+      `UPDATE discount_codes
+          SET reserved_at = NULL, reserved_by_user_id = NULL, reserved_session_id = NULL
+        WHERE code = $1 AND redeemed_at IS NULL AND reserved_by_user_id = $2`,
+      [normalized, userId]
+    );
+  } catch (err) {
+    console.error('[releaseDiscountReservation]', err);
+  }
+};
+
 const DEFAULT_AUTOMATION_SETTINGS = {
   refund_reminder_days: [1, 5, 7],
   refund_reminder_enabled: true,
@@ -823,7 +857,25 @@ const finalizeCheckoutSession = async (sessionId) => {
 
     const order = rows[0];
     await addOrderEvent(order.id, { type: 'order_placed', actor: 'system', title: 'Order placed', detail: `Order #${order.tracking_number} received` });
-    await decrementStock(p.items);
+
+    // Decrement inventory. If a concurrent order emptied stock between this
+    // order's checkout-time gate and its payment confirmation, decrementStock
+    // reports the shortfall — the paid order still stands (we never lose a
+    // customer's money/order), but we raise an admin decision + internal event so
+    // the oversell is handled deliberately rather than silently.
+    const { shortfalls } = await decrementStock(p.items);
+    if (shortfalls.length) {
+      const summary = shortfalls.map(s => `${s.name} (ordered ${s.requested}, ${s.available} in stock)`).join('; ');
+      createDecisionIfNew({
+        type: 'oversell_alert', orderId: order.id,
+        reasoning: `Order #${order.tracking_number} oversold: ${summary}. Stock was available when checkout started but sold out before payment confirmed — review fulfillment (restock or partial refund).`,
+        suggestedAction: { type: 'acknowledge' },
+      }).catch(err => console.error('[oversell_alert]', err));
+      addOrderEvent(order.id, {
+        type: 'oversell', actor: 'system', title: 'Oversold at fulfillment',
+        detail: summary, customerVisible: false,
+      }).catch(err => console.error('[oversell event]', err));
+    }
 
     // Spend the welcome code (if one was applied) now that payment is confirmed
     // and the order exists. Best-effort — the money's already been charged at the
@@ -1494,7 +1546,12 @@ app.get('/api/auth/google', (_req, res) => {
   url.searchParams.set('redirect_uri',  `${BACKEND_URL}/api/auth/google/callback`);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('scope',         'openid email profile');
-  url.searchParams.set('access_type',   'offline');
+  // Online access only: we use the one-time access token at the callback to read
+  // the profile and never touch a refresh token. Requesting offline access issues
+  // a refresh token / "offline access granted" grant, which makes Google email the
+  // user a security notification on (re-)grant — spamming them on repeat logins for
+  // a capability we don't use.
+  url.searchParams.set('access_type',   'online');
   url.searchParams.set('state',         issueOauthState(res));
   res.redirect(url.toString());
 });
@@ -1517,12 +1574,23 @@ app.get('/api/auth/google/callback', async (req, res) => {
       }),
     });
     const tokenData = await tokenRes.json();
-    if (!tokenData.access_token) throw new Error('No access token from Google');
+    if (!tokenData.id_token) throw new Error('No id_token from Google');
 
-    const userRes   = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: { Authorization: `Bearer ${tokenData.access_token}` },
-    });
-    const gUser = await userRes.json();
+    // Read the profile from the OIDC id_token instead of calling the userinfo API.
+    // We requested the `openid email profile` scope, so the id_token already carries
+    // email/email_verified/name/picture/sub. Hitting googleapis.com/userinfo on every
+    // login makes Google email the user a "here's the data you shared" summary each
+    // time — reading the id_token claims we were just handed over TLS avoids that API
+    // access entirely (no signature re-verify needed: it came straight from Google's
+    // token endpoint in this request, authenticated by our client secret).
+    const claims = jwt.decode(tokenData.id_token) || {};
+    const gUser = {
+      email:          claims.email,
+      verified_email: claims.email_verified,
+      name:           claims.name,
+      picture:        claims.picture,
+      id:             claims.sub,
+    };
 
     // Never silently merge a Google login into an account that was created
     // with a different identity (password/Facebook/phone), and never trust
@@ -1825,6 +1893,9 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
   const fulfillmentType = req.body.fulfillment_type === 'pickup' ? 'pickup' : 'delivery';
   const addressOverride = req.body.shipping_address || {};
   const contactPhone    = req.body.contact_phone || '';
+  // Hoisted so the total-guard and the catch block can release its hold if this
+  // checkout fails after the code was reserved (see releaseDiscountReservation).
+  let appliedCode = null;
 
   try {
     const { rows: cartRows } = await pool.query(
@@ -1936,7 +2007,6 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
     // once the order finalizes. An invalid or already-used code is a hard error —
     // never a silent full-price charge after the shopper applied one.
     let codeDiscountAmount = 0;
-    let appliedCode = null;
     if (req.body.discount_code) {
       const reservation = await reserveDiscountCode(req.body.discount_code, req.user.userId, null);
       if (!reservation.ok) return res.status(400).json({ error: reservation.message });
@@ -1945,9 +2015,16 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
     }
 
     const pickupDiscountAmount = subtotal * (discountPercent / 100);
-    const discountAmount = +(pickupDiscountAmount + bundleSavings + codeDiscountAmount).toFixed(2);
+    // Clamp the combined discount to the subtotal. Fixed codes are already capped
+    // individually, but bundle savings aren't — so a generous stack (pickup % +
+    // bundle + code) could otherwise exceed the order value and push the total
+    // negative, hard-blocking an otherwise legitimate checkout.
+    const discountAmount = +Math.min(pickupDiscountAmount + bundleSavings + codeDiscountAmount, subtotal).toFixed(2);
     const total = +(subtotal - discountAmount + shipping).toFixed(2);
-    if (total <= 0) return res.status(400).json({ error: 'Order total must be greater than zero.' });
+    if (total <= 0) {
+      if (appliedCode) await releaseDiscountReservation(appliedCode, req.user.userId);
+      return res.status(400).json({ error: 'Order total must be greater than zero.' });
+    }
     const trackingNumber = genTrackingNumber();
 
     const line_items = items.map(i => ({
@@ -2013,6 +2090,10 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
 
     res.status(201).json({ url: session.url });
   } catch (err) {
+    // The code was reserved but this checkout failed (Stripe/session/DB error) —
+    // free the hold so the shopper can retry immediately instead of hitting
+    // "being used in another checkout" for the next 30 minutes.
+    if (appliedCode) await releaseDiscountReservation(appliedCode, req.user.userId);
     sendServerError(res, err);
   }
 });
@@ -3499,8 +3580,19 @@ app.all('/api/*', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
 // ── Serve React frontend (SPA catch-all) ──────────────────────────────────────
 const distPath = path.join(__dirname, '../dist');
-app.use(express.static(distPath));
-app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+app.use(express.static(distPath, {
+  setHeaders: (res, filePath) => {
+    // Vite emits content-hashed filenames under /assets — safe to cache forever.
+    if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  },
+}));
+app.get('*', (_req, res) => {
+  // index.html must always revalidate or new deploys never reach returning visitors.
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(distPath, 'index.html'));
+});
 
 // ── Global error handler ──────────────────────────────────────────────────────
 // Catches malformed JSON bodies and any other unhandled errors so we never
