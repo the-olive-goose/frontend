@@ -6,6 +6,7 @@ import React, {
   useCallback,
 } from "react";
 import { FaArrowLeft, FaArrowRight } from "react-icons/fa";
+import RichText from "@/lib/richtext";
 
 interface Testimonial {
   quote: string;
@@ -222,7 +223,7 @@ export const CircularTestimonials = ({
               {activeTestimonial.designation}
             </p>
             <p style={{ color: colorTestimony, fontSize: fontSizeQuote, lineHeight: 1.75 }}>
-              {activeTestimonial.quote}
+              <RichText text={activeTestimonial.quote} />
             </p>
           </div>
 

@@ -1,6 +1,7 @@
 import React from "react";
 import type { ReactElement } from "react";
 import { FooterContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 
 interface Props { data: FooterContent }
 
@@ -190,7 +191,7 @@ const FooterSection = ({ data }: Props) => {
       >
         <div className="max-w-4xl mx-auto flex flex-wrap items-center justify-center gap-x-1 gap-y-1">
           <span className="font-sans text-xs" style={{ color: "var(--text-muted)" }}>
-            {data.copyright}
+            <RichText text={data.copyright} />
           </span>
           {policyLinks.map((link, i) => (
             <React.Fragment key={i}>

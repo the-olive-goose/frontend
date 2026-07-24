@@ -1,131 +1,19 @@
-import { useState, useEffect, forwardRef } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { toast } from "sonner";
 import { getContent, getShopCategories, type ShopCategory } from "@/lib/api";
-import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
+import {
+  DEFAULT_CONTENT,
+  DEFAULT_PRODUCT_CARD_THEME,
+  resolveCardAccent,
+  type Product,
+  type ProductCardTheme,
+} from "@/lib/defaults";
 import { productPath } from "@/lib/products";
 import { useJsonLd } from "@/hooks/useJsonLd";
-import { SITE_URL, SITE_NAME, parsePriceValue } from "@/lib/seo";
-import { useAuth } from "@/contexts/AuthContext";
-import { useCart } from "@/contexts/CartContext";
-import { formatPrice } from "@/lib/cart";
+import { SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
+import ProductCard from "@/components/ui/ProductCard";
 import FooterSection from "@/components/sections/FooterSection";
-import m1 from "@/assets/M1.png";
-import m2 from "@/assets/M2.png";
-
-const FALLBACK_IMGS = [m1, m2];
-
-// ── Product card ───────────────────────────────────────────────────────────────
-
-// forwardRef so framer-motion's <AnimatePresence> can attach its measurement ref
-// to the outermost motion.div (otherwise React warns "Function components cannot
-// be given refs" on every render inside the presence group).
-const ProductCard = forwardRef<HTMLDivElement, {
-  product: Product; idx: number; accent?: string;
-}>(({ product, idx, accent = "#1D2B1B" }, ref) => {
-  const img = product.image_url || FALLBACK_IMGS[idx % 2];
-  const { user, openAuthModal } = useAuth();
-  const { addToCart } = useCart();
-  // undefined/null stock = "not tracked", always purchasable — only an explicit
-  // 0 blocks the button. Checkout enforces this authoritatively either way.
-  const outOfStock = product.stock !== undefined && product.stock !== null && Number(product.stock) <= 0;
-
-  const handleAddToCart = () => {
-    if (!user) {
-      openAuthModal();
-      return;
-    }
-    addToCart(product);
-    toast.success(`${product.name} added to cart`, {
-      description: formatPrice(product.price),
-      duration: 2500,
-    });
-  };
-
-  return (
-    <motion.div
-      ref={ref}
-      layout
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 10 }}
-      transition={{ duration: 0.3, delay: (idx % 6) * 0.05 }}
-      whileHover={{ y: -6, transition: { duration: 0.2 } }}
-      className="group flex flex-col rounded-2xl overflow-hidden"
-      style={{ background: "var(--color-cream-card)", border: "1px solid var(--color-border)", boxShadow: "0 4px 18px rgba(0,0,0,0.07)" }}
-    >
-      {/* Image */}
-      <div className="relative overflow-hidden" style={{ aspectRatio: "3/4", background: "rgba(0,0,0,0.04)" }}>
-        <Link to={productPath(product)} aria-label={`View ${product.name}`}>
-          <img
-            src={img}
-            alt={`${product.name} — handmade candle by The Olive Goose`}
-            loading="lazy"
-            decoding="async"
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-            style={{ mixBlendMode: "multiply" }}
-          />
-        </Link>
-        {product.tag && !outOfStock && (
-          <span
-            className="absolute top-3 left-3 text-xs font-semibold tracking-wider uppercase px-3 py-1 rounded-full"
-            style={{ fontFamily: "'Fredoka',sans-serif", background: accent || "var(--color-forest-dark)", color: "#fff" }}
-          >
-            {product.tag}
-          </span>
-        )}
-        {outOfStock && (
-          <span
-            className="absolute top-3 left-3 text-xs font-semibold tracking-wider uppercase px-3 py-1 rounded-full"
-            style={{ fontFamily: "'Fredoka',sans-serif", background: "#6b6b6b", color: "#fff" }}
-          >
-            Out of stock
-          </span>
-        )}
-      </div>
-
-      {/* Info */}
-      <div className="flex flex-col flex-1 p-4 gap-2">
-        <div className="flex-1">
-          <h3
-            className="leading-tight mb-1"
-            style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1rem,1.6vw,1.25rem)", color: accent || "var(--color-forest-dark)" }}
-          >
-            <Link to={productPath(product)} className="hover:underline">{product.name}</Link>
-          </h3>
-          <p
-            className="text-sm leading-relaxed"
-            style={{ fontFamily: "'Inter',sans-serif", color: "rgba(30,41,24,0.62)" }}
-          >
-            {product.description}
-          </p>
-        </div>
-
-        <div className="flex items-center justify-between pt-3" style={{ borderTop: "1px solid var(--color-border)" }}>
-          <span
-            className="font-semibold"
-            style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1.05rem,1.7vw,1.3rem)", color: accent || "var(--color-forest-dark)" }}
-          >
-            {formatPrice(product.price)}
-          </span>
-          <motion.button
-            whileHover={outOfStock ? undefined : { scale: 1.05 }}
-            whileTap={outOfStock ? undefined : { scale: 0.96 }}
-            onClick={handleAddToCart}
-            disabled={outOfStock}
-            className="text-sm font-semibold px-5 py-2 rounded-full transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ fontFamily: "'Fredoka',sans-serif", background: accent || "var(--color-forest-dark)", color: "#fff" }}
-            title={outOfStock ? "Out of stock" : !user ? "Sign in to add to cart" : undefined}
-          >
-            {outOfStock ? "Out of Stock" : user ? "Add to Cart" : "Buy Now"}
-          </motion.button>
-        </div>
-      </div>
-    </motion.div>
-  );
-});
-ProductCard.displayName = "ProductCard";
 
 // ── Shop Page ──────────────────────────────────────────────────────────────────
 
@@ -134,6 +22,7 @@ const ShopPage = () => {
   const [categories, setCategories]   = useState<ShopCategory[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [content, setContent]         = useState(DEFAULT_CONTENT);
+  const [cardTheme, setCardTheme]     = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
   const [loading, setLoading]         = useState(true);
 
   const activeSlug   = searchParams.get("category") ?? "all";
@@ -146,10 +35,12 @@ const ShopPage = () => {
       getContent("footer",          DEFAULT_CONTENT.footer),
       getContent("products",        DEFAULT_CONTENT.products),
       getShopCategories(),
-    ]).then(([announcementBar, navbar, footer, products, cats]) => {
+      getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME),
+    ]).then(([announcementBar, navbar, footer, products, cats, theme]) => {
       setContent(prev => ({ ...prev, announcementBar, navbar, footer, products }));
       setAllProducts(products.items ?? []);
       setCategories(cats);
+      if (theme) setCardTheme(theme);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -174,14 +65,26 @@ const ShopPage = () => {
 
   const activeCat = categories.find(c => c.slug === activeSlug);
 
-  // Product/ItemList structured data for the full catalogue (canonical /shop view).
-  // Only real, loaded product data — no fabricated ratings or reviews.
+  // Breadcrumb trail for the canonical /shop view.
+  useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["Shop", "/shop"]]));
+
+  // CollectionPage + Product/ItemList structured data for the full catalogue
+  // (canonical /shop view). Only real, loaded product data — no fabricated
+  // ratings or reviews.
   useJsonLd(
     "shop-products",
     allProducts.length === 0
       ? null
       : {
           "@context": "https://schema.org",
+          "@type": "CollectionPage",
+          "@id": `${SITE_URL}/shop`,
+          url: `${SITE_URL}/shop`,
+          name: "Shop Handmade Soy Candles Ireland",
+          description:
+            "The full collection of luxury handmade candles by The Olive Goose — coffee, bakery and café-inspired scented soy candles, hand-poured in Dublin, Ireland.",
+          isPartOf: { "@id": `${SITE_URL}/#website` },
+          mainEntity: {
           "@type": "ItemList",
           name: "Handmade candles by The Olive Goose",
           itemListElement: allProducts.map((p, i) => {
@@ -213,6 +116,7 @@ const ShopPage = () => {
               },
             };
           }),
+          },
         },
   );
 
@@ -364,7 +268,9 @@ const ShopPage = () => {
                     key={p.id}
                     product={p}
                     idx={i}
-                    accent={activeCat?.accent_color}
+                    accent={resolveCardAccent(cardTheme, activeCat)}
+                    buttonTextColor={cardTheme.buttonTextColor}
+                    density="regular"
                   />
                 ))}
               </AnimatePresence>

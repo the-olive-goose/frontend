@@ -11,6 +11,7 @@ import {
 } from "@/lib/userApi";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
+import { computeBundleSavings } from "@/lib/bundleSavings";
 import { track, getAnalyticsIds } from "@/lib/analytics";
 import { getBundleNudges } from "@/lib/bundleNudges";
 import { isPhoneValid, validateDeliveryAddress, type AddressErrors, type AddressField } from "@/lib/addressValidation";
@@ -18,6 +19,7 @@ import AddressFields from "@/components/AddressFields";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
 import FooterSection from "@/components/sections/FooterSection";
+import RichText from "@/lib/richtext";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
 
@@ -128,21 +130,11 @@ const CheckoutPage = () => {
   const discountPercent = isPickup ? pickup.discount_percent : 0;
   const pickupDiscountAmount = subtotalNum * (discountPercent / 100);
 
-  // Today's Deals bundles the basket already fully satisfies — same rule Stripe
-  // applies server-side, so the total shown here matches what's actually charged.
-  const appliedBundles = bundles.filter(b =>
-    b.is_active && b.product_ids.length > 0 &&
-    b.product_ids.every(pid => items.some(i => i.product.id === pid))
-  );
-  const bundleSavings = appliedBundles.reduce((sum, b) => {
-    const base = b.product_ids.reduce((s, pid) => {
-      const item = items.find(i => i.product.id === pid);
-      if (!item) return s;
-      const n = parseFloat(item.product.price.replace(/[^0-9.]/g, ""));
-      return s + (isNaN(n) ? 0 : n * item.quantity);
-    }, 0);
-    return sum + (b.discount_type === "percentage" ? base * (b.discount_value / 100) : b.discount_value);
-  }, 0);
+  // Today's Deals bundles the basket satisfies — same per-unit, non-overlapping
+  // algorithm Stripe applies server-side, so the total shown here matches what's
+  // actually charged. Catalogue passed so orphaned bundle product_ids are ignored.
+  const { applied: appliedBundles, totalSavings: bundleSavings } =
+    computeBundleSavings(bundles, items, allProducts.map(p => p.id));
 
   const codeDiscountAmount = !appliedCode
     ? 0
@@ -400,7 +392,7 @@ const CheckoutPage = () => {
                       <p className="font-sans text-sm" style={{ color: "#555" }}>{pickup.country}</p>
                       <p className="font-sans text-xs mt-1" style={{ color: "#007185" }}>{pickup.hours}</p>
                     </div>
-                    {pickup.notes && <p className="font-sans text-xs" style={{ color: "#555" }}>{pickup.notes}</p>}
+                    {pickup.notes && <p className="font-sans text-xs" style={{ color: "#555" }}><RichText text={pickup.notes} /></p>}
                     <div>
                       <label className="font-sans text-xs font-semibold block mb-1" style={{ color: "#555" }}>Contact phone (for pickup notice)</label>
                       <input value={contactPhone} inputMode="tel" autoComplete="tel"
@@ -479,12 +471,10 @@ const CheckoutPage = () => {
                       <span>−€{pickupDiscountAmount.toFixed(2)}</span>
                     </div>
                   )}
-                  {appliedBundles.map(b => (
-                    <div key={b.id} className="flex justify-between font-sans text-sm font-semibold" style={{ color: "#007600" }}>
-                      <span>🏷️ {b.name} deal</span>
-                      <span>
-                        −{b.discount_type === "percentage" ? `${b.discount_value}%` : `€${b.discount_value.toFixed(2)}`}
-                      </span>
+                  {appliedBundles.map(ab => (
+                    <div key={ab.bundle.id} className="flex justify-between font-sans text-sm font-semibold" style={{ color: "#007600" }}>
+                      <span>🏷️ {ab.bundle.name} deal{ab.instances > 1 ? ` ×${ab.instances}` : ""}</span>
+                      <span>−€{ab.savings.toFixed(2)}</span>
                     </div>
                   ))}
                   {appliedCode && (

@@ -1,6 +1,7 @@
 import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
 import { DEFAULT_CONTENT, type LegalPageContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 
 interface Props {
   eyebrow: string;
@@ -18,8 +19,8 @@ const LegalPageLayout = ({ eyebrow, data }: Props) => (
         <div className="bg-white rounded-2xl p-6 sm:p-8 space-y-6" style={{ border: "1px solid var(--color-border)" }}>
           {data.sections.map(section => (
             <div key={section.title}>
-              <h3 className="font-serif text-lg font-semibold mb-1" style={{ color: "var(--color-forest-dark)" }}>{section.title}</h3>
-              <p className="font-sans text-sm leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}>{section.body}</p>
+              <h3 className="font-serif text-lg font-semibold mb-1" style={{ color: "var(--color-forest-dark)" }}><RichText text={section.title} /></h3>
+              <p className="font-sans text-sm leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}><RichText text={section.body} /></p>
             </div>
           ))}
           <p className="font-sans text-xs" style={{ color: "rgba(30,41,24,0.6)" }}>

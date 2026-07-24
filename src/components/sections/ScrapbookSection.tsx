@@ -1,16 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { toast } from "sonner";
 import useIsMobile from "@/hooks/useIsMobile";
 import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
-import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
-import { useAuth } from "@/contexts/AuthContext";
-import { useCart } from "@/contexts/CartContext";
-import { formatPrice } from "@/lib/cart";
-import { productPath } from "@/lib/products";
-import m1 from "@/assets/M1.png";
-import m2 from "@/assets/M2.png";
+import {
+  DEFAULT_CONTENT,
+  DEFAULT_PRODUCT_CARD_THEME,
+  resolveCardAccent,
+  type Product,
+  type ProductCardTheme,
+} from "@/lib/defaults";
+import RichText from "@/lib/richtext";
+import ProductCard from "@/components/ui/ProductCard";
 
 export interface ScrapbookSettings {
   flipDuration: number;
@@ -39,77 +39,17 @@ const FALLBACK_CATS: ShopCategory[] = [
   { id: "f6", name: "Sunday Reset",        slug: "sunday-reset",        mood_description: "clean girl era · no drama",                tags: ["#sundayreset","#healing"],  bg_color: "#eef7f1", page_bg_color: "#e2f0e8", accent_color: "#1d6b45", text_color: "#0d3322", stickers: [{ emoji:"🪴", top:"4%", left:"5%",  rotate:-7,  size:2.2 },{ emoji:"🌿", top:"5%", left:"88%", rotate:12, size:2.0 },{ emoji:"💚", top:"91%", left:"89%", rotate:-10, size:1.6 }], product_ids: [], display_order: 5, is_active: true },
 ];
 
-const FALLBACK_IMGS = [m1, m2];
-
 // ── Candle card ────────────────────────────────────────────────────────────────
+// Thin wrapper over the shared <ProductCard>, in the compact density used inside
+// the scrapbook / featured-category strips. `accent` is already resolved by the
+// caller (global theme accent, or a category's own accent when opted in), so the
+// card looks identical to the shop grid apart from its tighter spacing.
 
-export const CandleCard = ({ product, accent, isDark, idx }: {
-  product: Product; accent: string; isDark: boolean; idx: number;
-}) => {
-  const img      = product.image_url || FALLBACK_IMGS[idx % 2];
-  const cardBg   = isDark ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.93)";
-  const border   = isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.07)";
-  const bodyText = isDark ? "rgba(230,225,255,0.78)" : "rgba(30,20,10,0.65)";
-  const { user, openAuthModal } = useAuth();
-  const { addToCart } = useCart();
-
-  const handleAddToCart = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!user) { openAuthModal(); return; }
-    addToCart(product);
-    toast.success(`${product.name} added to basket`, { description: formatPrice(product.price), duration: 2000 });
-  };
-
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -10 }}
-      transition={{ duration: 0.28 }}
-      whileHover={{ y: -5, transition: { duration: 0.18 } }}
-      style={{ flex: "1 1 0", minWidth: 0, background: cardBg, border: `1px solid ${border}`, borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: isDark ? "0 8px 28px rgba(0,0,0,0.45)" : "0 6px 22px rgba(0,0,0,0.1)", cursor: "pointer" }}
-    >
-      {/* Image — 3/4 ratio matches ShopPage; opens the product page */}
-      <Link to={productPath(product)} aria-label={`View ${product.name}`} style={{ aspectRatio: "3/4", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)", flexShrink: 0, position: "relative", display: "block" }}>
-        <img src={img} alt={`${product.name} — handmade candle by The Olive Goose`} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: isDark ? "lighten" : "multiply", opacity: 0.9 }} />
-        {product.tag && (
-          <span style={{ position: "absolute", top: 8, left: 8, fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.48rem,0.72vw,0.6rem)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: isDark ? "#0a0a18" : "#fff", background: accent, borderRadius: 20, padding: "2px 8px" }}>
-            {product.tag}
-          </span>
-        )}
-      </Link>
-
-      <div style={{ padding: "clamp(8px,1.2vw,12px) clamp(10px,1.4vw,14px) clamp(10px,1.4vw,14px)", flex: 1, display: "flex", flexDirection: "column" }}>
-        {/* Name — Fredoka, the unified heading/display font */}
-        <Link to={productPath(product)} style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.92rem,1.45vw,1.1rem)", color: accent, lineHeight: 1.15, marginBottom: 4, display: "block" }}>
-          {product.name}
-        </Link>
-
-        {/* Description */}
-        {product.description && (
-          <p style={{ fontFamily: "'Inter',sans-serif", fontSize: "clamp(0.56rem,0.85vw,0.68rem)", color: bodyText, lineHeight: 1.45, flex: 1, marginBottom: 8 }}>
-            {product.description}
-          </p>
-        )}
-
-        {/* Price + Add to Cart */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: "auto", paddingTop: 8, borderTop: `1px solid ${isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)"}` }}>
-          <span style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 700, fontSize: "clamp(0.95rem,1.5vw,1.15rem)", color: accent }}>
-            {formatPrice(product.price)}
-          </span>
-          <motion.button
-            whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.94 }}
-            onClick={handleAddToCart}
-            style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 600, fontSize: "clamp(0.6rem,0.9vw,0.74rem)", letterSpacing: "0.02em", background: accent, color: isDark ? "#0a0a18" : "#fff", border: "none", borderRadius: 30, padding: "clamp(4px,0.7vw,6px) clamp(9px,1.3vw,14px)", cursor: "pointer", whiteSpace: "nowrap", boxShadow: `0 3px 10px ${accent}50` }}
-          >
-            {user ? "Add to Cart" : "Buy Now"}
-          </motion.button>
-        </div>
-      </div>
-    </motion.div>
-  );
-};
+export const CandleCard = ({ product, accent, isDark, idx, buttonTextColor }: {
+  product: Product; accent: string; isDark: boolean; idx: number; buttonTextColor?: string;
+}) => (
+  <ProductCard product={product} idx={idx} accent={accent} isDark={isDark} density="compact" buttonTextColor={buttonTextColor} />
+);
 
 // ── Placeholder card (when category has no products assigned yet) ──────────────
 
@@ -188,16 +128,21 @@ const CoverPage = ({ totalCategories, onFlip }: { totalCategories: number; onFli
 
 export const CANDLES_PER_VIEW = 3;
 
-export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, interactive }: {
+export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, interactive, cardTheme }: {
   cat: ShopCategory;
   products: Product[];
   candleOffset: number;
   setCandleOffset: (n: number) => void;
   interactive: boolean;
+  cardTheme?: ProductCardTheme;
 }) => {
   const isMobile  = useIsMobile();
   const perView   = isMobile ? 1 : CANDLES_PER_VIEW;
   const isDark    = cat.bg_color.startsWith("#1") || cat.bg_color.startsWith("#17");
+  // Product cards use the global accent by default; the category tints them only
+  // when it has been opted into `categoriesUsingOwnAccent`. The category's own
+  // chrome (heading, tags, arrows, Shop-All button) always keeps its accent_color.
+  const cardAccent = cardTheme ? resolveCardAccent(cardTheme, cat) : cat.accent_color;
   const maxOffset = Math.max(0, products.length - perView);
   const visible   = products.slice(candleOffset, candleOffset + perView);
   const canPrev   = candleOffset > 0;
@@ -241,7 +186,7 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
           {!isMobile && <>
             <motion.p initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:0.2 }}
               style={{ fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.6rem,0.95vw,0.78rem)", color:dimText, marginBottom:14, transform:"rotate(-1.5deg)", transformOrigin:"left" }}>
-              {cat.mood_description}
+              <RichText text={cat.mood_description} />
             </motion.p>
             <motion.div initial={{ scaleX:0 }} animate={{ scaleX:1 }} transition={{ delay:0.25, duration:0.4 }} style={{ transformOrigin:"left", marginBottom:14 }}>
               <svg width="65" height="11" viewBox="0 0 65 11"><path d="M2 7 Q10 2 18 7 Q26 12 34 7 Q42 2 50 7 Q57 12 63 7" fill="none" stroke={cat.accent_color} strokeWidth="2" strokeLinecap="round"/></svg>
@@ -305,7 +250,7 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
           ) : (
             <AnimatePresence mode="sync">
               {visible.map((p, i) => (
-                <CandleCard key={p.id} product={p} accent={cat.accent_color} isDark={isDark} idx={candleOffset + i} />
+                <CandleCard key={p.id} product={p} accent={cardAccent} isDark={isDark} idx={candleOffset + i} buttonTextColor={cardTheme?.buttonTextColor} />
               ))}
               {Array.from({ length: perView - visible.length }).map((_, i) => (
                 <div key={`spacer-${i}`} style={{ flex:"1 1 0", minWidth:0 }} />
@@ -342,6 +287,7 @@ const ScrapbookSection = () => {
   const [categories, setCategories]   = useState<ShopCategory[]>(FALLBACK_CATS);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [settings, setSettings]       = useState<ScrapbookSettings>(DEFAULT_SCRAPBOOK_SETTINGS);
+  const [cardTheme, setCardTheme]     = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
 
   // page: 0=cover, 1..N=categories
   const [currentPage, setCurrentPage]   = useState(0);
@@ -364,6 +310,8 @@ const ScrapbookSection = () => {
       .then(data => setAllProducts(data?.items ?? []));
     getContent<ScrapbookSettings>("scrapbookSettings", DEFAULT_SCRAPBOOK_SETTINGS)
       .then(s => { if (s) setSettings(s); });
+    getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME)
+      .then(t => { if (t) setCardTheme(t); });
   }, []);
 
   // Resolve product_ids → actual Product objects for a category
@@ -427,6 +375,7 @@ const ScrapbookSection = () => {
         candleOffset={offset}
         setCandleOffset={live ? (n => setCandleOffsets(prev => ({ ...prev, [pageIdx]: n }))) : () => {}}
         interactive={live}
+        cardTheme={cardTheme}
       />
     );
   };

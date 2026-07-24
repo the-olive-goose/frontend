@@ -3,20 +3,24 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, DEFAULT_DEALS, type Product, type Bundle, type DealsContent } from "@/lib/defaults";
+import { DEFAULT_CONTENT, DEFAULT_DEALS, DEFAULT_PRODUCT_CARD_THEME, resolveCardAccent, type Product, type Bundle, type DealsContent, type ProductCardTheme } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
 import { productPath } from "@/lib/products";
+import { useJsonLd } from "@/hooks/useJsonLd";
+import { SITE_URL, breadcrumbJsonLd } from "@/lib/seo";
 import FooterSection from "@/components/sections/FooterSection";
+import AddToCartButton from "@/components/ui/AddToCartButton";
+import RichText, { stripRichText } from "@/lib/richtext";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
 
 const FALLBACK_IMGS = [m1, m2];
 
-const BundleCard = ({ bundle, allProducts, idx }: { bundle: Bundle; allProducts: Product[]; idx: number }) => {
+const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bundle: Bundle; allProducts: Product[]; idx: number; accent: string; buttonTextColor: string }) => {
   const { user, openAuthModal } = useAuth();
-  const { addToCart, items } = useCart();
+  const { addToCart } = useCart();
   const [adding, setAdding] = useState(false);
 
   const bundleProducts = bundle.product_ids
@@ -35,25 +39,28 @@ const BundleCard = ({ bundle, allProducts, idx }: { bundle: Bundle; allProducts:
     : bundle.discount_value;
   const bundlePrice = Math.max(0, originalTotal - discount);
 
-  const allInCart = bundleProducts.every(p => items.some(i => i.product.id === p.id));
-
   const handleAddBundle = async () => {
     if (!user) { openAuthModal(); return; }
     setAdding(true);
-    for (const p of bundleProducts) {
-      if (!items.some(i => i.product.id === p.id)) {
+    try {
+      // Always add every product in the bundle (incrementing quantity if it is
+      // already in the basket). Bundles share candles, so skipping items that
+      // happen to be in the cart used to leave the button permanently locked.
+      for (const p of bundleProducts) {
         await addToCart(p);
       }
+      toast.success(`${bundle.name} added to basket!`, {
+        description: `You save €${discount.toFixed(2)}`,
+        duration: 3000,
+      });
+    } catch {
+      toast.error("Couldn't add the bundle", { description: "Please try again." });
+    } finally {
+      setAdding(false);
     }
-    setAdding(false);
-    toast.success(`${bundle.name} added to basket!`, {
-      description: `You save €${discount.toFixed(2)}`,
-      duration: 3000,
-    });
   };
 
   const rotate = idx % 2 === 0 ? "-0.8deg" : "0.6deg";
-  const accent = "#6b3520";
 
   return (
     <motion.div
@@ -88,7 +95,7 @@ const BundleCard = ({ bundle, allProducts, idx }: { bundle: Bundle; allProducts:
         </h3>
         {bundle.description && (
           <p style={{ fontFamily: "'Permanent Marker',cursive", fontSize: "clamp(0.6rem,0.9vw,0.75rem)", color: "rgba(30,20,10,0.55)", transform: "rotate(-1deg)" }}>
-            {bundle.description}
+            <RichText text={bundle.description} />
           </p>
         )}
       </div>
@@ -125,14 +132,14 @@ const BundleCard = ({ bundle, allProducts, idx }: { bundle: Bundle; allProducts:
             Bundle €{bundlePrice.toFixed(2)}
           </p>
         </div>
-        <motion.button
-          whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.95 }}
+        <AddToCartButton
+          size="md"
+          accent={accent}
+          textColor={buttonTextColor}
           onClick={handleAddBundle}
-          disabled={adding || allInCart}
-          style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 600, fontSize: "clamp(0.82rem,1.2vw,1rem)", background: allInCart ? "rgba(107,53,32,0.18)" : accent, color: allInCart ? accent : "#fff", border: allInCart ? `1.5px solid ${accent}` : "none", borderRadius: 50, padding: "10px 24px", cursor: allInCart ? "default" : "pointer", boxShadow: allInCart ? "none" : `0 4px 16px ${accent}44`, transition: "all 0.2s", whiteSpace: "nowrap" }}
-        >
-          {adding ? "Adding…" : allInCart ? "✓ In Basket" : "Add Bundle to Basket"}
-        </motion.button>
+          disabled={adding}
+          label={adding ? "Adding…" : "Add Bundle to Basket"}
+        />
       </div>
 
       {/* Watermark */}
@@ -147,6 +154,7 @@ const DealsPage = () => {
   const [deals, setDeals]       = useState<DealsContent>(DEFAULT_DEALS);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [content, setContent]   = useState(DEFAULT_CONTENT);
+  const [cardTheme, setCardTheme] = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
 
   useEffect(() => {
     Promise.all([
@@ -155,14 +163,41 @@ const DealsPage = () => {
       getContent("footer",          DEFAULT_CONTENT.footer),
       getContent<DealsContent>("deals", DEFAULT_DEALS),
       getContent<{ label: string; headline: string; subtext: string; items: Product[] }>("products", DEFAULT_CONTENT.products),
-    ]).then(([announcementBar, navbar, footer, dealsData, productsData]) => {
+      getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME),
+    ]).then(([announcementBar, navbar, footer, dealsData, productsData, theme]) => {
       setContent(prev => ({ ...prev, announcementBar, navbar, footer }));
       setDeals(dealsData ?? DEFAULT_DEALS);
       setAllProducts(productsData?.items ?? []);
+      if (theme) setCardTheme(theme);
     });
   }, []);
 
+  // Bundles aren't tied to one category, so they always use the global accent.
+  const bundleAccent = resolveCardAccent(cardTheme, null);
+
   const activeBundles = deals.bundles.filter(b => b.is_active);
+
+  useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["Candle Gift Sets & Deals", "/deals"]]));
+
+  // OfferCatalog mirroring the visible bundles — real names and computed prices only.
+  useJsonLd(
+    "deals-catalog",
+    activeBundles.length === 0
+      ? null
+      : {
+          "@context": "https://schema.org",
+          "@type": "OfferCatalog",
+          name: "Candle gift sets & bundle deals by The Olive Goose",
+          url: `${SITE_URL}/deals`,
+          itemListElement: activeBundles.map(b => ({
+            "@type": "Offer",
+            name: b.name,
+            ...(b.description && { description: stripRichText(b.description) }),
+            url: `${SITE_URL}/deals`,
+            priceCurrency: "EUR",
+          })),
+        },
+  );
 
   return (
     <div className="min-h-screen" style={{ background: "var(--color-cream-section)" }}>
@@ -178,12 +213,12 @@ const DealsPage = () => {
             </motion.p>
             <motion.h1 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}
               style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 600, fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05, marginBottom: 12 }}>
-              {deals.page_title}
+              <RichText text={deals.page_title} />
             </motion.h1>
             <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.18 }}
               className="font-sans text-base leading-relaxed max-w-xl mx-auto"
               style={{ color: "rgba(245,239,230,0.7)" }}>
-              {deals.page_subtitle}
+              <RichText text={deals.page_subtitle} />
             </motion.p>
           </div>
         </div>
@@ -200,7 +235,7 @@ const DealsPage = () => {
               {activeBundles
                 .sort((a, b) => a.display_order - b.display_order)
                 .map((bundle, i) => (
-                  <BundleCard key={bundle.id} bundle={bundle} allProducts={allProducts} idx={i} />
+                  <BundleCard key={bundle.id} bundle={bundle} allProducts={allProducts} idx={i} accent={bundleAccent} buttonTextColor={cardTheme.buttonTextColor} />
                 ))}
             </div>
           )}

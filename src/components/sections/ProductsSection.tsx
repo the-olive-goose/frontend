@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { ProductsContent, type Product } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 import { formatPrice } from "@/lib/cart";
 import { isOutOfStock, productPath } from "@/lib/products";
 import { useAuth } from "@/contexts/AuthContext";
@@ -31,19 +32,19 @@ const ProductsSection = ({ data }: Props) => {
 
         {/* Header */}
         <div className="text-center mb-12 space-y-2">
-          <p className="eyebrow">{data.label}</p>
+          <p className="eyebrow"><RichText text={data.label} /></p>
           <h2
             className="h-display"
             style={{ fontSize: "var(--text-display-md)", color: "var(--text-primary)" }}
           >
-            {data.headline}
+            <RichText text={data.headline} />
           </h2>
           {data.subtext && (
             <p
               className="font-sans text-sm max-w-xl mx-auto leading-relaxed mt-2"
               style={{ color: "var(--text-muted)" }}
             >
-              {data.subtext}
+              <RichText text={data.subtext} />
             </p>
           )}
         </div>
@@ -115,7 +116,7 @@ const ProductsSection = ({ data }: Props) => {
                   className="font-sans text-xs"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  {product.description}
+                  <RichText text={product.description} />
                 </p>
                 <p
                   className="font-rounded font-bold text-base"

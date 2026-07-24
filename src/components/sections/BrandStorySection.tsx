@@ -1,4 +1,5 @@
 import { BrandStoryContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 
 interface Props { data: BrandStoryContent }
 
@@ -7,17 +8,17 @@ const BrandStorySection = ({ data }: Props) => (
     <div className="max-w-7xl mx-auto px-6 grid lg:grid-cols-2 gap-16 items-center">
       {/* Text column */}
       <div className="space-y-6">
-        <p className="eyebrow">{data.label}</p>
+        <p className="eyebrow"><RichText text={data.label} /></p>
         <h2
           className="font-serif leading-tight"
           style={{ fontSize: "var(--text-serif-lg)", color: "var(--text-primary)" }}
         >
-          {data.headline}
+          <RichText text={data.headline} />
         </h2>
         <div className="space-y-4">
           {(data.body ?? "").split("\n\n").filter(Boolean).map((para, i) => (
             <p key={i} className="font-sans text-base leading-relaxed" style={{ color: "var(--text-muted)" }}>
-              {para}
+              <RichText text={para} />
             </p>
           ))}
         </div>

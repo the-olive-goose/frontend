@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { NewsletterContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 import { subscribe } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
@@ -33,19 +34,19 @@ const NewsletterSection = ({ data }: Props) => {
   return (
     <section className="py-24 lg:py-32" style={{ background: "var(--bg-newsletter)" }}>
       <div className="max-w-3xl mx-auto px-6 text-center space-y-6">
-        <p className="eyebrow" style={{ color: "rgba(245,239,230,0.6)" }}>{data.label}</p>
+        <p className="eyebrow" style={{ color: "rgba(245,239,230,0.6)" }}><RichText text={data.label} /></p>
         <h2
           className="font-serif leading-tight"
           style={{ fontSize: "var(--text-serif-lg)", color: "var(--text-on-dark)" }}
         >
-          {data.headline}
+          <RichText text={data.headline} />
         </h2>
         {data.subtext && (
           <p
             className="font-sans text-base max-w-md mx-auto leading-relaxed"
             style={{ color: "var(--text-muted-on-dark)" }}
           >
-            {data.subtext}
+            <RichText text={data.subtext} />
           </p>
         )}
 

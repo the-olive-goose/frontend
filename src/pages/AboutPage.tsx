@@ -3,6 +3,8 @@ import { motion } from "framer-motion";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
 import FooterSection from "@/components/sections/FooterSection";
+import { useJsonLd } from "@/hooks/useJsonLd";
+import { breadcrumbJsonLd } from "@/lib/seo";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 24 },
@@ -36,6 +38,8 @@ const AboutPage = () => {
 
   const story = content.brandStory;
   const founder = content.welcomeClub;
+
+  useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["Our Story", "/about"]]));
 
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>

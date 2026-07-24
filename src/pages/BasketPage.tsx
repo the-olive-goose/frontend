@@ -7,6 +7,7 @@ import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent, type Product, type PickupSettingsContent } from "@/lib/defaults";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
+import { computeBundleSavings } from "@/lib/bundleSavings";
 import { getBundleNudges } from "@/lib/bundleNudges";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
@@ -32,10 +33,12 @@ const BasketPage = () => {
     getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings).then(setPickup);
   }, []);
 
-  const appliedBundles = bundles.filter(b =>
-    b.is_active && b.product_ids.length > 0 &&
-    b.product_ids.every(pid => items.some(i => i.product.id === pid))
-  );
+  // Per-unit, non-overlapping bundle allocation — same algorithm the backend
+  // charges with, so what's shown here matches the Stripe total to the cent. The
+  // catalogue is passed so bundles with a deleted (orphaned) product_id still apply
+  // on their surviving candles instead of silently never discounting.
+  const { applied: appliedBundles, totalSavings: bundleSavings } =
+    computeBundleSavings(bundles, items, allProducts.map(p => p.id));
 
   // Bundles where the customer already has some, but not all, of the qualifying items —
   // ranked by how compelling they are to finish, not just listed as-is.
@@ -47,16 +50,6 @@ const BasketPage = () => {
     setAddingNudge(null);
     toast.success(`${nudge.bundle.name} unlocked!`, { description: `You save €${nudge.savings.toFixed(2)}`, duration: 3000 });
   };
-
-  const bundleSavings = appliedBundles.reduce((sum, b) => {
-    const base = b.product_ids.reduce((s, pid) => {
-      const item = items.find(i => i.product.id === pid);
-      if (!item) return s;
-      const n = parseFloat(item.product.price.replace(/[^0-9.]/g, ""));
-      return s + (isNaN(n) ? 0 : n * item.quantity);
-    }, 0);
-    return sum + (b.discount_type === "percentage" ? base * (b.discount_value / 100) : b.discount_value);
-  }, 0);
 
   const subtotalNum = cartSubtotal(items);
   const total = `€${subtotalNum.toFixed(2)}`;
@@ -296,12 +289,10 @@ const BasketPage = () => {
                 </div>
 
                 {/* Bundle savings */}
-                {appliedBundles.map(b => (
-                  <div key={b.id} className="flex justify-between font-sans text-sm" style={{ color: "#007600" }}>
-                    <span>🏷️ {b.name} deal</span>
-                    <span className="font-semibold">
-                      −{b.discount_type === "percentage" ? `${b.discount_value}%` : `€${b.discount_value.toFixed(2)}`}
-                    </span>
+                {appliedBundles.map(ab => (
+                  <div key={ab.bundle.id} className="flex justify-between font-sans text-sm" style={{ color: "#007600" }}>
+                    <span>🏷️ {ab.bundle.name} deal{ab.instances > 1 ? ` ×${ab.instances}` : ""}</span>
+                    <span className="font-semibold">−€{ab.savings.toFixed(2)}</span>
                   </div>
                 ))}
                 {bundleSavings > 0 && (

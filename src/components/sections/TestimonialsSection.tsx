@@ -1,4 +1,5 @@
 import { TestimonialsContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 import { CircularTestimonials } from "@/components/ui/circular-testimonials";
 
 interface Props { data: TestimonialsContent }
@@ -30,13 +31,13 @@ const TestimonialsSection = ({ data }: Props) => {
             className="pill-tag inline-block mb-3"
             style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
           >
-            {data.label}
+            <RichText text={data.label} />
           </span>
           <h2
             className="h-display"
             style={{ fontSize: "var(--text-display-lg)", color: "var(--text-primary)" }}
           >
-            {data.headline}
+            <RichText text={data.headline} />
           </h2>
         </div>
 

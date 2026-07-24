@@ -5,6 +5,7 @@ import { track } from "@/lib/analytics";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import type { SubscribePopupContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 
 // Explicitly dismissed (X) or already subscribed — never show again on this device.
 const DISMISSED_KEY = "og_subscribe_popup_dismissed";
@@ -210,7 +211,7 @@ const SubscribePopupCard = ({ data }: Props) => {
                 className="font-serif"
                 style={{ color: "var(--color-forest-dark)", fontSize: "1.15rem", lineHeight: 1.3 }}
               >
-                {wasAlready ? "You're already on the list!" : fillDiscount(data.success_text, data.discount_percent)}
+                {wasAlready ? "You're already on the list!" : <RichText text={fillDiscount(data.success_text, data.discount_percent)} />}
               </p>
               {issued?.code ? (
                 <>
@@ -253,7 +254,7 @@ const SubscribePopupCard = ({ data }: Props) => {
                   marginTop: 10,
                 }}
               >
-                {fillDiscount(data.eyebrow, data.discount_percent)}
+                <RichText text={fillDiscount(data.eyebrow, data.discount_percent)} />
               </p>
               <h3
                 className="font-serif"
@@ -264,13 +265,13 @@ const SubscribePopupCard = ({ data }: Props) => {
                   margin: "6px 0 8px",
                 }}
               >
-                {fillDiscount(data.headline, data.discount_percent)}
+                <RichText text={fillDiscount(data.headline, data.discount_percent)} />
               </h3>
               <p
                 className="font-sans"
                 style={{ color: "var(--color-forest-dark)", opacity: 0.75, fontSize: "0.85rem", lineHeight: 1.5 }}
               >
-                {fillDiscount(data.subtext, data.discount_percent)}
+                <RichText text={fillDiscount(data.subtext, data.discount_percent)} />
               </p>
 
               <form onSubmit={handleSubmit} style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>

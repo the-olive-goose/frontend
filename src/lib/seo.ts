@@ -26,14 +26,14 @@ export interface RouteMeta {
  */
 export const ROUTE_META: Record<string, RouteMeta> = {
   "/": {
-    title: "The Olive Goose | Handmade Café-Inspired Candles",
+    title: "The Olive Goose | Handmade Café-Inspired Candles, Dublin",
     description:
-      "Hand-poured, café-culture-inspired candles made in Dublin, Ireland. Matcha Hour, Morning Ritual, Pink Order & more. Shop The Olive Goose.",
+      "Luxury handmade candles from Dublin, Ireland. Coffee-scented, café-inspired soy candles, hand-poured in small batches. Free Irish shipping over €65.",
   },
   "/shop": {
-    title: "Shop Handmade Candles | The Olive Goose",
+    title: "Shop Handmade Soy Candles Ireland | The Olive Goose",
     description:
-      "Browse small-batch, hand-poured candles inspired by café culture — made in Dublin, shipped across Ireland. Find your scent at The Olive Goose.",
+      "Shop luxury handmade candles online in Ireland — coffee, bakery and café-inspired scented soy candles, hand-poured in Dublin and shipped nationwide.",
   },
   // Product pages set their own title/description/OG image at runtime (see
   // ProductDetailPage); this entry is the indexable baseline SeoManager applies
@@ -41,28 +41,28 @@ export const ROUTE_META: Record<string, RouteMeta> = {
   "/products/*": {
     title: "Handmade Candles | The Olive Goose",
     description:
-      "Hand-poured, café-culture-inspired candles made in Dublin, Ireland. Explore the scent, the story and the bundle deals at The Olive Goose.",
+      "Hand-poured, café-culture-inspired soy candles made in Dublin, Ireland. Explore the scent, the story and the bundle deals at The Olive Goose.",
     ogType: "product",
   },
   "/deals": {
-    title: "Candle Deals & Bundles | The Olive Goose",
+    title: "Candle Gift Sets & Bundle Deals | The Olive Goose",
     description:
-      "Bundle and save on handmade café-inspired candles from The Olive Goose. Curated candle sets at special prices, made in Dublin, Ireland.",
+      "Save on luxury candle gift sets from The Olive Goose. Handmade café-inspired candle bundles, poured in Dublin and shipped across Ireland.",
   },
   "/about": {
-    title: "Our Story | The Olive Goose Candles, Dublin",
+    title: "Our Story | Irish Candle Makers in Dublin | The Olive Goose",
     description:
-      "The story behind The Olive Goose — handmade, café-culture-inspired candles poured in Dublin, Ireland. Meet the maker and the goose.",
+      "Meet the maker behind The Olive Goose — an independent Irish candle company hand-pouring café-inspired soy candles in small batches in Dublin.",
   },
   "/candle-care": {
-    title: "Candle Care Guide | The Olive Goose",
+    title: "Candle Care Guide: Burn Times, Wick Trimming | The Olive Goose",
     description:
-      "How to care for your handmade candle: first burn, wick trimming, burn times and safety. Get the most from your Olive Goose candle.",
+      "How to care for a handmade soy candle: the first burn, wick trimming, burn times and candle safety — expert tips from Dublin candle makers.",
   },
   "/gift-cards": {
-    title: "Candle Gift Cards | The Olive Goose",
+    title: "Candle Gift Cards Ireland | The Olive Goose",
     description:
-      "Give the gift of a handmade Dublin candle. The Olive Goose gift cards — a perfect present for candle and coffee lovers in Ireland.",
+      "Luxury candle gift cards from The Olive Goose, Dublin. The easy gift for candle and coffee lovers in Ireland — delivered by email, never expires.",
   },
   "/customer-service": {
     title: "Customer Service & Contact | The Olive Goose",
@@ -70,9 +70,9 @@ export const ROUTE_META: Record<string, RouteMeta> = {
       "Need help with an order or a candle? Contact The Olive Goose customer care team — we're happy to help.",
   },
   "/faq": {
-    title: "FAQs | The Olive Goose Candles",
+    title: "FAQs | Shipping, Ingredients & Candle Safety | The Olive Goose",
     description:
-      "Frequently asked questions about The Olive Goose candles: shipping times, order changes, ingredients and candle safety.",
+      "Answers about The Olive Goose handmade candles: Irish shipping times, soy wax ingredients, pet safety, order changes and candle care.",
   },
   "/track-order": {
     title: "Track Your Order | The Olive Goose",
@@ -209,4 +209,23 @@ export function setJsonLd(id: string, data: object | object[] | null) {
 export function parsePriceValue(price: string): string | null {
   const n = parseFloat(String(price).replace(/[^0-9.]/g, ""));
   return Number.isFinite(n) ? n.toFixed(2) : null;
+}
+
+/**
+ * Build a BreadcrumbList JSON-LD object from [name, path] pairs, e.g.
+ * breadcrumbJsonLd([["Home", "/"], ["Shop", "/shop"], ["Espresso Candle", "/products/espresso"]]).
+ * Pass the result to useJsonLd("breadcrumb", …) so Google can show the trail
+ * in place of the raw URL in search results.
+ */
+export function breadcrumbJsonLd(crumbs: Array<[name: string, path: string]>) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: crumbs.map(([name, path], i) => ({
+      "@type": "ListItem",
+      position: i + 1,
+      name,
+      item: `${SITE_URL}${path === "/" ? "/" : path.replace(/\/+$/, "")}`,
+    })),
+  };
 }

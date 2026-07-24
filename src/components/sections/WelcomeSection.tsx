@@ -1,5 +1,6 @@
 import React from "react";
 import { WelcomeClubContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 
 interface Props { data: WelcomeClubContent }
 
@@ -49,7 +50,7 @@ const WelcomeSection = ({ data }: Props) => (
             letterSpacing: "var(--tracking-nav)",
           }}
         >
-          {data.headline}
+          <RichText text={data.headline} />
         </h2>
 
         <p
@@ -61,7 +62,7 @@ const WelcomeSection = ({ data }: Props) => (
             maxWidth: "600px",
           }}
         >
-          {data.name_line}
+          <RichText text={data.name_line} />
         </p>
 
         <p
@@ -73,7 +74,7 @@ const WelcomeSection = ({ data }: Props) => (
             maxWidth: "580px",
           }}
         >
-          {data.bio}
+          <RichText text={data.bio} />
         </p>
 
         <a

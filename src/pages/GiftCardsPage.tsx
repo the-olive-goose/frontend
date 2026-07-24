@@ -2,9 +2,14 @@ import { useEffect, useState } from "react";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type GiftCardsContent } from "@/lib/defaults";
 import FooterSection from "@/components/sections/FooterSection";
+import RichText from "@/lib/richtext";
+import { useJsonLd } from "@/hooks/useJsonLd";
+import { breadcrumbJsonLd } from "@/lib/seo";
 
 const GiftCardsPage = () => {
   const [content, setContent] = useState<GiftCardsContent>(DEFAULT_CONTENT.giftCards);
+
+  useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["Gift Cards", "/gift-cards"]]));
   const [email, setEmail] = useState("");
   const [notified, setNotified] = useState(false);
 
@@ -22,13 +27,13 @@ const GiftCardsPage = () => {
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
       <div className="pt-[var(--nav-h,112px)]">
         <div className="max-w-2xl mx-auto px-3 sm:px-8 pt-6 sm:pt-8 pb-3">
-          <h1 className="font-serif text-3xl font-bold" style={{ color: "#0F1111" }}>{content.heading}</h1>
+          <h1 className="font-serif text-3xl font-bold" style={{ color: "#0F1111" }}><RichText text={content.heading} /></h1>
           <div className="mt-3 mb-5" style={{ height: 1, background: "#DDD" }} />
         </div>
 
         <div className="max-w-2xl mx-auto px-3 sm:px-8 py-4 sm:py-6 space-y-4">
           <div className="bg-white rounded-xl p-6 space-y-5 text-center" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-            <p className="font-sans text-sm leading-relaxed" style={{ color: "#333" }}>{content.intro}</p>
+            <p className="font-sans text-sm leading-relaxed" style={{ color: "#333" }}><RichText text={content.intro} /></p>
 
             <div className="flex flex-wrap justify-center gap-3">
               {content.denominations.map(d => (
@@ -39,7 +44,7 @@ const GiftCardsPage = () => {
               ))}
             </div>
 
-            <p className="font-sans text-xs" style={{ color: "#555" }}>{content.note}</p>
+            <p className="font-sans text-xs" style={{ color: "#555" }}><RichText text={content.note} /></p>
 
             {content.available ? (
               <a href="/shop" className="inline-block font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95"

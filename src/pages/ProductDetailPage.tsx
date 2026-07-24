@@ -15,8 +15,10 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice, MAX_CART_QTY } from "@/lib/cart";
 import { useJsonLd } from "@/hooks/useJsonLd";
-import { applyMeta, SITE_URL, SITE_NAME, parsePriceValue } from "@/lib/seo";
+import { applyMeta, SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import FooterSection from "@/components/sections/FooterSection";
+import AddToCartButton from "@/components/ui/AddToCartButton";
+import RichText, { stripRichText } from "@/lib/richtext";
 import m1 from "@/assets/M1.png";
 
 const euro = (n: number) => `€${n.toFixed(2)}`;
@@ -136,19 +138,17 @@ const QuantityStepper = ({
 // ── Bundle deal (sourced from Today's Deals) ───────────────────────────────────
 
 const BundleDeal = ({
-  deals, label, onAdd, addingId, inBasketIds,
+  deals, label, onAdd, addingId,
 }: {
   deals: BundlePricing[];
   label: string;
   onAdd: (deal: BundlePricing) => void;
   addingId: string | null;
-  inBasketIds: Set<string>;
 }) => {
   const [selected, setSelected] = useState(deals[0]?.bundle.id ?? "");
   const active = deals.find(d => d.bundle.id === selected) ?? deals[0];
   if (!active) return null;
 
-  const allInBasket = active.products.every(p => inBasketIds.has(p.id));
   const adding = addingId === active.bundle.id;
 
   return (
@@ -246,17 +246,14 @@ const BundleDeal = ({
         </span>
       </div>
 
-      <button
+      <AddToCartButton
+        className="mt-3"
+        size="lg"
+        fullWidth
         onClick={() => onAdd(active)}
-        disabled={adding || allInBasket}
-        className="w-full mt-3 py-3.5 font-display text-sm font-semibold transition-all hover:opacity-90 disabled:opacity-60"
-        style={{
-          background: "var(--btn-dark-bg)", color: "var(--btn-dark-text)",
-          borderRadius: "var(--radius-pill)", letterSpacing: "var(--tracking-cta)",
-        }}
-      >
-        {adding ? "Adding…" : allInBasket ? "✓ Bundle in basket" : `Add bundle — save ${euro(active.discount)}`}
-      </button>
+        disabled={adding}
+        label={adding ? "Adding…" : `Add bundle — save ${euro(active.discount)}`}
+      />
       <p className="text-center font-sans text-xs mt-2" style={{ color: "var(--text-muted)" }}>
         From <Link to="/deals" className="underline">Today's Deals</Link>
       </p>
@@ -304,17 +301,17 @@ const CircleSignup = ({ data }: { data: ProductPageContent["circle"] }) => {
           className="font-display leading-tight"
           style={{ fontSize: "var(--text-display-sm)", color: "var(--text-on-dark)" }}
         >
-          {data.headline}
+          <RichText text={data.headline} />
         </h2>
         {data.subtext && (
           <p className="font-sans text-sm max-w-md mx-auto leading-relaxed" style={{ color: "var(--text-muted-on-dark)" }}>
-            {data.subtext}
+            <RichText text={data.subtext} />
           </p>
         )}
 
         {status === "done" ? (
           <p className="font-sans font-medium pt-2" style={{ color: "var(--text-on-dark)" }}>
-            ✓ {data.success_text}
+            ✓ <RichText text={data.success_text} />
           </p>
         ) : (
           <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-3 mt-4 max-w-md mx-auto">
@@ -386,7 +383,7 @@ const RecommendationCard = ({ product }: { product: Product }) => (
       <h3 className="font-display text-base leading-tight" style={{ color: "var(--text-primary)" }}>
         {product.name}
       </h3>
-      <p className="font-sans text-xs" style={{ color: "var(--text-muted)" }}>{product.description}</p>
+      <p className="font-sans text-xs" style={{ color: "var(--text-muted)" }}><RichText text={product.description} /></p>
       <p className="font-display font-semibold text-sm" style={{ color: "var(--text-primary)" }}>
         {formatPrice(product.price)}
       </p>
@@ -399,7 +396,7 @@ const RecommendationCard = ({ product }: { product: Product }) => (
 const ProductDetailPage = () => {
   const { slug } = useParams<{ slug: string }>();
   const { user, requireAuth } = useAuth();
-  const { addToCart, items } = useCart();
+  const { addToCart } = useCart();
 
   const [products, setProducts]     = useState<Product[]>([]);
   const [pageCopy, setPageCopy]     = useState<ProductPageContent>(DEFAULT_CONTENT.productPage);
@@ -458,7 +455,6 @@ const ProductDetailPage = () => {
   );
 
   const paragraphs = useMemo(() => (product ? productParagraphs(product) : []), [product]);
-  const inBasketIds = useMemo(() => new Set(items.map(i => i.product.id)), [items]);
 
   // Per-product <head> tags. SeoManager applies the route-level defaults first;
   // this effect runs after it, so the product-specific title/description win.
@@ -466,15 +462,23 @@ const ProductDetailPage = () => {
     if (!product) return;
     const image = productImages(product)[0];
     applyMeta({
-      title: `${product.name} | ${SITE_NAME}`,
+      title: `${product.name} | Handmade Candle | ${SITE_NAME}`,
       description:
-        (paragraphs[0] || product.description || `${product.name} — a hand-poured candle by ${SITE_NAME}.`)
+        stripRichText(paragraphs[0] || product.description || `${product.name} — a hand-poured candle by ${SITE_NAME}.`)
           .slice(0, 155),
       path: productPath(product),
       ogType: "product",
       ...(image?.startsWith("http") && { ogImage: image }),
     });
   }, [product, paragraphs]);
+
+  // Breadcrumb trail: Home > Shop > this candle.
+  useJsonLd(
+    "breadcrumb",
+    product
+      ? breadcrumbJsonLd([["Home", "/"], ["Shop", "/shop"], [product.name, productPath(product)]])
+      : null,
+  );
 
   useJsonLd(
     "product-detail",
@@ -483,7 +487,7 @@ const ProductDetailPage = () => {
           "@context": "https://schema.org",
           "@type": "Product",
           name: product.name,
-          description: paragraphs.join(" ") || product.description,
+          description: stripRichText(paragraphs.join(" ") || product.description),
           sku: product.id,
           ...(productImages(product).length > 0 && {
             image: productImages(product).map(url => (url.startsWith("http") ? url : `${SITE_URL}${url}`)),
@@ -525,7 +529,7 @@ const ProductDetailPage = () => {
       setAddingBundle(deal.bundle.id);
       try {
         for (const p of deal.products) {
-          if (!inBasketIds.has(p.id)) await addToCart(p, 1);
+          await addToCart(p, 1);
         }
         toast.success(`${deal.bundle.name} added to basket!`, {
           description: `You save ${euro(deal.discount)}`,
@@ -623,7 +627,7 @@ const ProductDetailPage = () => {
                     className="font-sans"
                     style={{ fontSize: "var(--text-body-md)", lineHeight: "var(--leading-relaxed)", color: "var(--text-muted)" }}
                   >
-                    {text}
+                    <RichText text={text} />
                   </p>
                 ))}
               </div>
@@ -631,7 +635,7 @@ const ProductDetailPage = () => {
 
             {/* Quantity */}
             <p className="font-sans text-sm mb-2" style={{ color: "var(--text-primary)" }}>
-              {pageCopy.quantity_label}
+              <RichText text={pageCopy.quantity_label} />
             </p>
             <QuantityStepper value={quantity} onChange={setQuantity} max={Math.max(maxQty, 1)} disabled={outOfStock} />
 
@@ -642,18 +646,15 @@ const ProductDetailPage = () => {
             )}
 
             {/* Buy button — label and behaviour follow the site's auth rule */}
-            <button
+            <AddToCartButton
+              className="mt-5"
+              size="lg"
+              fullWidth
               onClick={handleAddToCart}
               disabled={outOfStock || adding}
               title={outOfStock ? "Out of stock" : !user ? "Sign in to buy" : undefined}
-              className="w-full mt-5 py-4 font-display text-sm font-semibold transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{
-                background: "var(--btn-dark-bg)", color: "var(--btn-dark-text)",
-                borderRadius: "var(--radius-pill)", letterSpacing: "var(--tracking-cta)",
-              }}
-            >
-              {outOfStock ? "Out of Stock" : adding ? "Adding…" : user ? "Add to cart" : "Buy Now"}
-            </button>
+              label={outOfStock ? "Out of Stock" : adding ? "Adding…" : user ? "Add to Cart" : "Buy Now"}
+            />
 
             {!user && !outOfStock && (
               <p className="text-center font-sans text-xs mt-2" style={{ color: "var(--text-muted)" }}>
@@ -668,7 +669,6 @@ const ProductDetailPage = () => {
                 label={pageCopy.bundle_label}
                 onAdd={handleAddBundle}
                 addingId={addingBundle}
-                inBasketIds={inBasketIds}
               />
             )}
           </div>
@@ -681,7 +681,7 @@ const ProductDetailPage = () => {
               className="font-display mb-6"
               style={{ fontSize: "var(--text-display-sm)", color: "var(--text-primary)" }}
             >
-              {pageCopy.recommendations_headline}
+              <RichText text={pageCopy.recommendations_headline} />
             </h2>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
               {recommendations.map(p => <RecommendationCard key={p.id} product={p} />)}

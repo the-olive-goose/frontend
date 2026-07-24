@@ -1,26 +1,16 @@
 import { CandleCareContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 
 interface Props { data: CandleCareContent }
 
+// Just the care cards — the page headline lives in CandleCarePage's PageHero,
+// so this section deliberately has no header of its own (it used to repeat the
+// same label + headline directly under the hero).
 const CandleCareSection = ({ data }: Props) => {
   const cards = data.cards ?? [];
   return (
   <section id="care" className="py-24 lg:py-32" style={{ background: "var(--bg-page)" }}>
     <div className="max-w-7xl mx-auto px-6">
-      {/* Header */}
-      <div className="text-center mb-16">
-        <p className="eyebrow mb-6">{data.label}</p>
-        <h2
-          className="font-serif"
-          style={{ fontSize: "var(--text-serif-xl)", color: "var(--text-primary)", lineHeight: "var(--leading-heading)" }}
-        >
-          {data.headline_part1}{" "}
-          <em style={{ fontStyle: "italic", color: "var(--text-primary)" }}>
-            {data.headline_part2}
-          </em>
-        </h2>
-      </div>
-
       {/* Cards */}
       <div className="grid sm:grid-cols-3 gap-6">
         {cards.map((card, i) => (
@@ -44,13 +34,13 @@ const CandleCareSection = ({ data }: Props) => {
                 className="font-serif font-semibold"
                 style={{ fontSize: "var(--text-serif-sm)", color: "var(--text-primary)" }}
               >
-                {card.title}
+                <RichText text={card.title} />
               </h3>
               <p
                 className="font-sans text-sm leading-relaxed"
                 style={{ color: "var(--text-muted)" }}
               >
-                {card.description}
+                <RichText text={card.description} />
               </p>
             </div>
           </div>

@@ -35,20 +35,54 @@
       rel="stylesheet"
     />
 
-    <!-- Structured data: Organization + WebSite (site-wide, static) -->
+    <!-- Structured data: Organization + LocalBusiness + WebSite (site-wide, static) -->
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@type": "Organization",
         "@id": "https://theolivegoose.ie/#organization",
         "name": "The Olive Goose",
+        "alternateName": ["Olive Goose", "Olive Goose Candles", "The Olive Goose Candles", "The Olive Goose Ireland"],
         "url": "https://theolivegoose.ie/",
         "logo": "https://theolivegoose.ie/favicon.png",
-        "description": "Handmade, café-culture-inspired candles hand-poured in Dublin, Ireland.",
+        "description": "Independent Irish candle company hand-pouring luxury café-inspired soy candles and home fragrance in Dublin, Ireland.",
+        "email": "hello@theolivegoose.com",
+        "foundingLocation": { "@type": "Place", "name": "Dublin, Ireland" },
         "sameAs": [
           "https://www.instagram.com/theolivegoose",
           "https://www.tiktok.com/@theolivegoose"
         ]
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Store",
+        "@id": "https://theolivegoose.ie/#localbusiness",
+        "name": "The Olive Goose Studio",
+        "parentOrganization": { "@id": "https://theolivegoose.ie/#organization" },
+        "url": "https://theolivegoose.ie/",
+        "image": "https://theolivegoose.ie/og-image.jpg",
+        "description": "Candle studio and collection point for The Olive Goose — handmade café-inspired soy candles, coffee-scented candles and luxury home fragrance, made in Dublin.",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "14 Beacon Court",
+          "addressLocality": "Dublin",
+          "postalCode": "D18 K7W2",
+          "addressCountry": "IE"
+        },
+        "openingHoursSpecification": {
+          "@type": "OpeningHoursSpecification",
+          "dayOfWeek": ["Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+          "opens": "10:00",
+          "closes": "17:00"
+        },
+        "areaServed": [
+          { "@type": "Country", "name": "Ireland" },
+          { "@type": "City", "name": "Dublin" }
+        ],
+        "currenciesAccepted": "EUR",
+        "priceRange": "€€"
       }
     </script>
     <script type="application/ld+json">

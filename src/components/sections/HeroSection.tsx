@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { HeroContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 import CountdownTimer from "@/components/CountdownTimer";
 import { useAuth } from "@/contexts/AuthContext";
 import heroBg from "@/assets/hero-bg.jpg";
@@ -114,7 +115,9 @@ const HeroSection = ({ data }: Props) => {
             {/* When the admin leaves the headline blank (text baked into the hero
                 image), keep a screen-reader/crawler-visible H1 so the homepage
                 never ships an empty heading. */}
-            {data.headline || (
+            {data.headline ? (
+              <RichText text={data.headline} />
+            ) : (
               <span className="sr-only">The Olive Goose — handmade café-inspired candles, Dublin</span>
             )}
           </h1>
@@ -128,7 +131,7 @@ const HeroSection = ({ data }: Props) => {
               marginBottom: "var(--space-10)",
             }}
           >
-            {data.subtext}
+            <RichText text={data.subtext} />
           </p>
 
           {/* Countdown */}

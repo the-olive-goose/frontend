@@ -54,6 +54,42 @@ export interface Product {
   recommended_ids?: string[];
 }
 
+// ── Product card theme ─────────────────────────────────────────────────────────
+// The single source of truth for how product cards look across the whole
+// storefront (homepage strip, scrapbook, shop grid, deals bundles). Stored as one
+// content blob under the "productCardTheme" key and edited in Admin → Shop By
+// Category → "Product Card Style". Change it once, it propagates everywhere.
+export interface ProductCardTheme {
+  /** Global accent — badge, name, price, and "Add to Cart" button. */
+  accent: string;
+  /** Text colour on top of the accent button. */
+  buttonTextColor: string;
+  /** Category IDs allowed to override `accent` with their own `accent_color`. */
+  categoriesUsingOwnAccent: string[];
+}
+
+export const DEFAULT_PRODUCT_CARD_THEME: ProductCardTheme = {
+  accent: "#6b3520",
+  buttonTextColor: "#F5EFE6",
+  categoriesUsingOwnAccent: [],
+};
+
+/**
+ * Resolve the accent a product card should use in a given context. Defaults to
+ * the global accent; a category only tints its own cards when the admin has
+ * opted it into `categoriesUsingOwnAccent`.
+ */
+export const resolveCardAccent = (
+  theme: ProductCardTheme | null | undefined,
+  category?: { id: string; accent_color: string } | null,
+): string => {
+  const t = theme ?? DEFAULT_PRODUCT_CARD_THEME;
+  if (category && t.categoriesUsingOwnAccent?.includes(category.id)) {
+    return category.accent_color;
+  }
+  return t.accent;
+};
+
 export interface CandleCareCard {
   number: string;
   title: string;
@@ -137,6 +173,8 @@ export interface CandleCareContent {
   label: string;
   headline_part1: string;
   headline_part2: string;
+  /** Line under the page headline. Optional because older saved content predates it. */
+  hero_subtitle?: string;
   cards: CandleCareCard[];
 }
 
@@ -305,7 +343,7 @@ export const DEFAULT_CONTENT: SiteContent = {
 
   hero: {
     headline: "Café-inspired candles for everyday moments",
-    subtext: "Candles poured with intention — scents that smell like your favourite cozy corner.",
+    subtext: "Soy candles hand-poured in Dublin — scents that smell like your favourite cozy corner.",
     cta_text: "Shop the Collection",
     cta_href: "#collection",
     bg_image_url: "",
@@ -336,7 +374,7 @@ export const DEFAULT_CONTENT: SiteContent = {
   brandStory: {
     label: "OUR STORY",
     headline: "Born from a love of slow living",
-    body: "The Olive Goose began in a small kitchen, with nothing but beeswax, essential oils, and an obsession with creating the perfect scent. Each candle is hand-poured in small batches, using sustainably sourced soy wax and botanicals chosen for their ability to calm, energise, or ground the senses.\n\nWe believe your home should feel like a sanctuary — and that the right scent can transform any space.",
+    body: "The Olive Goose began in a small Dublin kitchen, with a pot of soy wax, a shelf of fragrance oils, and an obsession with creating the perfect scent. Each candle is hand-poured in small batches in Ireland, using sustainably sourced soy wax and fragrances chosen for their ability to calm, energise, or ground the senses.\n\nWe believe your home should feel like a sanctuary — and that the right scent can transform any space.",
     image_url: "",
     cta_text: "Learn More",
     cta_href: "#",
@@ -390,9 +428,10 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   candleCare: {
-    label: "CANDLECARE",
+    label: "CANDLE CARE",
     headline_part1: "Love it long.",
     headline_part2: "Burn it right.",
+    hero_subtitle: "Everything you need to get the most out of your Olive Goose candle.",
     cards: [
       {
         number: "01",
@@ -483,7 +522,7 @@ export const DEFAULT_CONTENT: SiteContent = {
 
   footer: {
     brand_name: "The Olive Goose",
-    tagline: "Handcrafted with intention.",
+    tagline: "Handcrafted with intention in Dublin, Ireland.",
     links: [
       { label: "About", href: "/about" },
       { label: "Delivery & Returns", href: "/returns" },
@@ -556,6 +595,18 @@ export const DEFAULT_CONTENT: SiteContent = {
       {
         question: "Are your candles safe for pets?",
         answer: "Our candles use cotton wicks and phthalate-free fragrance oils. As with any open flame, keep lit candles out of reach of pets.",
+      },
+      {
+        question: "What are your candles made of?",
+        answer: "Every candle is hand-poured in Dublin using sustainably sourced soy wax, cotton wicks and premium phthalate-free fragrance oils.",
+      },
+      {
+        question: "Are The Olive Goose candles made in Ireland?",
+        answer: "Yes — every candle is handmade in small batches at our Dublin studio and shipped from Ireland.",
+      },
+      {
+        question: "How long do your candles burn for?",
+        answer: "Burn time depends on the size of the candle and how it's cared for. Letting the wax pool reach the edge on the first burn and trimming the wick to ¼ inch before each use gives the longest, cleanest burn — see our Candle Care guide for details.",
       },
     ],
   },

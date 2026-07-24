@@ -2,7 +2,14 @@ import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import useIsMobile from "@/hooks/useIsMobile";
 import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
-import { DEFAULT_CONTENT, type Product } from "@/lib/defaults";
+import {
+  DEFAULT_CONTENT,
+  DEFAULT_PRODUCT_CARD_THEME,
+  resolveCardAccent,
+  type Product,
+  type ProductCardTheme,
+} from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 import {
   CandleCard,
   PlaceholderCard,
@@ -16,6 +23,7 @@ const NewArrivalsSection = () => {
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [candleOffset, setCandleOffset] = useState(0);
   const [show, setShow]             = useState(true);
+  const [cardTheme, setCardTheme]   = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
 
   useEffect(() => {
     Promise.all([
@@ -25,11 +33,13 @@ const NewArrivalsSection = () => {
         "products",
         DEFAULT_CONTENT.products
       ),
-    ]).then(([cats, settings, productsData]) => {
+      getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME),
+    ]).then(([cats, settings, productsData, theme]) => {
       const id = settings?.newArrivalsCategoryId;
       setShow(settings?.showNewArrivals ?? true);
       setCat(id ? (cats.find(c => c.id === id && c.is_active) ?? null) : null);
       setAllProducts(productsData?.items ?? []);
+      if (theme) setCardTheme(theme);
     });
   }, []);
 
@@ -46,6 +56,8 @@ const NewArrivalsSection = () => {
   if (!show || !cat) return null;
   const products  = resolveProducts(cat);
   const isDark    = cat.bg_color.startsWith("#1") || cat.bg_color.startsWith("#17");
+  // Cards use the global accent unless this category opted into its own.
+  const cardAccent = resolveCardAccent(cardTheme, cat);
   const maxOffset = Math.max(0, products.length - perView);
   const visible   = products.slice(candleOffset, candleOffset + perView);
   const canPrev   = candleOffset > 0;
@@ -124,7 +136,7 @@ const NewArrivalsSection = () => {
               {cat.mood_description && (
                 <motion.p initial={{opacity:0}} whileInView={{opacity:1}} viewport={{once:true}} transition={{delay:0.2}}
                   style={{fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.6rem,0.92vw,0.75rem)", color:dimText, marginBottom:14, transform:"rotate(-1deg)"}}>
-                  {cat.mood_description}
+                  <RichText text={cat.mood_description} />
                 </motion.p>
               )}
 
@@ -184,7 +196,7 @@ const NewArrivalsSection = () => {
                 ) : (
                   <AnimatePresence mode="sync">
                     {visible.map((p,i) => (
-                      <CandleCard key={p.id} product={p} accent={cat.accent_color} isDark={isDark} idx={candleOffset+i} />
+                      <CandleCard key={p.id} product={p} accent={cardAccent} isDark={isDark} idx={candleOffset+i} buttonTextColor={cardTheme.buttonTextColor} />
                     ))}
                     {Array.from({length: perView - visible.length}).map((_,i) => (
                       <div key={`spacer-${i}`} style={{flex:"1 1 0", minWidth:0}} />

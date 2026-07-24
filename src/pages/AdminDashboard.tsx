@@ -53,6 +53,8 @@ import {
 import {
   DEFAULT_CONTENT,
   DEFAULT_DEALS,
+  DEFAULT_PRODUCT_CARD_THEME,
+  type ProductCardTheme,
   type SiteContent,
   type Product,
   type Bundle,
@@ -85,6 +87,7 @@ import {
 import { productSlug } from "@/lib/products";
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
+import { RichInput, RichTextarea } from "@/components/admin/RichTextInput";
 import AnalyticsPanel from "@/components/admin/AnalyticsPanel";
 import logo from "@/assets/logo.jpg";
 import { DEFAULT_SCRAPBOOK_SETTINGS, type ScrapbookSettings } from "@/components/sections/ScrapbookSection";
@@ -206,7 +209,7 @@ const AnnouncementBarEditor = ({
       </label>
       {data.messages.map((msg, i) => (
         <div key={i} className="flex gap-2 items-center">
-          <Input
+          <RichInput
             placeholder={`Message ${i + 1}`}
             value={msg}
             onChange={(e) => {
@@ -327,10 +330,10 @@ const HeroEditor = ({
       <SectionHeading title="Home Page" desc="The full-screen hero banner at the top of the homepage." />
 
       <Field label="Headline">
-        <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+        <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
       </Field>
       <Field label="Subtext">
-        <Textarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+        <RichTextarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
       </Field>
       <div className="grid grid-cols-2 gap-4">
         <Field label="CTA Button Text">
@@ -446,13 +449,13 @@ const BrandStoryEditor = ({
   <div className="space-y-6">
     <SectionHeading title="Brand Story" desc="The 'Our Story' two-column section." />
     <Field label="Section Label" hint="Small uppercase label above the headline">
-      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+      <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
     </Field>
     <Field label="Headline">
-      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+      <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
     </Field>
     <Field label="Body Text" hint="Use blank lines to separate paragraphs">
-      <Textarea rows={6} value={data.body} onChange={(e) => onChange({ ...data, body: e.target.value })} />
+      <RichTextarea rows={6} value={data.body} onChange={(e) => onChange({ ...data, body: e.target.value })} />
     </Field>
     <Field label="Image URL">
       <Input
@@ -536,7 +539,7 @@ const ProductPageFields = ({
           </p>
           {paragraphs.map((text, pi) => (
             <div key={pi} className="flex gap-2">
-              <Textarea
+              <RichTextarea
                 rows={3}
                 value={text}
                 onChange={(e) => setList("detail_paragraphs", paragraphs.map((t, j) => (j === pi ? e.target.value : t)))}
@@ -593,13 +596,13 @@ const ProductsEditor = ({
   <div className="space-y-6">
     <SectionHeading title="Products / Collection" desc="Product cards shown in the grid." />
     <Field label="Section Label">
-      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+      <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
     </Field>
     <Field label="Section Headline">
-      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+      <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
     </Field>
     <Field label="Section Subtext">
-      <Textarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+      <RichTextarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
     </Field>
 
     <div className="space-y-4">
@@ -627,7 +630,7 @@ const ProductsEditor = ({
             </Field>
           </div>
           <Field label="Description">
-            <Input value={product.description} onChange={(e) => {
+            <RichInput value={product.description} onChange={(e) => {
               const items = [...data.items];
               items[i] = { ...items[i], description: e.target.value };
               onChange({ ...data, items });
@@ -699,19 +702,19 @@ const ProductPageEditor = ({
     />
 
     <Field label="Quantity label" hint={`Above the quantity picker — e.g. "How many would you like?"`}>
-      <Input value={data.quantity_label} onChange={(e) => onChange({ ...data, quantity_label: e.target.value })} />
+      <RichInput value={data.quantity_label} onChange={(e) => onChange({ ...data, quantity_label: e.target.value })} />
     </Field>
 
     <Field
       label="Bundle section label"
       hint="Heading over the bundle picker. The bundles themselves come straight from Today's Deals — any active bundle containing the product shows up here automatically."
     >
-      <Input value={data.bundle_label} onChange={(e) => onChange({ ...data, bundle_label: e.target.value })} />
+      <RichInput value={data.bundle_label} onChange={(e) => onChange({ ...data, bundle_label: e.target.value })} />
     </Field>
 
     <div className="grid grid-cols-2 gap-3">
       <Field label={`"You may also like" headline`}>
-        <Input
+        <RichInput
           value={data.recommendations_headline}
           onChange={(e) => onChange({ ...data, recommendations_headline: e.target.value })}
         />
@@ -740,10 +743,10 @@ const ProductPageEditor = ({
     </label>
 
     <Field label="Headline">
-      <Input value={data.circle.headline} onChange={(e) => onChange({ ...data, circle: { ...data.circle, headline: e.target.value } })} />
+      <RichInput value={data.circle.headline} onChange={(e) => onChange({ ...data, circle: { ...data.circle, headline: e.target.value } })} />
     </Field>
     <Field label="Subtext">
-      <Textarea rows={2} value={data.circle.subtext} onChange={(e) => onChange({ ...data, circle: { ...data.circle, subtext: e.target.value } })} />
+      <RichTextarea rows={2} value={data.circle.subtext} onChange={(e) => onChange({ ...data, circle: { ...data.circle, subtext: e.target.value } })} />
     </Field>
     <div className="grid grid-cols-2 gap-3">
       <Field label="Input placeholder">
@@ -754,7 +757,7 @@ const ProductPageEditor = ({
       </Field>
     </div>
     <Field label="Success message">
-      <Input value={data.circle.success_text} onChange={(e) => onChange({ ...data, circle: { ...data.circle, success_text: e.target.value } })} />
+      <RichInput value={data.circle.success_text} onChange={(e) => onChange({ ...data, circle: { ...data.circle, success_text: e.target.value } })} />
     </Field>
 
     <SaveButton onClick={onSave} saving={saving} />
@@ -767,19 +770,19 @@ const MomentPillEditor = ({
   <div className="space-y-6">
     <SectionHeading title="'Live in the Moment' Pill" desc="The white pill section between Products and Welcome." />
     <Field label="Text 1" hint={`e.g. "Live in the moment."`}>
-      <Input value={data.text1} onChange={(e) => onChange({ ...data, text1: e.target.value })} />
+      <RichInput value={data.text1} onChange={(e) => onChange({ ...data, text1: e.target.value })} />
     </Field>
     <Field label="Image 1 URL" hint="Paste a direct image link — shown inline inside the pill. The site loads it straight from this URL.">
       <Input placeholder="https://…" value={data.image1_url} onChange={(e) => onChange({ ...data, image1_url: e.target.value })} />
     </Field>
     <Field label="Text 2" hint={`e.g. "Because after all,"`}>
-      <Input value={data.text2} onChange={(e) => onChange({ ...data, text2: e.target.value })} />
+      <RichInput value={data.text2} onChange={(e) => onChange({ ...data, text2: e.target.value })} />
     </Field>
     <Field label="Image 2 URL" hint="Paste a direct image link — shown inline inside the pill. The site loads it straight from this URL.">
       <Input placeholder="https://…" value={data.image2_url} onChange={(e) => onChange({ ...data, image2_url: e.target.value })} />
     </Field>
       <Field label="Text 3" hint={`e.g. "isn't it the most important?"`}>
-      <Input value={data.text3} onChange={(e) => onChange({ ...data, text3: e.target.value })} />
+      <RichInput value={data.text3} onChange={(e) => onChange({ ...data, text3: e.target.value })} />
     </Field>
     <SaveButton onClick={onSave} saving={saving} />
   </div>
@@ -791,16 +794,16 @@ const WelcomeClubEditor = ({
   <div className="space-y-6">
     <SectionHeading title="Welcome to the Club" desc="Green section with founder photo and bio." />
     <Field label="Headline" hint={`e.g. "Welcome to the Olive Goose Club!"`}>
-      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+      <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
     </Field>
     <Field label="Founder Photo URL" hint="Circular profile photo — paste a direct image URL">
       <Input placeholder="https://…" value={data.photo_url} onChange={(e) => onChange({ ...data, photo_url: e.target.value })} />
     </Field>
     <Field label="Name Line" hint={`e.g. "I'm Meghna, the person behind The Olive Goose."`}>
-      <Input value={data.name_line} onChange={(e) => onChange({ ...data, name_line: e.target.value })} />
+      <RichInput value={data.name_line} onChange={(e) => onChange({ ...data, name_line: e.target.value })} />
     </Field>
     <Field label="Bio">
-      <Textarea rows={3} value={data.bio} onChange={(e) => onChange({ ...data, bio: e.target.value })} />
+      <RichTextarea rows={3} value={data.bio} onChange={(e) => onChange({ ...data, bio: e.target.value })} />
     </Field>
     <div className="grid grid-cols-2 gap-4">
       <Field label="Button Text">
@@ -826,18 +829,25 @@ const CandleCareEditor = ({
   saving: boolean;
 }) => (
   <div className="space-y-6">
-    <SectionHeading title="Candle Care" desc='The "Love it long. Burn it right." instruction section.' />
-    <Field label="Section Label">
-      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+    <SectionHeading title="Candle Care" desc="The Candle Care page — its banner (label, headline, subtitle) and the numbered care cards." />
+    <Field label="Section Label" hint="Small uppercase line above the page headline">
+      <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
     </Field>
     <div className="grid grid-cols-2 gap-4">
       <Field label="Headline Part 1 (plain)" hint={`e.g. "Love it long."`}>
-        <Input value={data.headline_part1} onChange={(e) => onChange({ ...data, headline_part1: e.target.value })} />
+        <RichInput value={data.headline_part1} onChange={(e) => onChange({ ...data, headline_part1: e.target.value })} />
       </Field>
-      <Field label="Headline Part 2 (italic / olive)" hint={`e.g. "Burn it right."`}>
-        <Input value={data.headline_part2} onChange={(e) => onChange({ ...data, headline_part2: e.target.value })} />
+      <Field label="Headline Part 2 (gold)" hint={`e.g. "Burn it right."`}>
+        <RichInput value={data.headline_part2} onChange={(e) => onChange({ ...data, headline_part2: e.target.value })} />
       </Field>
     </div>
+    <Field label="Page Subtitle" hint="Shown under the headline in the page banner">
+      <RichTextarea
+        rows={2}
+        value={data.hero_subtitle ?? DEFAULT_CONTENT.candleCare.hero_subtitle ?? ""}
+        onChange={(e) => onChange({ ...data, hero_subtitle: e.target.value })}
+      />
+    </Field>
 
     <div className="space-y-4">
       <label className="block text-sm font-sans font-medium text-foreground">Care Cards</label>
@@ -857,7 +867,7 @@ const CandleCareEditor = ({
             </Field>
             <div className="col-span-2">
               <Field label="Title">
-                <Input value={card.title} onChange={(e) => {
+                <RichInput value={card.title} onChange={(e) => {
                   const cards = [...data.cards];
                   cards[i] = { ...cards[i], title: e.target.value };
                   onChange({ ...data, cards });
@@ -866,7 +876,7 @@ const CandleCareEditor = ({
             </div>
           </div>
           <Field label="Description">
-            <Textarea rows={3} value={card.description} onChange={(e) => {
+            <RichTextarea rows={3} value={card.description} onChange={(e) => {
               const cards = [...data.cards];
               cards[i] = { ...cards[i], description: e.target.value };
               onChange({ ...data, cards });
@@ -902,13 +912,13 @@ const VideosEditor = ({
     <div className="space-y-6">
       <SectionHeading title="Videos" desc="Paste a video URL for each item — a YouTube, Vimeo, or Instagram link, or a direct .mp4 / .webm URL. The site plays it straight from the URL." />
       <Field label="Section Label">
-        <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+        <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
       </Field>
       <Field label="Section Headline">
-        <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+        <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
       </Field>
       <Field label="Section Subtext">
-        <Input value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+        <RichInput value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
       </Field>
 
       <div className="space-y-4">
@@ -920,7 +930,7 @@ const VideosEditor = ({
               <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
             </div>
             <Field label="Title">
-              <Input value={item.title} onChange={(e) => {
+              <RichInput value={item.title} onChange={(e) => {
                 const items = [...data.items];
                 items[i] = { ...items[i], title: e.target.value };
                 onChange({ ...data, items });
@@ -970,10 +980,10 @@ const TestimonialsEditor = ({
   <div className="space-y-6">
     <SectionHeading title="Testimonials" desc="Customer review cards." />
     <Field label="Section Label">
-      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+      <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
     </Field>
     <Field label="Section Headline">
-      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+      <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
     </Field>
 
     <div className="space-y-4">
@@ -985,7 +995,7 @@ const TestimonialsEditor = ({
             <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
           </div>
           <Field label="Quote">
-            <Textarea rows={3} value={item.quote} onChange={(e) => {
+            <RichTextarea rows={3} value={item.quote} onChange={(e) => {
               const items = [...data.items];
               items[i] = { ...items[i], quote: e.target.value };
               onChange({ ...data, items });
@@ -1061,13 +1071,13 @@ const NewsletterEditor = ({
   <div className="space-y-6">
     <SectionHeading title="Newsletter Section" desc="The olive-green email sign-up banner." />
     <Field label="Section Label">
-      <Input value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+      <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
     </Field>
     <Field label="Headline">
-      <Input value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+      <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
     </Field>
     <Field label="Subtext">
-      <Textarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
+      <RichTextarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
     </Field>
     <Field label="Input Placeholder">
       <Input value={data.placeholder} onChange={(e) => onChange({ ...data, placeholder: e.target.value })} />
@@ -1096,10 +1106,10 @@ const FooterEditor = ({
       <Input value={data.brand_name ?? ""} onChange={(e) => onChange({ ...data, brand_name: e.target.value })} />
     </Field>
     <Field label="Tagline">
-      <Input value={data.tagline} onChange={(e) => onChange({ ...data, tagline: e.target.value })} />
+      <RichInput value={data.tagline} onChange={(e) => onChange({ ...data, tagline: e.target.value })} />
     </Field>
     <Field label="Copyright Text">
-      <Input value={data.copyright} onChange={(e) => onChange({ ...data, copyright: e.target.value })} />
+      <RichInput value={data.copyright} onChange={(e) => onChange({ ...data, copyright: e.target.value })} />
     </Field>
 
     <div className="space-y-2">
@@ -1216,10 +1226,10 @@ const ReturnPolicyEditor = ({
   <div className="space-y-6">
     <SectionHeading title="Return Policy" desc="Content shown on the Returns & Refunds page, plus the return-request form." />
     <Field label="Heading">
-      <Input value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+      <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
     </Field>
     <Field label="Intro">
-      <Textarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+      <RichTextarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
     </Field>
     <Field label="Contact Email">
       <Input value={data.contact_email} onChange={(e) => onChange({ ...data, contact_email: e.target.value })} />
@@ -1234,14 +1244,14 @@ const ReturnPolicyEditor = ({
             <RemoveButton onClick={() => onChange({ ...data, sections: data.sections.filter((_, j) => j !== i) })} />
           </div>
           <Field label="Title">
-            <Input value={section.title} onChange={(e) => {
+            <RichInput value={section.title} onChange={(e) => {
               const sections = [...data.sections];
               sections[i] = { ...sections[i], title: e.target.value };
               onChange({ ...data, sections });
             }} />
           </Field>
           <Field label="Body">
-            <Textarea rows={3} value={section.body} onChange={(e) => {
+            <RichTextarea rows={3} value={section.body} onChange={(e) => {
               const sections = [...data.sections];
               sections[i] = { ...sections[i], body: e.target.value };
               onChange({ ...data, sections });
@@ -1280,10 +1290,10 @@ const LegalPageEditor = ({
   <div className="space-y-6">
     <SectionHeading title={title} desc={desc} />
     <Field label="Heading">
-      <Input value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+      <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
     </Field>
     <Field label="Intro">
-      <Textarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+      <RichTextarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
     </Field>
     <Field label="Contact Email">
       <Input value={data.contact_email} onChange={(e) => onChange({ ...data, contact_email: e.target.value })} />
@@ -1298,14 +1308,14 @@ const LegalPageEditor = ({
             <RemoveButton onClick={() => onChange({ ...data, sections: data.sections.filter((_, j) => j !== i) })} />
           </div>
           <Field label="Title">
-            <Input value={section.title} onChange={(e) => {
+            <RichInput value={section.title} onChange={(e) => {
               const sections = [...data.sections];
               sections[i] = { ...sections[i], title: e.target.value };
               onChange({ ...data, sections });
             }} />
           </Field>
           <Field label="Body">
-            <Textarea rows={3} value={section.body} onChange={(e) => {
+            <RichTextarea rows={3} value={section.body} onChange={(e) => {
               const sections = [...data.sections];
               sections[i] = { ...sections[i], body: e.target.value };
               onChange({ ...data, sections });
@@ -1339,10 +1349,10 @@ const GiftCardsEditor = ({
   <div className="space-y-6">
     <SectionHeading title="Gift Cards" desc="Content shown on the Gift Cards page." />
     <Field label="Heading">
-      <Input value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+      <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
     </Field>
     <Field label="Intro">
-      <Textarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+      <RichTextarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
     </Field>
 
     <div className="space-y-2">
@@ -1361,7 +1371,7 @@ const GiftCardsEditor = ({
     </div>
 
     <Field label="Note" hint="Small print shown under the denominations">
-      <Input value={data.note} onChange={(e) => onChange({ ...data, note: e.target.value })} />
+      <RichInput value={data.note} onChange={(e) => onChange({ ...data, note: e.target.value })} />
     </Field>
     <Field label="CTA Button Text" hint={`Shown when gift cards aren't available yet, e.g. "Notify Me When Available"`}>
       <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
@@ -1392,10 +1402,10 @@ const CustomerServiceEditor = ({
   <div className="space-y-6">
     <SectionHeading title="Customer Service" desc="Content shown on the Customer Service page, including FAQs." />
     <Field label="Heading">
-      <Input value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+      <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
     </Field>
     <Field label="Intro">
-      <Textarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+      <RichTextarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
     </Field>
     <div className="grid grid-cols-2 gap-4">
       <Field label="Contact Email">
@@ -1415,14 +1425,14 @@ const CustomerServiceEditor = ({
             <RemoveButton onClick={() => onChange({ ...data, faqs: data.faqs.filter((_, j) => j !== i) })} />
           </div>
           <Field label="Question">
-            <Input value={faq.question} onChange={(e) => {
+            <RichInput value={faq.question} onChange={(e) => {
               const faqs = [...data.faqs];
               faqs[i] = { ...faqs[i], question: e.target.value };
               onChange({ ...data, faqs });
             }} />
           </Field>
           <Field label="Answer">
-            <Textarea rows={2} value={faq.answer} onChange={(e) => {
+            <RichTextarea rows={2} value={faq.answer} onChange={(e) => {
               const faqs = [...data.faqs];
               faqs[i] = { ...faqs[i], answer: e.target.value };
               onChange({ ...data, faqs });
@@ -1487,7 +1497,7 @@ const PickupSettingsEditor = ({
       />
     </Field>
     <Field label="Pickup Notes" hint="Shown to customers after they choose pickup at checkout">
-      <Textarea rows={2} value={data.notes} onChange={(e) => onChange({ ...data, notes: e.target.value })} />
+      <RichTextarea rows={2} value={data.notes} onChange={(e) => onChange({ ...data, notes: e.target.value })} />
     </Field>
 
     <div className="pt-2 border-t border-border">
@@ -2878,10 +2888,10 @@ const DealsEditor = ({
 
       <div className="grid grid-cols-2 gap-3">
         <Field label="Page Title">
-          <Input value={deals.page_title} onChange={e => setDeals(d => ({ ...d, page_title: e.target.value }))} />
+          <RichInput value={deals.page_title} onChange={e => setDeals(d => ({ ...d, page_title: e.target.value }))} />
         </Field>
         <Field label="Page Subtitle">
-          <Input value={deals.page_subtitle} onChange={e => setDeals(d => ({ ...d, page_subtitle: e.target.value }))} />
+          <RichInput value={deals.page_subtitle} onChange={e => setDeals(d => ({ ...d, page_subtitle: e.target.value }))} />
         </Field>
       </div>
 
@@ -2909,7 +2919,7 @@ const DealsEditor = ({
             </div>
 
             <Field label="Description" hint='e.g. "morning ritual starter pack"'>
-              <Input value={bundle.description} onChange={e => updateBundle(bundle.id, { description: e.target.value })} />
+              <RichInput value={bundle.description} onChange={e => updateBundle(bundle.id, { description: e.target.value })} />
             </Field>
 
             <div className="grid grid-cols-2 gap-3">
@@ -3042,10 +3052,10 @@ const SubscribersPanel = ({
             />
           </Field>
           <Field label="Eyebrow line">
-            <Input value={popup.eyebrow} onChange={(e) => onPopupChange({ ...popup, eyebrow: e.target.value })} />
+            <RichInput value={popup.eyebrow} onChange={(e) => onPopupChange({ ...popup, eyebrow: e.target.value })} />
           </Field>
           <Field label="Headline">
-            <Input value={popup.headline} onChange={(e) => onPopupChange({ ...popup, headline: e.target.value })} />
+            <RichInput value={popup.headline} onChange={(e) => onPopupChange({ ...popup, headline: e.target.value })} />
           </Field>
           <Field label="Email placeholder">
             <Input value={popup.placeholder} onChange={(e) => onPopupChange({ ...popup, placeholder: e.target.value })} />
@@ -3055,10 +3065,10 @@ const SubscribersPanel = ({
           </Field>
         </div>
         <Field label="Subtext">
-          <Textarea rows={2} value={popup.subtext} onChange={(e) => onPopupChange({ ...popup, subtext: e.target.value })} />
+          <RichTextarea rows={2} value={popup.subtext} onChange={(e) => onPopupChange({ ...popup, subtext: e.target.value })} />
         </Field>
         <Field label="Success message" hint="Shown after a visitor subscribes from the card.">
-          <Input value={popup.success_text} onChange={(e) => onPopupChange({ ...popup, success_text: e.target.value })} />
+          <RichInput value={popup.success_text} onChange={(e) => onPopupChange({ ...popup, success_text: e.target.value })} />
         </Field>
         <SaveButton onClick={onPopupSave} saving={saving} />
       </div>
@@ -3323,6 +3333,7 @@ const ShopEditor = ({
   const [cats, setCats]           = useState<ShopCategory[]>(initCats);
   const [editingCat, setEditingCat] = useState<Partial<ShopCategory> | null>(null);
   const [scrapSettings, setScrapSettings] = useState<ScrapbookSettings>(DEFAULT_SCRAPBOOK_SETTINGS);
+  const [cardTheme, setCardTheme] = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
   const { toast } = useToast();
 
   useEffect(() => { setCats(initCats); }, [initCats]);
@@ -3330,6 +3341,8 @@ const ShopEditor = ({
   useEffect(() => {
     getContent<ScrapbookSettings>("scrapbookSettings", DEFAULT_SCRAPBOOK_SETTINGS)
       .then(s => { if (s) setScrapSettings(s); });
+    getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME)
+      .then(t => { if (t) setCardTheme({ ...DEFAULT_PRODUCT_CARD_THEME, ...t }); });
   }, []);
 
   const saveScrapSettings = async () => {
@@ -3340,6 +3353,25 @@ const ShopEditor = ({
     } catch (e: unknown) {
       onError(e, "Failed to save scrapbook settings");
     } finally { setSaving(false); }
+  };
+
+  const saveCardTheme = async () => {
+    setSaving(true);
+    try {
+      await saveContent("productCardTheme", cardTheme);
+      toast({ title: "Product card style saved!", description: "Applied across Home, Shop and Deals." });
+    } catch (e: unknown) {
+      onError(e, "Failed to save product card style");
+    } finally { setSaving(false); }
+  };
+
+  const toggleCatOwnAccent = (catId: string, on: boolean) => {
+    setCardTheme(t => ({
+      ...t,
+      categoriesUsingOwnAccent: on
+        ? [...(t.categoriesUsingOwnAccent ?? []), catId]
+        : (t.categoriesUsingOwnAccent ?? []).filter(id => id !== catId),
+    }));
   };
 
 
@@ -3523,6 +3555,79 @@ const ShopEditor = ({
         <SaveButton onClick={saveScrapSettings} saving={saving} />
       </div>
 
+      {/* ── Product Card Style (global) ── */}
+      <div className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <div>
+          <p className="font-sans text-sm font-semibold text-foreground">Product Card Style</p>
+          <p className="font-sans text-xs text-muted-foreground mt-0.5">
+            One accent for every product card across <strong>Home</strong>, <strong>Shop</strong> and <strong>Today's Deals</strong>.
+            Change it here and it updates everywhere — badges, product names, prices and the “Add to Cart” button.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Accent colour" hint="Badges, name, price & Add-to-Cart button">
+            <div className="flex gap-2 items-center">
+              <input type="color"
+                value={cardTheme.accent}
+                onChange={e => setCardTheme(t => ({ ...t, accent: e.target.value }))}
+                className="w-10 h-9 rounded border border-border cursor-pointer flex-shrink-0"
+              />
+              <Input value={cardTheme.accent} onChange={e => setCardTheme(t => ({ ...t, accent: e.target.value }))} />
+            </div>
+          </Field>
+          <Field label="Button text colour" hint="Text on the accent button">
+            <div className="flex gap-2 items-center">
+              <input type="color"
+                value={cardTheme.buttonTextColor}
+                onChange={e => setCardTheme(t => ({ ...t, buttonTextColor: e.target.value }))}
+                className="w-10 h-9 rounded border border-border cursor-pointer flex-shrink-0"
+              />
+              <Input value={cardTheme.buttonTextColor} onChange={e => setCardTheme(t => ({ ...t, buttonTextColor: e.target.value }))} />
+            </div>
+          </Field>
+        </div>
+
+        {/* Live preview of the accent */}
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+          <span className="text-[0.6rem] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full"
+            style={{ fontFamily: "'Fredoka',sans-serif", background: cardTheme.accent, color: "#fff" }}>New</span>
+          <span className="font-sans text-sm font-semibold" style={{ color: cardTheme.accent }}>Iced Matcha Latte Candle</span>
+          <span className="ml-auto text-sm font-bold" style={{ fontFamily: "'Fredoka',sans-serif", color: cardTheme.accent }}>€20</span>
+          <span className="text-xs font-semibold px-3 py-1.5 rounded-full"
+            style={{ fontFamily: "'Fredoka',sans-serif", background: cardTheme.accent, color: cardTheme.buttonTextColor }}>Add to Cart</span>
+        </div>
+
+        {/* Per-category opt-in overrides */}
+        {cats.length > 0 && (
+          <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2">
+            <p className="font-sans text-xs font-semibold text-foreground">Let a category tint its own cards</p>
+            <p className="font-sans text-xs text-muted-foreground">
+              Off = the global accent above. On = that category's own <strong>Accent Color</strong> is used for its product cards
+              (on the homepage strip, the scrapbook, and its shop filter).
+            </p>
+            <div className="space-y-1.5 pt-1">
+              {cats.map(cat => (
+                <label key={cat.id} className="flex items-center justify-between gap-3 font-sans text-sm text-foreground">
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ background: cat.accent_color }} />
+                    <span className="truncate">{cat.name}</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={(cardTheme.categoriesUsingOwnAccent ?? []).includes(cat.id)}
+                    onChange={e => toggleCatOwnAccent(cat.id, e.target.checked)}
+                    className="accent-primary shrink-0"
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <SaveButton onClick={saveCardTheme} saving={saving} />
+      </div>
+
       {allProducts.length === 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-sans text-amber-800">
           ⚠️ No products yet — go to the <strong>Products</strong> tab first and add your candles, then come back here.
@@ -3554,7 +3659,7 @@ const ShopEditor = ({
           </div>
 
           <Field label="Mood Description" hint='e.g. "espresso shots & situationships"'>
-            <Input value={editingCat.mood_description ?? ""} onChange={e => setEditingCat(p => ({ ...p!, mood_description: e.target.value }))} />
+            <RichInput value={editingCat.mood_description ?? ""} onChange={e => setEditingCat(p => ({ ...p!, mood_description: e.target.value }))} />
           </Field>
 
           <Field label="Tags (comma separated)" hint='e.g. "#chaotic, #caffeinated"'>

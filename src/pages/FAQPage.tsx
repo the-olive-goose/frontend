@@ -4,8 +4,10 @@ import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type CustomerServiceContent } from "@/lib/defaults";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import PageHero from "@/components/PageHero";
+import RichText, { stripRichText } from "@/lib/richtext";
 import FooterSection from "@/components/sections/FooterSection";
 import { useJsonLd } from "@/hooks/useJsonLd";
+import { breadcrumbJsonLd } from "@/lib/seo";
 
 /**
  * Dedicated FAQ page. The Q&As come from the same admin-managed
@@ -19,6 +21,8 @@ const FAQPage = () => {
     getContent("customerService", DEFAULT_CONTENT.customerService).then(setContent);
   }, []);
 
+  useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["FAQs", "/faq"]]));
+
   // FAQPage structured data mirroring the visible Q&A accordion below.
   useJsonLd(
     "faq",
@@ -29,8 +33,8 @@ const FAQPage = () => {
           "@type": "FAQPage",
           mainEntity: content.faqs.map((faq) => ({
             "@type": "Question",
-            name: faq.question,
-            acceptedAnswer: { "@type": "Answer", text: faq.answer },
+            name: stripRichText(faq.question),
+            acceptedAnswer: { "@type": "Answer", text: stripRichText(faq.answer) },
           })),
         },
   );
@@ -51,10 +55,10 @@ const FAQPage = () => {
                 {content.faqs.map((faq, i) => (
                   <AccordionItem key={i} value={`faq-${i}`}>
                     <AccordionTrigger className="font-sans text-sm font-semibold text-left" style={{ color: "var(--color-forest-dark)" }}>
-                      {faq.question}
+                      <RichText text={faq.question} />
                     </AccordionTrigger>
                     <AccordionContent className="font-sans text-sm" style={{ color: "rgba(30,41,24,0.72)" }}>
-                      {faq.answer}
+                      <RichText text={faq.answer} />
                     </AccordionContent>
                   </AccordionItem>
                 ))}

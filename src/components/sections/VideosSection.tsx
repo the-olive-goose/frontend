@@ -1,4 +1,5 @@
 import { VideosContent, toEmbedUrl, isEmbedUrl, isDirectVideo } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 
 interface Props { data: VideosContent }
 
@@ -117,17 +118,17 @@ const VideosSection = ({ data }: Props) => {
             className="pill-tag inline-block mb-3"
             style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
           >
-            {data.label || "as seen on"}
+            {data.label ? <RichText text={data.label} /> : "as seen on"}
           </span>
           <h2
             className="h-display"
             style={{ fontSize: "var(--text-display-lg)", color: "var(--text-primary)" }}
           >
-            {data.headline || "catch our vibe ✨"}
+            {data.headline ? <RichText text={data.headline} /> : "catch our vibe ✨"}
           </h2>
           {data.subtext && (
             <p className="font-sans text-sm mt-3 max-w-md mx-auto" style={{ color: "var(--text-muted)" }}>
-              {data.subtext}
+              <RichText text={data.subtext} />
             </p>
           )}
         </div>

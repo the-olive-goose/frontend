@@ -1,5 +1,6 @@
 import React from "react";
 import { MomentPillContent } from "@/lib/defaults";
+import RichText from "@/lib/richtext";
 
 interface Props { data: MomentPillContent }
 
@@ -62,16 +63,16 @@ const MomentPillSection = ({ data }: Props) => (
         className="font-display text-center w-full"
         style={{ fontSize: "clamp(1rem, 2.5vw, 1.25rem)", color: "var(--text-primary)" }}
       >
-        {data.text1}
+        <RichText text={data.text1} />
         <InlineImage src={data.image1_url} alt="A lit Olive Goose candle at home" />
-        {data.text2}
+        <RichText text={data.text2} />
         <InlineImage src={data.image2_url} alt="Calm, nature-inspired candlelight" />
       </p>
       <p
         className="font-display text-center w-full"
         style={{ fontSize: "clamp(1rem, 2.5vw, 1.25rem)", color: "var(--text-primary)" }}
       >
-        {data.text3}
+        <RichText text={data.text3} />
       </p>
     </div>
   </section>

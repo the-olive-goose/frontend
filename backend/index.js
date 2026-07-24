@@ -230,21 +230,32 @@ const BCRYPT_ROUNDS = 12;
 const SESSION_COOKIE = 'og_session';
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — sliding, see requireUserAuth
 
-const sessionCookieOptions = (maxAge) => ({
-  httpOnly: true,
-  secure: IS_PROD,
-  sameSite: IS_PROD ? 'none' : 'lax',
-  path: '/',
-  ...(maxAge ? { maxAge } : {}), // omit maxAge → browser-session cookie ("remember me" off)
-});
+// Decide Secure/SameSite from the actual connection, not just NODE_ENV: Railway
+// terminates TLS at its proxy, and with `trust proxy` set req.secure reflects
+// x-forwarded-proto. If NODE_ENV is ever left unset on a real HTTPS deploy, a
+// NODE_ENV-only check would emit a Lax, non-Secure cookie that browsers refuse
+// to store from a cross-site response — login then "succeeds" but no session
+// persists. Keying on req.secure keeps the cookie None+Secure on any HTTPS
+// deploy while dev over plain http stays Lax (None requires Secure, which
+// browsers won't honour on http://localhost).
+const sessionCookieOptions = (res, maxAge) => {
+  const secure = IS_PROD || Boolean(res.req?.secure);
+  return {
+    httpOnly: true,
+    secure,
+    sameSite: secure ? 'none' : 'lax',
+    path: '/',
+    ...(maxAge ? { maxAge } : {}), // omit maxAge → browser-session cookie ("remember me" off)
+  };
+};
 
 const setSessionCookie = (res, userPayload, { remember = true } = {}) => {
   const token = jwt.sign({ ...userPayload, remember }, JWT_SECRET, { expiresIn: '30d' });
-  res.cookie(SESSION_COOKIE, token, sessionCookieOptions(remember ? SESSION_MAX_AGE_MS : undefined));
+  res.cookie(SESSION_COOKIE, token, sessionCookieOptions(res, remember ? SESSION_MAX_AGE_MS : undefined));
 };
 
 const clearSessionCookie = (res) => {
-  res.clearCookie(SESSION_COOKIE, { httpOnly: true, secure: IS_PROD, sameSite: IS_PROD ? 'none' : 'lax', path: '/' });
+  res.clearCookie(SESSION_COOKIE, sessionCookieOptions(res));
 };
 
 // ── OAuth state (CSRF protection for the Google/Facebook flows) ───────────────
@@ -465,6 +476,98 @@ const parsePrice = (price) => {
 const bundleIsSatisfied = (bundle, items) =>
   !!bundle.is_active && !!bundle.product_ids?.length &&
   bundle.product_ids.every(pid => items.some(i => i.product_id === pid));
+
+// Authoritative Today's Deals bundle savings. Bundles can share candles, so a
+// basket may satisfy several at once — every product UNIT counts toward at most
+// one bundle to avoid stacking the discount on the same candle. Greedily apply
+// the highest-value bundle instance we can still form from the unclaimed units,
+// consume them, and repeat. Mirrors src/lib/bundleSavings.ts exactly (including
+// the deterministic bundle ordering) so the saving shown in the basket/checkout
+// matches what's actually charged — keep the two in sync.
+const computeBundleSavings = (bundles, items, validProductIds) => {
+  const remaining = new Map();
+  const price = new Map();
+  for (const i of items) {
+    remaining.set(i.product_id, (remaining.get(i.product_id) || 0) + i.quantity);
+    price.set(i.product_id, parsePrice(i.product_data?.price));
+  }
+
+  // Drop bundle product_ids that no longer exist in the catalogue (orphaned after a
+  // product delete) — otherwise the bundle could never be satisfied and would never
+  // discount. Matches src/lib/bundleSavings.ts.
+  const catalog = validProductIds ? new Set(validProductIds) : null;
+  const effectiveIds = (b) =>
+    catalog && catalog.size > 0 ? b.product_ids.filter(pid => catalog.has(pid)) : (b.product_ids || []);
+
+  const active = (bundles || [])
+    .filter(b => b.is_active && effectiveIds(b).length > 0)
+    .sort((a, b) => (a.display_order - b.display_order) || String(a.id).localeCompare(String(b.id)));
+
+  const instanceSaving = (ids, b) => {
+    const base = ids.reduce((s, pid) => s + (price.get(pid) || 0), 0);
+    return b.discount_type === 'percentage' ? base * (b.discount_value / 100) : b.discount_value;
+  };
+
+  const applied = new Map();
+  let totalSavings = 0;
+
+  for (;;) {
+    let best = null;
+    let bestIds = [];
+    let bestSaving = 0;
+    for (const b of active) {
+      const ids = effectiveIds(b);
+      if (ids.every(pid => (remaining.get(pid) || 0) >= 1)) {
+        const sv = instanceSaving(ids, b);
+        if (sv > bestSaving) { bestSaving = sv; best = b; bestIds = ids; }
+      }
+    }
+    if (!best || bestSaving <= 0) break;
+
+    for (const pid of bestIds) remaining.set(pid, (remaining.get(pid) || 0) - 1);
+    totalSavings += bestSaving;
+    const rec = applied.get(best.id) || { bundle: best, instances: 0, savings: 0 };
+    rec.instances += 1;
+    rec.savings += bestSaving;
+    applied.set(best.id, rec);
+  }
+
+  return { applied: [...applied.values()], totalSavings };
+};
+
+// Write-side counterpart to computeBundleSavings' orphan tolerance: strip bundle
+// product_ids that reference products no longer in the catalogue, so the persisted
+// deals stay honest (the admin editor and the discount engine then agree on what a
+// bundle contains). A missing/empty catalogue is treated as "unknown" — leave the
+// bundles untouched rather than nuking every product_id. Returns the cleaned bundles
+// and whether anything changed.
+const sanitizeBundles = (bundles, products) => {
+  const validIds = new Set((products || []).map(p => p?.id).filter(Boolean));
+  if (validIds.size === 0 || !Array.isArray(bundles)) return { bundles: bundles || [], changed: false };
+  let changed = false;
+  const cleaned = bundles.map(b => {
+    if (!Array.isArray(b?.product_ids)) return b;
+    const kept = b.product_ids.filter(pid => validIds.has(pid));
+    if (kept.length === b.product_ids.length) return b;
+    changed = true;
+    return { ...b, product_ids: kept };
+  });
+  return { bundles: cleaned, changed };
+};
+
+// Deleting/renaming a product can orphan bundle references — after products are
+// saved, re-clean the stored deals so no bundle points at a product that's gone.
+const cascadeCleanDeals = async (products) => {
+  const { rows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'content_deals'`);
+  const deals = rows[0]?.value;
+  if (!deals || !Array.isArray(deals.bundles)) return;
+  const { bundles, changed } = sanitizeBundles(deals.bundles, products);
+  if (!changed) return;
+  await pool.query(
+    `UPDATE site_settings SET value = $1, updated_at = NOW() WHERE key = 'content_deals'`,
+    [JSON.stringify({ ...deals, bundles })]
+  );
+};
 
 // ── Discount codes ───────────────────────────────────────────────────────────
 // Unambiguous alphabet — no 0/O/1/I/L so a code read off an email can't be
@@ -970,6 +1073,89 @@ const requireUserAuth = (req, res, next) => {
 
 // ── Health check ───────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+
+// ── Dynamic sitemap ────────────────────────────────────────────────────────────
+// Served to crawlers as /sitemap.xml via a Netlify proxy rule (see
+// public/_redirects). Static marketing routes plus one URL per product, so new
+// candles are discoverable without redeploying the frontend. Slug rules must
+// stay in lockstep with src/lib/products.ts (admin slug → slugified name → id).
+
+const SITEMAP_SITE_URL = process.env.PUBLIC_SITE_URL || 'https://theolivegoose.ie';
+
+const sitemapSlugify = (value) =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+const xmlEscape = (s) =>
+  String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
+
+// [path, changefreq, priority] — public, indexable routes only (mirror of the
+// frontend's ROUTE_META minus noindex entries).
+const SITEMAP_STATIC_ROUTES = [
+  ['/',                 'weekly',  '1.0'],
+  ['/shop',             'weekly',  '0.9'],
+  ['/deals',            'weekly',  '0.7'],
+  ['/about',            'monthly', '0.8'],
+  ['/candle-care',      'monthly', '0.6'],
+  ['/gift-cards',       'monthly', '0.6'],
+  ['/customer-service', 'monthly', '0.5'],
+  ['/faq',              'monthly', '0.6'],
+  ['/track-order',      'yearly',  '0.3'],
+  ['/shipping-policy',  'yearly',  '0.3'],
+  ['/returns',          'yearly',  '0.3'],
+  ['/privacy-policy',   'yearly',  '0.2'],
+  ['/terms-of-service', 'yearly',  '0.2'],
+];
+
+app.get('/api/sitemap.xml', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT value, updated_at FROM site_settings WHERE key = 'content_products'"
+    );
+    const products = rows[0]?.value?.items || [];
+    const productsLastmod = (rows[0]?.updated_at ? new Date(rows[0].updated_at) : new Date())
+      .toISOString().slice(0, 10);
+
+    const urls = [];
+    for (const [path, changefreq, priority] of SITEMAP_STATIC_ROUTES) {
+      urls.push(
+        `  <url>\n` +
+        `    <loc>${xmlEscape(SITEMAP_SITE_URL + (path === '/' ? '/' : path))}</loc>\n` +
+        `    <changefreq>${changefreq}</changefreq>\n` +
+        `    <priority>${priority}</priority>\n` +
+        `  </url>`
+      );
+    }
+    for (const p of products) {
+      const slug = sitemapSlugify(p.slug?.trim() || p.name || '') || p.id;
+      if (!slug) continue;
+      const image = typeof p.image_url === 'string' && p.image_url.startsWith('http')
+        ? `\n    <image:image>\n      <image:loc>${xmlEscape(p.image_url)}</image:loc>\n      <image:title>${xmlEscape(`${p.name} — handmade candle by The Olive Goose`)}</image:title>\n    </image:image>`
+        : '';
+      urls.push(
+        `  <url>\n` +
+        `    <loc>${xmlEscape(`${SITEMAP_SITE_URL}/products/${encodeURIComponent(slug)}`)}</loc>\n` +
+        `    <lastmod>${productsLastmod}</lastmod>\n` +
+        `    <changefreq>weekly</changefreq>\n` +
+        `    <priority>0.8</priority>${image}\n` +
+        `  </url>`
+      );
+    }
+
+    res.set('Content-Type', 'application/xml; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.send(
+      `<?xml version="1.0" encoding="UTF-8"?>\n` +
+      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"\n` +
+      `        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n` +
+      urls.join('\n') + `\n</urlset>\n`
+    );
+  } catch (err) { sendServerError(res, err); }
+});
 
 // A fixed dummy hash to compare against when no admin row matches — keeps the
 // login response time roughly constant whether or not the email exists, so a
@@ -1988,19 +2174,12 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
         return res.status(400).json({ error: 'Please provide a delivery address.' });
     }
 
-    // Today's Deals bundle savings — applied whenever the basket fully satisfies
-    // an active bundle's product list, same rule the basket/checkout pages use to
-    // decide whether to display the discount, so what's shown matches what's charged.
+    // Today's Deals bundle savings — per-unit, non-overlapping allocation (same
+    // algorithm the basket/checkout pages display), so what's shown matches what's
+    // charged even when bundles share candles.
     const { rows: dealsRows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'content_deals'`);
     const bundles = dealsRows[0]?.value?.bundles || [];
-    const bundleSavings = bundles.reduce((sum, b) => {
-      if (!bundleIsSatisfied(b, items)) return sum;
-      const base = b.product_ids.reduce((s, pid) => {
-        const item = items.find(i => i.product_id === pid);
-        return item ? s + parsePrice(item.product_data?.price) * item.quantity : s;
-      }, 0);
-      return sum + (b.discount_type === 'percentage' ? base * (b.discount_value / 100) : b.discount_value);
-    }, 0);
+    const { totalSavings: bundleSavings } = computeBundleSavings(bundles, items, catalog.map(p => p.id));
 
     // Welcome / subscriber discount code (optional). Reserved here so the hold is
     // in place before the shopper is handed to Stripe; it's only spent for good
@@ -3216,19 +3395,38 @@ app.get('/api/content/:section', async (req, res) => {
 });
 
 app.put('/api/content/:section', requireAuth, async (req, res) => {
-  const key = `content_${req.params.section}`;
+  const section = req.params.section;
+  const key = `content_${section}`;
   try {
-    if (req.params.section === 'products') {
+    let body = req.body;
+
+    if (section === 'products') {
       const { rows: prevRows } = await pool.query('SELECT value FROM site_settings WHERE key = $1', [key]);
       getAutomationSettings()
         .then(settings => evaluateBackInStockDecisions(prevRows[0]?.value?.items, req.body?.items, settings))
         .catch(err => console.error('[evaluateBackInStockDecisions]', err));
     }
+
+    // Deals save: drop bundle product_ids that don't match a real product, so a stale
+    // or mistyped reference can't be stored and silently break the discount.
+    if (section === 'deals' && Array.isArray(body?.bundles)) {
+      const { rows: prodRows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'content_products'`);
+      const { bundles } = sanitizeBundles(body.bundles, prodRows[0]?.value?.items || []);
+      body = { ...body, bundles };
+    }
+
     await pool.query(
       `INSERT INTO site_settings (key, value) VALUES ($1, $2)
        ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
-      [key, JSON.stringify(req.body)]
+      [key, JSON.stringify(body)]
     );
+
+    // Products save: a delete/rename here can orphan bundle references — cascade-clean
+    // the deals so no bundle points at a product that no longer exists.
+    if (section === 'products') {
+      await cascadeCleanDeals(body?.items || []);
+    }
+
     res.json({ success: true });
   } catch (err) { sendServerError(res, err); }
 });
@@ -4000,6 +4198,31 @@ async function initDb() {
       `INSERT INTO admins (email, password_hash) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING`,
       [process.env.ADMIN_EMAIL.toLowerCase().trim(), process.env.ADMIN_PASSWORD_HASH]
     );
+  }
+
+  // Heal any bundle product_ids orphaned by past product deletions so the persisted
+  // deals match the live catalogue (the discount engine already tolerates orphans at
+  // read time — this cleans the stored data too, e.g. the "Classics Duo" that carried
+  // a deleted product id). Best-effort: a failure here must never block boot.
+  try {
+    const [dRows, pRows] = await Promise.all([
+      pool.query(`SELECT value FROM site_settings WHERE key = 'content_deals'`),
+      pool.query(`SELECT value FROM site_settings WHERE key = 'content_products'`),
+    ]);
+    const deals = dRows.rows[0]?.value;
+    const products = pRows.rows[0]?.value?.items || [];
+    if (deals && Array.isArray(deals.bundles) && products.length) {
+      const { bundles, changed } = sanitizeBundles(deals.bundles, products);
+      if (changed) {
+        await pool.query(
+          `UPDATE site_settings SET value = $1, updated_at = NOW() WHERE key = 'content_deals'`,
+          [JSON.stringify({ ...deals, bundles })]
+        );
+        console.log('🧹 Cleaned orphaned bundle product references in content_deals');
+      }
+    }
+  } catch (err) {
+    console.error('[bundle sanitize on boot]', err);
   }
 
   console.log('✅ Database ready');

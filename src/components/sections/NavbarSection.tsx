@@ -8,6 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
 import CartDrawer from "@/components/CartDrawer";
+import RichText, { stripRichText } from "@/lib/richtext";
 import AccountDropdown from "@/components/AccountDropdown";
 import logo from "@/assets/logo.jpg";
 import m1 from "@/assets/M1.png";
@@ -55,7 +56,7 @@ const AnnouncementBar = ({ data }: { data: AnnouncementBarContent }) => {
       style={{ background: "var(--bg-announce)", minHeight: "34px" }}>
       <p key={current} className={`font-display text-xs tracking-wide text-center ${cls}`}
         style={{ color: "var(--color-white)" }}>
-        {messages[current]}
+        <RichText text={messages[current]} />
       </p>
     </div>
   );
@@ -90,7 +91,7 @@ const ShopDropdown = ({ categories, onClose }: { categories: ShopCategory[]; onC
           <div className="min-w-0">
             <span className="font-display text-sm block truncate" style={{ color: "var(--color-forest-dark)" }}>{cat.name}</span>
             {cat.mood_description && (
-              <span className="font-sans text-xs block truncate" style={{ color: "rgba(30,41,24,0.5)" }}>{cat.mood_description}</span>
+              <span className="font-sans text-xs block truncate" style={{ color: "rgba(30,41,24,0.5)" }}>{stripRichText(cat.mood_description)}</span>
             )}
           </div>
         </a>
@@ -269,7 +270,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
                         <div className="flex-1 min-w-0">
                           <p className="font-sans text-sm font-medium truncate" style={{ color: "#111" }}>{p.name}</p>
                           {p.description && (
-                            <p className="font-sans text-xs truncate" style={{ color: "#666" }}>{p.description}</p>
+                            <p className="font-sans text-xs truncate" style={{ color: "#666" }}>{stripRichText(p.description)}</p>
                           )}
                         </div>
                         <span className="font-sans text-sm font-semibold shrink-0" style={{ color: "#6b3520" }}>{formatPrice(p.price)}</span>
