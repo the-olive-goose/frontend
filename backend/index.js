@@ -233,7 +233,46 @@ const JWT_SECRET   = process.env.JWT_SECRET   || 'changeme-use-a-real-secret-in-
 // must use exactly one, so take the first entry as the canonical site address.
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:8080')
   .split(',')[0].trim().replace(/\/+$/, '');
+// Public base for URLs the *browser* is sent to as part of an auth flow — the
+// Google/Facebook OAuth redirect_uri, and uploaded-media links. It must be the
+// address the shopper's browser already has open, NOT the platform hostname the
+// container happens to answer on: the OAuth callback sets the session cookie, and
+// a cookie set on a different registrable domain than the storefront is a
+// third-party cookie that Safari drops and Chrome drops in incognito. With the
+// storefront on Netlify proxying /api/* through to this service (public/_redirects),
+// the right value is the site itself — https://theolivegoose.ie — which also keeps
+// the redirect_uri registered in Google Cloud Console stable if the API ever moves.
 const BACKEND_URL  = process.env.BACKEND_URL   || 'http://localhost:3001';
+
+// ── Boot-time config sanity check ──────────────────────────────────────────────
+// These misconfigurations break sign-in in a way that reads as an app bug rather
+// than a config bug: login returns 200 with the user, the UI flips to signed-in,
+// the Set-Cookie is silently discarded by the browser, and the next request 401s.
+// Nothing in the logs says why. Say it out loud at boot instead.
+//
+// Last-two-labels rather than a real Public Suffix List lookup — enough to catch
+// the case that matters (a shop on one domain, the API on the platform's own), and
+// it never fires falsely on a same-site pair. Under a multi-label suffix like
+// .co.uk it just under-warns, which is the right way for a heuristic to fail.
+const registrableDomain = (url) => {
+  try { return new URL(url).hostname.split('.').slice(-2).join('.'); }
+  catch { return null; }
+};
+
+const warnOnMisconfiguration = () => {
+  const warn = (msg) => console.warn(`[config] ${msg}`);
+  const frontIsPublic = /^https:/.test(FRONTEND_URL);
+
+  if (frontIsPublic && !IS_PROD)
+    warn(`NODE_ENV is "${process.env.NODE_ENV ?? 'unset'}" but FRONTEND_URL is public (${FRONTEND_URL}). ` +
+         `HSTS is off, error responses leak stack traces, and signup OTPs are returned in the API response when email delivery fails. Set NODE_ENV=production.`);
+
+  if (frontIsPublic && /localhost/.test(BACKEND_URL))
+    warn(`BACKEND_URL is still ${BACKEND_URL} on a public deploy — Google/Facebook will reject the OAuth callback with redirect_uri_mismatch ("Access blocked"). Set BACKEND_URL to ${FRONTEND_URL}.`);
+  else if (frontIsPublic && registrableDomain(BACKEND_URL) !== registrableDomain(FRONTEND_URL))
+    warn(`BACKEND_URL (${BACKEND_URL}) is a different site than FRONTEND_URL (${FRONTEND_URL}). ` +
+         `The OAuth callback would set the session cookie on ${registrableDomain(BACKEND_URL)}, where the storefront can't use it — social sign-in will appear to succeed and then log the user straight back out. Set BACKEND_URL to ${FRONTEND_URL}.`);
+};
 
 const BCRYPT_ROUNDS = 12;
 
@@ -281,18 +320,29 @@ const clearSessionCookie = (res) => {
 // round-trip through the provider's `state` param — a forged callback link
 // (login CSRF: silently signing the victim into an attacker's account) fails
 // the comparison because the attacker can't set the victim's cookie.
+// Stays SameSite=Lax (not None): the callback arrives as a top-level GET navigation
+// from Google, which Lax allows, so it never needs the cross-site relaxation the
+// session cookie does. Secure is derived from the live connection rather than
+// NODE_ENV for the same reason as the session cookie above — a deploy that forgets
+// NODE_ENV=production would otherwise hand out a plaintext-transmissible nonce.
 const OAUTH_STATE_COOKIE = 'og_oauth_state';
-const oauthStateCookieOptions = { httpOnly: true, secure: IS_PROD, sameSite: 'lax', path: '/', maxAge: 10 * 60 * 1000 };
+const oauthStateCookieOptions = (res) => ({
+  httpOnly: true,
+  secure: IS_PROD || Boolean(res.req?.secure),
+  sameSite: 'lax',
+  path: '/',
+  maxAge: 10 * 60 * 1000,
+});
 
 const issueOauthState = (res) => {
   const state = crypto.randomBytes(16).toString('hex');
-  res.cookie(OAUTH_STATE_COOKIE, state, oauthStateCookieOptions);
+  res.cookie(OAUTH_STATE_COOKIE, state, oauthStateCookieOptions(res));
   return state;
 };
 
 const consumeOauthState = (req, res) => {
   const expected = req.cookies?.[OAUTH_STATE_COOKIE];
-  res.clearCookie(OAUTH_STATE_COOKIE, { ...oauthStateCookieOptions, maxAge: undefined });
+  res.clearCookie(OAUTH_STATE_COOKIE, { ...oauthStateCookieOptions(res), maxAge: undefined });
   const got = req.query.state;
   if (!expected || typeof got !== 'string' || got.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got));
@@ -4286,6 +4336,7 @@ const pruneAnalyticsEvents = async () => {
 };
 
 const PORT = process.env.PORT || 3001;
+warnOnMisconfiguration();
 initDb()
   .then(() => {
     app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));

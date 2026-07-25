@@ -9,7 +9,7 @@
 // 'purchase' is intentionally never sent from here — the backend writes it when
 // Stripe confirms the order (see finalizeCheckoutSession in backend/index.js).
 
-const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
+import { API_URL } from './apiBase';
 
 const VISITOR_KEY = 'og_analytics_vid';
 const SESSION_KEY = 'og_analytics_sid';

@@ -1,9 +1,5 @@
 import { fetchWithTimeout, RequestTimeoutError } from './fetchTimeout';
-
-// In dev the backend runs on a separate port; in production the same Railway
-// service serves both the SPA and the API, so use a same-origin relative URL.
-// VITE_API_URL can override either (e.g. split frontend/backend deployments).
-const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
+import { API_URL } from './apiBase';
 
 // ── Token helpers ──────────────────────────────────────────────────────────────
 const getToken = () => localStorage.getItem('admin_token');
@@ -53,7 +49,7 @@ export const login = async (email: string, password: string): Promise<void> => {
     });
   } catch (networkErr) {
     if (networkErr instanceof RequestTimeoutError) throw networkErr;
-    throw new Error(`Cannot reach backend at ${API_URL} — check VITE_API_URL env var`);
+    throw new Error(`Cannot reach the backend at ${API_URL || location.origin}/api — check the /api proxy in public/_redirects (prod) or that the API is running on :3001 (dev)`);
   }
   if (!res.ok) {
     let errMsg = `HTTP ${res.status}`;

@@ -1,7 +1,5 @@
 import { fetchWithTimeout } from './fetchTimeout';
-
-// Same-origin in production (Railway serves SPA + API together); separate port in dev.
-const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
+import { API_URL } from './apiBase';
 
 // The session lives in an httpOnly cookie set by the backend — never touched by
 // page JS. Every request just needs `credentials: 'include'` so the browser
