@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
@@ -68,6 +68,37 @@ const CheckoutPage = () => {
   const [saveToAccount, setSaveToAccount] = useState(false);
   const [saveChoice, setSaveChoice] = useState<"default" | "another">("another");
   const [contactPhone, setContactPhone] = useState("");
+
+  // Publish the mobile sticky bar's height as --bottom-bar-h (mirrors the
+  // navbar's --nav-h) so bottom-anchored overlays can clear it. Without this the
+  // cookie consent banner sat directly on top of the pay button and swallowed
+  // every tap — mobile checkout was unreachable for anyone who hadn't already
+  // dismissed the notice.
+  const bottomBarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = bottomBarRef.current;
+    const root = document.documentElement;
+    if (!el) {
+      root.style.setProperty("--bottom-bar-h", "0px");
+      return;
+    }
+    // Only write when the value actually changes: a ResizeObserver callback that
+    // touches layout on every fire can feed itself and thrash.
+    let last = "";
+    const setVar = () => {
+      const next = `${el.offsetHeight}px`;
+      if (next === last) return;
+      last = next;
+      root.style.setProperty("--bottom-bar-h", next);
+    };
+    setVar();
+    const observer = new ResizeObserver(setVar);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      root.style.setProperty("--bottom-bar-h", "0px");
+    };
+  }, [user, items.length]);
   const [codeInput, setCodeInput] = useState("");
   const [appliedCode, setAppliedCode] = useState<{ code: string; type: "percentage" | "fixed"; value: number } | null>(null);
   const [codeError, setCodeError] = useState("");
@@ -146,7 +177,12 @@ const CheckoutPage = () => {
     : appliedCode.type === "fixed"
       ? `€${appliedCode.value.toFixed(2)} off`
       : `${appliedCode.value}% off`;
-  const discountAmount = pickupDiscountAmount + bundleSavings + codeDiscountAmount;
+  // Clamp the combined discount to the subtotal, exactly as the backend does before
+  // it builds the Stripe coupon. A generous stack (pickup % + bundle + code) can
+  // exceed the basket value; without the same clamp here the page would subtract the
+  // whole saving, show €0.00, and then Stripe would still bill the shipping — the
+  // shopper agreeing to one number and being charged another.
+  const discountAmount = Math.min(pickupDiscountAmount + bundleSavings + codeDiscountAmount, subtotalNum);
   const flatShipping = pickup.flat_shipping_rate ?? 4.99;
   const shipping = isPickup ? 0 : (subtotalNum >= pickup.free_shipping_threshold ? 0 : flatShipping);
   const grandTotal = Math.max(0, subtotalNum - discountAmount + shipping);
@@ -513,7 +549,7 @@ const CheckoutPage = () => {
                             style={inputStyle}
                           />
                           <button onClick={applyCode} disabled={validatingCode || !codeInput.trim()}
-                            className="shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
+                            className="og-tap justify-center shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
                             style={{ background: "#e7e7e7", border: "1px solid #ccc", color: "#111" }}>
                             {validatingCode ? "…" : "Apply"}
                           </button>
@@ -550,9 +586,13 @@ const CheckoutPage = () => {
         </div>
       </div>
 
-      {/* Mobile sticky checkout bar — keeps the CTA reachable without scrolling back up */}
+      {/* Mobile sticky checkout bar — keeps the CTA reachable without scrolling back up.
+          Its height is published as --bottom-bar-h (same pattern as the navbar's
+          --nav-h) so anything else anchored to the bottom of the viewport — the
+          cookie consent banner above all — can sit clear of it instead of covering
+          the one button that takes the money. */}
       {user && items.length > 0 && (
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 px-3 py-3"
+        <div ref={bottomBarRef} className="lg:hidden fixed bottom-0 left-0 right-0 z-40 px-3 py-3"
           style={{ background: "#fff", borderTop: "1px solid #DDD", boxShadow: "0 -2px 12px rgba(0,0,0,0.08)" }}>
           {error && <p className="font-sans text-xs mb-2 text-center" style={{ color: "#C7511F" }}>{error}</p>}
           <button onClick={handlePlaceOrder} disabled={placing}

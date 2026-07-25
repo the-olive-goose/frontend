@@ -8,6 +8,7 @@ import { DEFAULT_CONTENT, type PickupSettingsContent } from "@/lib/defaults";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
+import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 
 const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean; onExternalClose?: () => void } = {}) => {
   const { items, removeFromCart, updateQuantity, count, total, clearCart } = useCart();
@@ -21,6 +22,9 @@ const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean;
   useEffect(() => {
     getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings).then(setPickup);
   }, []);
+
+  // The drawer covers the screen on a phone; the page behind it stays put.
+  useBodyScrollLock(open);
 
   if (!user) return null;
 

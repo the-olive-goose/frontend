@@ -105,8 +105,22 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL?.includes('railway') ? { rejectUnauthorized: false } : false,
 });
 
+// An `Origin` header is always scheme://host[:port] — no trailing slash, no path,
+// and the scheme/host are lowercase. A FRONTEND_URL copied out of a browser bar
+// ("https://shop.example.com/") therefore never matches, and the whole storefront
+// gets 403s on launch with nothing in the logs but "Origin not allowed". Normalise
+// to an origin before comparing, and accept a comma-separated list so an apex +
+// www pair (or a staging domain) can be configured without a code change.
+const toOrigin = (value) => {
+  try {
+    return new URL(String(value).trim()).origin;
+  } catch {
+    return null; // not a usable URL — drop it rather than allowing a bad entry
+  }
+};
+
 const allowedOrigins = [
-  process.env.FRONTEND_URL,
+  ...String(process.env.FRONTEND_URL || '').split(',').map(toOrigin),
   'http://localhost:5173',
   'http://localhost:5199',
   'http://localhost:8080',
@@ -115,7 +129,7 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    if (!origin || allowedOrigins.includes(toOrigin(origin) ?? origin)) return cb(null, true);
     const err = new Error('Origin not allowed');
     err.status = 403; // a rejected origin is a client error, not a server crash
     cb(err);
@@ -214,7 +228,11 @@ if (IS_PROD && !process.env.JWT_SECRET) {
   process.exit(1);
 }
 const JWT_SECRET   = process.env.JWT_SECRET   || 'changeme-use-a-real-secret-in-production';
-const FRONTEND_URL = process.env.FRONTEND_URL  || 'http://localhost:8080';
+// FRONTEND_URL may list several allowed origins (see the CORS allowlist above);
+// links we *build* — OAuth callbacks, Stripe return URLs, order and reset emails —
+// must use exactly one, so take the first entry as the canonical site address.
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:8080')
+  .split(',')[0].trim().replace(/\/+$/, '');
 const BACKEND_URL  = process.env.BACKEND_URL   || 'http://localhost:3001';
 
 const BCRYPT_ROUNDS = 12;
@@ -292,9 +310,12 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
 });
+// Overridable like the auth/API limiters so a full e2e run — which signs up
+// several throwaway accounts — doesn't starve later suites of their codes.
+// Left at 5/15min everywhere else.
 const otpSendLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: Number(process.env.OTP_RATE_LIMIT_MAX) || 5,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many codes requested. Please wait a few minutes and try again.' },
@@ -2133,7 +2154,12 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
       `SELECT value FROM site_settings WHERE key = 'content_pickupSettings'`
     );
     const pickup = pickupRows[0]?.value || {};
-    const freeShippingThreshold = Number(pickup.free_shipping_threshold) || 65;
+    // Same ?? / isFinite treatment as the flat rate below: a threshold of 0 means
+    // "free shipping on everything", and `|| 65` would quietly reinstate a €65 bar.
+    // The storefront honours the raw 0, so the mismatch would show FREE in the
+    // basket and still bill shipping at Stripe.
+    const rawThreshold = Number(pickup.free_shipping_threshold);
+    const freeShippingThreshold = Number.isFinite(rawThreshold) ? rawThreshold : 65;
     // Use ?? / isFinite (not ||) so an admin-set rate of 0 is honored — 0 is falsy.
     const rawFlatRate = Number(pickup.flat_shipping_rate);
     const flatShippingRate = Number.isFinite(rawFlatRate) ? rawFlatRate : 4.99;

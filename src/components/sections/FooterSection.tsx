@@ -28,8 +28,10 @@ const SocialIcon = ({ platform, href }: { platform: string; href: string }) => {
   };
 
   return (
+    // The glyph stays 20px; the link around it is finger-sized.
     <a href={href} target="_blank" rel="noopener noreferrer"
-      className="transition-opacity hover:opacity-60" style={{ color: "var(--text-primary)" }} aria-label={platform}>
+      className="transition-opacity hover:opacity-60 inline-flex items-center justify-center"
+      style={{ color: "var(--text-primary)", minWidth: 44, minHeight: 44 }} aria-label={platform}>
       {icons[platform] ?? <span className="font-sans text-sm">{platform}</span>}
     </a>
   );
@@ -150,13 +152,15 @@ const FooterSection = ({ data }: Props) => {
           >
             Quick links
           </h3>
+          {/* Each link gets a 44px-tall row so it can be tapped reliably —
+              type size and the wrapped layout are unchanged. */}
           {links.length > 0 && (
-            <nav className="flex flex-wrap items-center justify-center gap-x-8 gap-y-2">
+            <nav className="flex flex-wrap items-center justify-center gap-x-8">
               {links.map((link, i) => (
                 <a
                   key={i}
                   href={link.href}
-                  className="font-sans text-sm transition-opacity hover:opacity-60"
+                  className="font-sans text-sm transition-opacity hover:opacity-60 inline-flex items-center min-h-11 px-1"
                   style={{ color: "var(--text-primary)" }}
                 >
                   {link.label}
@@ -198,7 +202,7 @@ const FooterSection = ({ data }: Props) => {
               <span className="font-sans text-xs" style={{ color: "rgba(29,43,27,0.3)" }}> · </span>
               <a
                 href={link.href}
-                className="font-sans text-xs transition-opacity hover:opacity-60"
+                className="font-sans text-xs transition-opacity hover:opacity-60 inline-flex items-center min-h-11 px-1"
                 style={{ color: "var(--text-muted)" }}
               >
                 {link.label}

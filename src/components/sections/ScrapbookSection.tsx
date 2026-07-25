@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import useIsMobile from "@/hooks/useIsMobile";
+import useSwipe from "@/hooks/useSwipe";
 import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
 import {
   DEFAULT_CONTENT,
@@ -149,6 +150,16 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
   const canNext   = candleOffset < maxOffset;
   const dimText   = isDark ? "rgba(220,210,255,0.55)" : `${cat.text_color}88`;
 
+  // Swiping the cards steps through this category's candles. At either end the
+  // gesture is declined so it falls through to the book and turns the page —
+  // one continuous swipe carries you from the last candle here to the next
+  // category.
+  const cardSwipe = useSwipe({
+    onSwipeLeft:  () => { if (!canNext) return false; setCandleOffset(candleOffset + 1); },
+    onSwipeRight: () => { if (!canPrev) return false; setCandleOffset(candleOffset - 1); },
+    enabled: interactive && products.length > perView,
+  });
+
   return (
     <div style={{ width:"100%", height:"100%", background:cat.bg_color, position:"relative", overflow:"hidden", display:"flex", flexDirection: isMobile ? "column" : "row" }}>
       {/* Paper grain */}
@@ -209,7 +220,7 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
         )}
         <motion.a href={`/shop?category=${cat.slug}`} initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.36, ease:"backOut" }}
           whileHover={{ scale:1.06, transition:{ duration:0.18 } }} whileTap={{ scale:0.95 }}
-          style={{ display:"inline-flex", alignItems:"center", gap:6, fontFamily:"'Fredoka',sans-serif", fontSize: isMobile ? "0.82rem" : "clamp(0.88rem,1.4vw,1.08rem)", background:cat.accent_color, color: isDark ? "#0a0a18" : "#fff", borderRadius:50, padding: isMobile ? "6px 14px" : "9px 20px", alignSelf:"flex-start", textDecoration:"none", boxShadow:`0 4px 16px ${cat.accent_color}44`, transform: isMobile ? "none" : "rotate(-2deg)", transformOrigin:"left center", whiteSpace:"nowrap", flexShrink:0 }}>
+          style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", minHeight:40, gap:6, fontFamily:"'Fredoka',sans-serif", fontSize: isMobile ? "0.82rem" : "clamp(0.88rem,1.4vw,1.08rem)", background:cat.accent_color, color: isDark ? "#0a0a18" : "#fff", borderRadius:50, padding: isMobile ? "6px 16px" : "9px 20px", alignSelf:"flex-start", textDecoration:"none", boxShadow:`0 4px 16px ${cat.accent_color}44`, transform: isMobile ? "none" : "rotate(-2deg)", transformOrigin:"left center", whiteSpace:"nowrap", flexShrink:0 }}>
           Shop All →
         </motion.a>
       </div>
@@ -232,7 +243,7 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
                   onClick={e => { e.stopPropagation(); if (interactive && active) setCandleOffset(candleOffset + dir); }}
                   whileHover={active ? { scale:1.12 } : {}}
                   whileTap={active ? { scale:0.9 } : {}}
-                  style={{ width:34, height:34, borderRadius:"50%", border:`1.5px solid ${active ? cat.accent_color : cat.accent_color+"40"}`, background: active ? `${cat.accent_color}18` : "transparent", color: active ? cat.accent_color : cat.accent_color+"40", cursor: active ? "pointer" : "default", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"1rem", fontWeight:600 }}>
+                  style={{ width:40, height:40, borderRadius:"50%", border:`1.5px solid ${active ? cat.accent_color : cat.accent_color+"40"}`, background: active ? `${cat.accent_color}18` : "transparent", color: active ? cat.accent_color : cat.accent_color+"40", cursor: active ? "pointer" : "default", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"1rem", fontWeight:600 }}>
                   {label}
                 </motion.button>
               ))}
@@ -241,7 +252,10 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
         </div>
 
         {/* Cards row */}
-        <div style={{ flex:1, display:"flex", gap:"clamp(6px,1.4vw,14px)", alignItems:"stretch", minHeight:0 }}>
+        <div
+          {...cardSwipe}
+          style={{ flex:1, display:"flex", gap:"clamp(6px,1.4vw,14px)", alignItems:"stretch", minHeight:0, ...cardSwipe.style }}
+        >
           {products.length === 0 ? (
             <>
               <PlaceholderCard accent={cat.accent_color} isDark={isDark} label={"add products via\nAdmin → Shop By Category"} />
@@ -259,14 +273,19 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
           )}
         </div>
 
-        {/* Dots */}
+        {/* Dots — small dot, finger-sized button around it */}
         {products.length > perView && (
-          <div style={{ display:"flex", justifyContent:"center", gap:5, marginTop:10, flexShrink:0 }}>
+          <div style={{ display:"flex", justifyContent:"center", alignItems:"center", marginTop:4, flexShrink:0 }}>
             {Array.from({ length: maxOffset+1 }).map((_, i) => (
-              <motion.button key={i} onClick={e => { e.stopPropagation(); if (interactive) setCandleOffset(i); }}
-                animate={{ width: i===candleOffset ? 18 : 6, background: i===candleOffset ? cat.accent_color : `${cat.accent_color}45` }}
-                style={{ height:6, borderRadius:3, border:"none", cursor:"pointer", padding:0 }}
-                transition={{ duration:0.25 }} />
+              <button key={i} onClick={e => { e.stopPropagation(); if (interactive) setCandleOffset(i); }}
+                aria-label={`Show candle ${i+1} of ${maxOffset+1}`}
+                aria-current={i===candleOffset}
+                style={{ border:"none", background:"none", cursor:"pointer", padding:"9px 3px", display:"flex", alignItems:"center" }}>
+                <motion.span
+                  animate={{ width: i===candleOffset ? 18 : 6, background: i===candleOffset ? cat.accent_color : `${cat.accent_color}45` }}
+                  style={{ height:6, borderRadius:3, display:"block", width: i===candleOffset ? 18 : 6, background: i===candleOffset ? cat.accent_color : `${cat.accent_color}45` }}
+                  transition={{ duration:0.25 }} />
+              </button>
             ))}
           </div>
         )}
@@ -346,6 +365,14 @@ const ScrapbookSection = () => {
   const manualPrev = useCallback(() => { setAutoPlay(false); flipPrev(); }, [flipPrev]);
   const manualTo   = useCallback((t: number, dir: 1 | -1) => { setAutoPlay(false); flipTo(t, dir); }, [flipTo]);
 
+  // Swiping across the book turns its pages, the way the arrows and the corner
+  // curl do. A swipe that started on the candle row is handled there first and
+  // only reaches this when that row has nowhere left to go.
+  const bookSwipe = useSwipe({
+    onSwipeLeft:  manualNext,
+    onSwipeRight: manualPrev,
+  });
+
   const onFlipDone = useCallback(() => {
     if (!flipLock.current || incomingPage === null) return;
     setCurrentPage(incomingPage);
@@ -391,14 +418,17 @@ const ScrapbookSection = () => {
       <div style={{ maxWidth:"min(96vw,1240px)", margin:"0 auto", padding:"0 clamp(14px,3.5vw,44px)", position:"relative" }}>
 
         <motion.button onClick={manualPrev} whileHover={{ scale:1.12 }} whileTap={{ scale:0.9 }} aria-label="Previous page"
-          style={{ position:"absolute", left:-4, top:"48%", transform:"translateY(-50%)", zIndex:30, background:"rgba(255,255,255,0.92)", border:"1.5px solid rgba(0,0,0,0.1)", borderRadius:"50%", width:40, height:40, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", backdropFilter:"blur(8px)", boxShadow:"0 4px 14px rgba(0,0,0,0.1)", fontSize:"1rem", color:"var(--color-forest-dark)" }}>←</motion.button>
+          style={{ position:"absolute", left:-4, top:"48%", transform:"translateY(-50%)", zIndex:30, background:"rgba(255,255,255,0.92)", border:"1.5px solid rgba(0,0,0,0.1)", borderRadius:"50%", width:44, height:44, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", backdropFilter:"blur(8px)", boxShadow:"0 4px 14px rgba(0,0,0,0.1)", fontSize:"1rem", color:"var(--color-forest-dark)" }}>←</motion.button>
 
         {/* Book with page-stack depth */}
         <div style={{ position:"relative" }}>
           <div style={{ position:"absolute", inset:0, borderRadius:"clamp(10px,1.6vw,18px)", background:"#e8dcc8", transform:"translateX(3px) translateY(-2px)", zIndex:0 }} />
           <div style={{ position:"absolute", inset:0, borderRadius:"clamp(10px,1.6vw,18px)", background:"#f0e4cc", transform:"translateX(6px) translateY(-4px)", zIndex:-1 }} />
 
-          <div style={{ height:"clamp(400px,62vw,620px)", borderRadius:"clamp(8px,1.6vw,18px)", overflow:"hidden", boxShadow:"0 24px 70px rgba(0,0,0,0.2),0 8px 20px rgba(0,0,0,0.1)", position:"relative", zIndex:1 }}>
+          <div
+            {...bookSwipe}
+            style={{ height:"clamp(400px,62vw,620px)", borderRadius:"clamp(8px,1.6vw,18px)", overflow:"hidden", boxShadow:"0 24px 70px rgba(0,0,0,0.2),0 8px 20px rgba(0,0,0,0.1)", position:"relative", zIndex:1, ...bookSwipe.style }}
+          >
             <div style={{ position:"absolute", inset:0, perspective:"2200px" }}>
 
               {/* Incoming page (sits behind) */}
@@ -445,15 +475,22 @@ const ScrapbookSection = () => {
         </div>
 
         <motion.button onClick={manualNext} whileHover={{ scale:1.12 }} whileTap={{ scale:0.9 }} aria-label="Next page"
-          style={{ position:"absolute", right:-4, top:"48%", transform:"translateY(-50%)", zIndex:30, background:"rgba(255,255,255,0.92)", border:"1.5px solid rgba(0,0,0,0.1)", borderRadius:"50%", width:40, height:40, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", backdropFilter:"blur(8px)", boxShadow:"0 4px 14px rgba(0,0,0,0.1)", fontSize:"1rem", color:"var(--color-forest-dark)" }}>→</motion.button>
+          style={{ position:"absolute", right:-4, top:"48%", transform:"translateY(-50%)", zIndex:30, background:"rgba(255,255,255,0.92)", border:"1.5px solid rgba(0,0,0,0.1)", borderRadius:"50%", width:44, height:44, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", backdropFilter:"blur(8px)", boxShadow:"0 4px 14px rgba(0,0,0,0.1)", fontSize:"1rem", color:"var(--color-forest-dark)" }}>→</motion.button>
 
-        {/* Dots */}
-        <div style={{ display:"flex", justifyContent:"center", gap:6, marginTop:20 }}>
+        {/* Dots — small dot, finger-sized button around it */}
+        <div style={{ display:"flex", justifyContent:"center", alignItems:"center", marginTop:12 }}>
           {Array.from({ length:totalPages }).map((_, i) => (
-            <motion.button key={i} onClick={() => manualTo(i, i>currentPage ? 1 : -1)}
-              animate={{ width: i===currentPage ? 20 : 7, background: i===currentPage ? "var(--color-forest-dark)" : "rgba(30,41,24,0.2)" }}
-              style={{ height:7, borderRadius:4, border:"none", cursor:"pointer", padding:0 }}
-              transition={{ duration:0.28 }} aria-label={`Page ${i}`} />
+            <button key={i} onClick={() => manualTo(i, i>currentPage ? 1 : -1)}
+              aria-label={i === 0 ? "Cover" : `Page ${i}: ${categories[i-1]?.name ?? ""}`}
+              aria-current={i===currentPage}
+              style={{ border:"none", background:"none", cursor:"pointer", padding:"10px 3px", display:"flex", alignItems:"center" }}>
+              {/* Width and colour are also set statically: `animate` alone
+                  leaves the dot 0px wide until framer's first frame lands. */}
+              <motion.span
+                animate={{ width: i===currentPage ? 20 : 7, background: i===currentPage ? "var(--color-forest-dark)" : "rgba(30,41,24,0.2)" }}
+                style={{ height:7, borderRadius:4, display:"block", width: i===currentPage ? 20 : 7, background: i===currentPage ? "var(--color-forest-dark)" : "rgba(30,41,24,0.2)" }}
+                transition={{ duration:0.28 }} />
+            </button>
           ))}
         </div>
 

@@ -2,17 +2,23 @@
 <html lang="en-IE">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/favicon.png" />
+    <!-- Favicons. Google needs a square icon that is a multiple of 48px and is
+         legible at ~16-32px, so these are the cropped goose mark (not the full
+         lockup in /logo.png, whose wordmark is unreadable that small). -->
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" type="image/png" href="/favicon-96.png" sizes="96x96" />
+    <link rel="icon" type="image/png" href="/favicon-192.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#1D2B1B" />
 
     <!-- Default metadata; per-route values are applied at runtime by SeoManager -->
-    <title>The Olive Goose | Handmade Café-Inspired Candles</title>
+    <title>The Olive Goose — the goose insisted, we made candles</title>
     <meta name="description" content="Hand-poured, café-culture-inspired candles made in Dublin, Ireland. Matcha Hour, Morning Ritual, Pink Order & more. Shop The Olive Goose." />
     <link rel="canonical" href="https://theolivegoose.ie/" />
 
     <!-- Open Graph / social sharing (static defaults — social crawlers don't run JS) -->
-    <meta property="og:title" content="The Olive Goose | Handmade Café-Inspired Candles" />
+    <meta property="og:title" content="The Olive Goose — the goose insisted, we made candles" />
     <meta property="og:description" content="Hand-poured, café-culture-inspired candles made in Dublin, Ireland. Matcha Hour, Morning Ritual, Pink Order & more." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://theolivegoose.ie/" />
@@ -23,7 +29,7 @@
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="The Olive Goose — handmade café-inspired candles from Dublin" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="The Olive Goose | Handmade Café-Inspired Candles" />
+    <meta name="twitter:title" content="The Olive Goose — the goose insisted, we made candles" />
     <meta name="twitter:description" content="Hand-poured, café-culture-inspired candles made in Dublin, Ireland." />
     <meta name="twitter:image" content="https://theolivegoose.ie/og-image.jpg" />
 
@@ -44,7 +50,7 @@
         "name": "The Olive Goose",
         "alternateName": ["Olive Goose", "Olive Goose Candles", "The Olive Goose Candles", "The Olive Goose Ireland"],
         "url": "https://theolivegoose.ie/",
-        "logo": "https://theolivegoose.ie/favicon.png",
+        "logo": "https://theolivegoose.ie/logo.png",
         "description": "Independent Irish candle company hand-pouring luxury café-inspired soy candles and home fragrance in Dublin, Ireland.",
         "email": "hello@theolivegoose.com",
         "foundingLocation": { "@type": "Place", "name": "Dublin, Ireland" },

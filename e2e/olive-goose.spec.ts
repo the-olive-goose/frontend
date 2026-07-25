@@ -111,11 +111,22 @@ test.describe("Navigation", () => {
     await expect(page.getByText(/candle care|burn it right|first light/i).first()).toBeVisible();
   });
 
-  test("Our Story link scrolls to story section", async ({ page }) => {
+  test("Our Story link takes the visitor to the story", async ({ page }) => {
     await page.goto(BASE);
     const link = page.getByRole("link", { name: /our story/i }).first();
+    // The story lives either as an in-page anchor (#story) or on the dedicated
+    // /about page, depending on the configured CTA. Follow whichever this build
+    // uses and assert the visitor actually lands on story content — that's the
+    // guarantee; which of the two implements it is a content decision.
+    const href = (await link.getAttribute("href")) ?? "";
     await link.click();
-    await expect(page.locator("#story")).toBeVisible({ timeout: 4000 });
+    if (href.startsWith("#")) {
+      await expect(page.locator(href)).toBeVisible({ timeout: 4000 });
+    } else {
+      await expect(page).toHaveURL(new RegExp(href.replace(/^\//, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      await expect(page.getByText(/our story|the olive goose began|slow living/i).first())
+        .toBeVisible({ timeout: 10_000 });
+    }
   });
 
   test("Shop nav link points to /shop", async ({ page }) => {
@@ -283,9 +294,14 @@ test.describe("Admin Dashboard", () => {
     // Sidebar item is labelled "Hero Banner" (with an icon prefix).
     await page.getByRole("button", { name: /hero banner/i }).click();
 
-    // The Field component doesn't associate <label> with its <input> (no htmlFor),
-    // so getByLabel can't resolve it — target the input inside the "Headline" Field.
-    const headline = page.locator('div:has(> label:text-is("Headline")) > input').first();
+    // The Field component doesn't associate <label> with its control (no htmlFor),
+    // so getByLabel can't resolve it — target the control inside the "Headline"
+    // Field. It's a RichInput (<textarea> behind a formatting toolbar), nested one
+    // level deeper than a plain <Input>, so match either shape at any depth.
+    const headline = page
+      .locator('div:has(> label:text-is("Headline"))')
+      .locator("textarea, input")
+      .first();
     await expect(headline).toBeVisible({ timeout: 10_000 });
     const original = await headline.inputValue();
 

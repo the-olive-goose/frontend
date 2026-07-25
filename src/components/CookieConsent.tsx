@@ -29,7 +29,20 @@ const CookieConsent = () => {
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 100, opacity: 0 }}
           transition={{ duration: 0.35, ease: "easeOut" }}
-          className="fixed bottom-4 left-4 right-4 md:left-auto md:right-6 md:max-w-md z-[200]"
+          // Sits above ordinary page content but BELOW every overlay that asks the
+          // visitor for something — cart drawer (120/130), auth modal (150),
+          // feedback modal (200). At z-[200] this banner painted on top of the
+          // sign-in dialog, and on a phone (`left-4 right-4`, ~150px tall, pinned
+          // to the bottom) it landed squarely over the Sign In button, so a new
+          // customer could not sign in until they dismissed a cookie notice that
+          // looked unrelated. Below the modals, the modal backdrop simply covers
+          // it and it returns once the modal closes.
+          className="fixed left-4 right-4 md:left-auto md:right-6 md:max-w-md z-[110]"
+          // Clear of any bottom-anchored action bar (checkout's mobile pay bar
+          // publishes its height as --bottom-bar-h). Pinned flush to the bottom it
+          // covered that button outright, and `fixed` positioning meant no z-index
+          // could save it — the banner simply ate every tap on the CTA.
+          style={{ bottom: "calc(1rem + var(--bottom-bar-h, 0px))" }}
         >
           <div
             className="rounded-2xl p-5 shadow-xl"
@@ -60,7 +73,7 @@ const CookieConsent = () => {
             <div className="flex items-center gap-3 mt-4">
               <button
                 onClick={accept}
-                className="flex-1 font-display text-sm font-semibold py-2.5 rounded-full transition-all hover:opacity-90 active:scale-95"
+                className="og-tap justify-center flex-1 font-display text-sm font-semibold py-2.5 rounded-full transition-all hover:opacity-90 active:scale-95"
                 style={{
                   background: "var(--color-forest-dark)",
                   color: "var(--color-cream-text)",
@@ -70,7 +83,7 @@ const CookieConsent = () => {
               </button>
               <button
                 onClick={decline}
-                className="flex-1 font-display text-sm font-semibold py-2.5 rounded-full transition-all hover:opacity-80"
+                className="og-tap justify-center flex-1 font-display text-sm font-semibold py-2.5 rounded-full transition-all hover:opacity-80"
                 style={{
                   background: "transparent",
                   color: "var(--color-forest-dark)",

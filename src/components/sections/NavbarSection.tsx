@@ -8,6 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
 import CartDrawer from "@/components/CartDrawer";
+import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 import RichText, { stripRichText } from "@/lib/richtext";
 import AccountDropdown from "@/components/AccountDropdown";
 import logo from "@/assets/logo.jpg";
@@ -111,6 +112,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
   const [searchQuery, setSearchQuery]       = useState("");
   const [searchOpen, setSearchOpen]         = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
   const links = data.links ?? [];
   const shopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -119,6 +121,9 @@ const NavbarSection = ({ data, announcement }: Props) => {
   const { count }                           = useCart();
   const navigate   = useNavigate();
   const location   = useLocation();
+
+  // The open menu overlays the page; the storefront behind it must hold still.
+  useBodyScrollLock(mobileOpen);
 
   // Which nav link matches the current page. Route hrefs match by path; hash/anchor
   // links (e.g. Home → "#shop-by-category") belong to the homepage.
@@ -139,9 +144,11 @@ const NavbarSection = ({ data, announcement }: Props) => {
   // Publish the real navbar height as a CSS var so every page can offset its
   // content by exactly the right amount. The navbar height varies (mobile wraps
   // the search onto its own row, desktop adds a nav-links row), so a hardcoded
-  // clearance would tuck page content under the fixed header.
+  // clearance would tuck page content under the fixed header. Only the header
+  // rows are measured — the expanded mobile menu is a sibling, so opening it
+  // must not push every page's content down.
   useEffect(() => {
-    const el = document.getElementById("site-navbar");
+    const el = headerRef.current;
     if (!el) return;
     const setVar = () =>
       document.documentElement.style.setProperty("--nav-h", `${el.offsetHeight}px`);
@@ -151,16 +158,29 @@ const NavbarSection = ({ data, announcement }: Props) => {
     return () => observer.disconnect();
   }, []);
 
-  // Close dropdown on outside click
+  // Close dropdown on outside click. Touch is listened for separately: a tap
+  // outside should dismiss the results as it lands, not wait for the synthetic
+  // mouse event some mobile browsers only fire afterwards.
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
+    const handler = (e: Event) => {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
         setSearchOpen(false);
       }
     };
     document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
   }, []);
+
+  // Any navigation dismisses the menu and the search results.
+  useEffect(() => {
+    setMobileOpen(false);
+    setMobileShopOpen(false);
+    setSearchOpen(false);
+  }, [location.pathname, location.search]);
 
   // Live search results — top 6 closest matches
   const searchResults = searchQuery.trim().length >= 1
@@ -201,6 +221,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
 
   return (
     <div id="site-navbar" className="fixed top-0 left-0 right-0 z-50">
+      {/* Measured header rows — see the --nav-h effect above. */}
+      <div ref={headerRef}>
       <AnnouncementBar data={announcement} />
 
       <nav style={{ background: "var(--bg-nav)" }}>
@@ -230,8 +252,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
                   className="flex-1 px-4 py-2 font-sans text-sm outline-none"
                   style={{ background: "rgba(255,255,255,0.96)", color: "#111", minWidth: 0 }}
                 />
-                <button type="submit"
-                  className="px-4 flex items-center justify-center transition-opacity hover:opacity-80"
+                <button type="submit" aria-label="Search"
+                  className="og-tap justify-center px-4 flex items-center justify-center transition-opacity hover:opacity-80"
                   style={{ background: "var(--color-gold)" }}>
                   <svg width="18" height="18" fill="none" stroke="#1D2B1B" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24">
                     <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
@@ -339,27 +361,30 @@ const NavbarSection = ({ data, announcement }: Props) => {
               reach the basket on small screens. */}
           <button
             onClick={() => { if (user) navigate("/basket"); else openAuthModal(); }}
-            className="sm:hidden relative shrink-0 p-1 ml-auto"
-            style={{ color: "var(--color-white)" }}
-            aria-label="Basket"
+            className="sm:hidden relative shrink-0 ml-auto flex items-center justify-center"
+            style={{ color: "var(--color-white)", minWidth: 44, minHeight: 44 }}
+            aria-label={count > 0 ? `Basket, ${count} item${count === 1 ? "" : "s"}` : "Basket"}
           >
-            <svg width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-              <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
-              <line x1="3" y1="6" x2="21" y2="6"/>
-              <path d="M16 10a4 4 0 01-8 0"/>
-            </svg>
-            {count > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full flex items-center justify-center font-sans text-[10px] font-bold"
-                style={{ background: "var(--btn-primary-bg)", color: "var(--color-forest-dark)" }}>
-                {count > 9 ? "9+" : count}
-              </span>
-            )}
+            <span className="relative flex items-center justify-center">
+              <svg width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+                <line x1="3" y1="6" x2="21" y2="6"/>
+                <path d="M16 10a4 4 0 01-8 0"/>
+              </svg>
+              {count > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full flex items-center justify-center font-sans text-[10px] font-bold"
+                  style={{ background: "var(--btn-primary-bg)", color: "var(--color-forest-dark)" }}>
+                  {count > 9 ? "9+" : count}
+                </span>
+              )}
+            </span>
           </button>
 
           {/* Mobile hamburger */}
           <button onClick={() => setMobileOpen(!mobileOpen)}
-            className="sm:hidden p-1 rounded transition-opacity hover:opacity-60"
-            style={{ color: "var(--color-white)" }} aria-label="Toggle menu">
+            className="sm:hidden rounded flex items-center justify-center transition-opacity hover:opacity-60"
+            style={{ color: "var(--color-white)", minWidth: 44, minHeight: 44 }}
+            aria-label={mobileOpen ? "Close menu" : "Open menu"} aria-expanded={mobileOpen}>
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
                 d={mobileOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"} />
@@ -401,29 +426,20 @@ const NavbarSection = ({ data, announcement }: Props) => {
             })}
           </div>
         </div>
+      </nav>
+      </div>
 
-        {/* ── Mobile menu ── */}
-        <AnimatePresence>
-          {mobileOpen && (
-            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.22 }} className="sm:hidden border-t overflow-hidden"
-              style={{ background: "var(--bg-nav)", borderColor: "rgba(255,255,255,0.18)" }}>
-              <div className="px-6 py-4 space-y-1">
-
-                {/* Mobile search */}
-                <form onSubmit={handleSearch} className="flex mb-4">
-                  <div className="flex w-full rounded-lg overflow-hidden" style={{ border: "1.5px solid var(--color-gold)" }}>
-                    <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                      placeholder="Search candles..."
-                      className="flex-1 px-3 py-2 font-sans text-sm outline-none"
-                      style={{ background: "rgba(255,255,255,0.96)", color: "#111" }} />
-                    <button type="submit" className="px-3 flex items-center" style={{ background: "var(--color-gold)" }}>
-                      <svg width="16" height="16" fill="none" stroke="#1D2B1B" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24">
-                        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-                      </svg>
-                    </button>
-                  </div>
-                </form>
+      {/* ── Mobile menu ──
+          The search bar lives permanently on row 1 at this breakpoint, so the
+          menu deliberately doesn't repeat it. */}
+      <AnimatePresence>
+        {mobileOpen && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.22 }} className="sm:hidden border-t overflow-hidden"
+            style={{ background: "var(--bg-nav)", borderColor: "rgba(255,255,255,0.18)" }}>
+            {/* Capped to what's left of the viewport and scrolled internally —
+                a signed-in visitor's menu is taller than a phone screen. */}
+            <div className="px-6 py-4 space-y-1 mobile-menu-scroll">
 
                 {links.map((link, i) => {
                   const active = isShopLink(link.href) ? location.pathname.startsWith("/shop") : isLinkActive(link.href);
@@ -432,11 +448,12 @@ const NavbarSection = ({ data, announcement }: Props) => {
                       <div key={`m-shop-${i}`}>
                         <div className="flex items-center justify-between py-2">
                           <a href="/shop" onClick={() => setMobileOpen(false)}
-                            className={`font-display text-base rounded-lg transition-all ${active ? "font-semibold px-3 py-1.5" : "hover:opacity-70"}`}
-                            style={{ color: active ? "var(--color-forest-dark)" : "var(--color-white)", background: active ? "var(--color-gold)" : "transparent" }}>{link.label}</a>
+                            className={`font-display text-base rounded-lg transition-all inline-flex items-center ${active ? "font-semibold px-3" : "hover:opacity-70"}`}
+                            style={{ color: active ? "var(--color-forest-dark)" : "var(--color-white)", background: active ? "var(--color-gold)" : "transparent", minHeight: 44 }}>{link.label}</a>
                           <button onClick={() => setMobileShopOpen(o => !o)}
-                            className="font-sans text-xs px-2 py-1 rounded opacity-70 hover:opacity-100"
-                            style={{ color: "var(--color-white)", border: "1px solid rgba(255,255,255,0.3)" }}>
+                            className="font-sans text-sm px-4 rounded-lg opacity-80 hover:opacity-100 flex items-center gap-1.5"
+                            style={{ color: "var(--color-white)", border: "1px solid rgba(255,255,255,0.3)", minHeight: 44 }}
+                            aria-expanded={mobileShopOpen}>
                             {mobileShopOpen ? "▲" : "▼"} Categories
                           </button>
                         </div>
@@ -445,15 +462,15 @@ const NavbarSection = ({ data, announcement }: Props) => {
                             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
                               transition={{ duration: 0.18 }} className="overflow-hidden pl-4 space-y-1 pb-2">
                               <a href="/shop" onClick={() => setMobileOpen(false)}
-                                className="flex items-center gap-2 py-1.5 font-sans text-sm transition-opacity hover:opacity-70"
-                                style={{ color: "rgba(245,239,230,0.8)" }}>
+                                className="flex items-center gap-2.5 font-sans text-sm transition-opacity hover:opacity-70"
+                                style={{ color: "rgba(245,239,230,0.8)", minHeight: 44 }}>
                                 <span className="block w-2 h-2 rounded-full shrink-0" style={{ background: "rgba(245,239,230,0.5)" }} />
                                 All candles
                               </a>
                               {categories.map(cat => (
                                 <a key={cat.id} href={`/shop?category=${cat.slug}`} onClick={() => setMobileOpen(false)}
-                                  className="flex items-center gap-2 py-1.5 font-sans text-sm transition-opacity hover:opacity-70"
-                                  style={{ color: "rgba(245,239,230,0.8)" }}>
+                                  className="flex items-center gap-2.5 font-sans text-sm transition-opacity hover:opacity-70"
+                                  style={{ color: "rgba(245,239,230,0.8)", minHeight: 44 }}>
                                   <span className="block w-2 h-2 rounded-full shrink-0" style={{ background: cat.accent_color }} />
                                   {cat.name}
                                 </a>
@@ -468,8 +485,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
                     <a key={`m-${link.label}-${i}`}
                       href={isHomeLink(link.href) ? "/" : link.href}
                       onClick={(e) => { if (isHomeLink(link.href)) goHome(e); else setMobileOpen(false); }}
-                      className={`font-display block text-base rounded-lg transition-all ${active ? "font-semibold px-3 py-2" : "py-2 hover:opacity-70"}`}
-                      style={{ color: active ? "var(--color-forest-dark)" : "var(--color-white)", background: active ? "var(--color-gold)" : "transparent" }}>
+                      className={`font-display flex items-center text-base rounded-lg transition-all ${active ? "font-semibold px-3" : "hover:opacity-70"}`}
+                      style={{ color: active ? "var(--color-forest-dark)" : "var(--color-white)", background: active ? "var(--color-gold)" : "transparent", minHeight: 44 }}>
                       {link.label}
                     </a>
                   );
@@ -489,8 +506,8 @@ const NavbarSection = ({ data, announcement }: Props) => {
                     ].map(item => (
                       <button key={item.label}
                         onClick={() => { navigate(item.path); setMobileOpen(false); }}
-                        className="block w-full text-left font-sans text-sm py-1.5 transition-opacity hover:opacity-70"
-                        style={{ color: "rgba(245,239,230,0.85)" }}>
+                        className="flex items-center w-full text-left font-sans text-sm transition-opacity hover:opacity-70"
+                        style={{ color: "rgba(245,239,230,0.85)", minHeight: 44 }}>
                         {item.label}
                       </button>
                     ))}
@@ -517,11 +534,10 @@ const NavbarSection = ({ data, announcement }: Props) => {
                     </button>
                   )}
                 </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </nav>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
     </div>
   );

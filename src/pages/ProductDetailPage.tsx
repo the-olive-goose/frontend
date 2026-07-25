@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import useSwipe from "@/hooks/useSwipe";
 import { Link, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
@@ -33,30 +34,51 @@ const Gallery = ({ product }: { product: Product }) => {
   // Reset to the first shot when navigating between products.
   useEffect(() => { setActive(0); }, [product.id]);
 
+  // Swiping the photo is how a phone expects to browse a product's shots; the
+  // thumbnails below stay as the pointer equivalent. Wraps around, so there's
+  // no dead end at either edge of the roll.
+  const swipe = useSwipe({
+    onSwipeLeft:  () => setActive(i => (i + 1) % shots.length),
+    onSwipeRight: () => setActive(i => (i - 1 + shots.length) % shots.length),
+    enabled: shots.length > 1,
+  });
+
   return (
     // Sticky on desktop so the candle stays in view while the buy box, bundle
     // picker and long copy scroll past it.
     <div className="flex flex-col gap-4 lg:sticky lg:self-start lg:top-[calc(var(--nav-h,112px)+24px)]">
-      <motion.div
-        key={shots[active]}
-        initial={{ opacity: 0.4 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.25 }}
-        className="w-full overflow-hidden"
-        style={{
-          borderRadius: "var(--radius-card)",
-          background: "var(--color-sage-pale)",
-          aspectRatio: "1/1",
-          border: "1px solid var(--color-border)",
-        }}
-      >
-        <img
-          src={shots[active]}
-          alt={`${product.name} — handmade candle by The Olive Goose`}
-          className="w-full h-full object-cover"
-          decoding="async"
-        />
-      </motion.div>
+      <div {...swipe} className="relative w-full" style={swipe.style}>
+        <motion.div
+          key={shots[active]}
+          initial={{ opacity: 0.4 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.25 }}
+          className="w-full overflow-hidden"
+          style={{
+            borderRadius: "var(--radius-card)",
+            background: "var(--color-sage-pale)",
+            aspectRatio: "1/1",
+            border: "1px solid var(--color-border)",
+          }}
+        >
+          <img
+            src={shots[active]}
+            alt={`${product.name} — handmade candle by The Olive Goose`}
+            className="w-full h-full object-cover"
+            decoding="async"
+          />
+        </motion.div>
+
+        {/* Position counter — tells you there's more to swipe to */}
+        {shots.length > 1 && (
+          <span
+            className="absolute bottom-3 right-3 font-sans text-xs px-2.5 py-1 rounded-full pointer-events-none"
+            style={{ background: "rgba(29,43,27,0.72)", color: "var(--color-cream-text)" }}
+          >
+            {active + 1} / {shots.length}
+          </span>
+        )}
+      </div>
 
       {shots.length > 1 && (
         <div className="flex gap-3 flex-wrap">

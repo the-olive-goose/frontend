@@ -186,12 +186,45 @@
 
   html {
     scroll-behavior: smooth;
+    /* Stop iOS from inflating text in landscape. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
     background-color: var(--bg-page);
     overflow-x: hidden;
+    /* A scroll that reaches the end of the page shouldn't chain into the
+       browser's pull-to-refresh mid-gesture. */
+    overscroll-behavior-y: contain;
+  }
+
+  /* ── Touch behaviour ──────────────────────────────────────────
+     Tap targets fire immediately (no 300ms double-tap-zoom wait) and without
+     the grey flash mobile browsers paint over them; our own :active / whileTap
+     styles provide the feedback instead. */
+  button,
+  a,
+  [role="button"],
+  input,
+  select,
+  textarea,
+  label {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  /* Respect "reduce motion" — the site leans on animation heavily. */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -248,6 +281,37 @@
     letter-spacing: var(--tracking-eyebrow);
     text-transform: uppercase;
     color: var(--color-gold);
+  }
+
+  /* ── Touch scrolling helpers ──────────────────────────────── */
+
+  /* Horizontal strips (category pills, thumbnail rails) that are dragged with
+     a finger rather than a scrollbar. Referenced in markup — without this the
+     bar renders a native scrollbar over the content. */
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  /* Drag-to-browse rail: each child settles under the finger instead of
+     stopping mid-item. */
+  .snap-row {
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+  .snap-row > * { scroll-snap-align: start; }
+
+  /* Expanded mobile nav: never taller than the space under the header, and
+     scrolled internally rather than running off the bottom of the screen.
+     `--nav-h` measures the header rows only, so this stays stable while open. */
+  .mobile-menu-scroll {
+    max-height: calc(100vh - var(--nav-h, 112px));
+    max-height: calc(100dvh - var(--nav-h, 112px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
   }
 
   /* ── Glow helpers ─────────────────────────────────────────── */
@@ -358,6 +422,50 @@
 .squiggle {
   text-decoration: underline wavy;
   text-underline-offset: 4px;
+}
+
+/* ── iOS focus zoom ───────────────────────────────────────────
+   Safari zooms the whole page when a focused field renders under 16px, which
+   leaves the visitor scrolled sideways on a page they now have to pinch back
+   out of. Phone-only, and deliberately unlayered + !important so it wins over
+   the `text-sm` / `text-xs` utilities the forms are built from — every other
+   part of their styling is untouched, and the site's own type scale still
+   applies from the `sm` breakpoint up. */
+@media (max-width: 640px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+    /* Same 44px floor the buttons use. The forms are built from `px-3 py-2`,
+       which lands around 40px — comfortable with a mouse, fiddly with a thumb,
+       and the checkout address form is the longest one a customer ever fills in.
+       min-height (not height) so multi-line textareas still grow. */
+    min-height: 44px;
+  }
+}
+
+/* ── Primary CTA touch target ─────────────────────────────────
+   Every "Add to Cart" / "Buy Now" renders through AddToCartButton, whose `sm`
+   and `md` paddings land around 26–36px tall — comfortably under the 44px the
+   navbar, quantity steppers and mobile menu are all built to, and small enough
+   to mis-tap on a phone. Phone-only, so the desktop grid keeps its density. */
+@media (max-width: 640px) {
+  .og-cta {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Same floor for the smaller text actions that sit alongside it — "Delete",
+     "Save for later", "Clear basket", "Continue Shopping". They render 16–20px
+     tall, which is fine to read with a mouse and easy to fat-finger on a phone.
+     Applied on the element itself so the row keeps its existing alignment. */
+  .og-tap {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
 }
 
 /* ── Pill tag ────────────────────────────────────────────────── */

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { getAuthProviders } from "@/lib/userApi";
 import { track } from "@/lib/analytics";
+import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 
 type View = "signin" | "signup" | "verify" | "forgot" | "reset";
 
@@ -101,6 +102,8 @@ const AuthModal = () => {
     requestPasswordReset, confirmPasswordReset,
   } = useAuth();
 
+  useBodyScrollLock(showAuthModal);
+
   const [view,     setView]     = useState<View>("signin");
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState("");
@@ -123,15 +126,22 @@ const AuthModal = () => {
     getAuthProviders().then(p => setGoogleEnabled(p.google));
   }, []);
 
+  // Wipe the form once the close animation has finished, so the next open starts
+  // clean. The timer MUST be cancelled if the modal re-opens inside those 300ms —
+  // otherwise it fires over the freshly-opened form and clears whatever the
+  // visitor has already typed. That is a real race for anyone who reopens and
+  // starts typing quickly (and reliably reproducible on a phone, where the mobile
+  // menu closes as the modal opens): the email and password silently empty
+  // themselves mid-sign-in and the attempt fails for no visible reason.
   useEffect(() => {
-    if (!showAuthModal) {
-      setTimeout(() => {
-        setView("signin"); setError("");
-        setEmail(""); setPassword(""); setFullName(""); setShowPass(false);
-        setOtp(""); setDevOtp(""); setResendIn(0); setRemember(true);
-        setNewPassword(""); setShowNewPass(false);
-      }, 300);
-    }
+    if (showAuthModal) return;
+    const t = setTimeout(() => {
+      setView("signin"); setError("");
+      setEmail(""); setPassword(""); setFullName(""); setShowPass(false);
+      setOtp(""); setDevOtp(""); setResendIn(0); setRemember(true);
+      setNewPassword(""); setShowNewPass(false);
+    }, 300);
+    return () => clearTimeout(t);
   }, [showAuthModal]);
 
   // If the session expired while the modal was closed, jump straight to sign-in
@@ -245,13 +255,16 @@ const AuthModal = () => {
       {showAuthModal && (
         <motion.div ref={overlayRef} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           transition={{ duration: 0.18 }}
-          className="fixed inset-0 z-[150] flex items-center justify-center p-4"
+          className="fixed inset-0 z-[150] flex items-start sm:items-center justify-center p-4 overflow-y-auto overscroll-contain"
           style={{ background: "rgba(0,0,0,0.55)" }}
           onClick={e => { if (e.target === overlayRef.current) closeAuthModal(); }}>
 
+          {/* `items-start` + a scrollable overlay: on a phone with the keyboard
+              up the form is taller than the screen, and centring would put its
+              top out of reach. `my-auto` still centres it when it does fit. */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
-            className="relative w-full max-w-sm rounded-lg overflow-hidden"
+            className="relative w-full max-w-sm my-auto rounded-lg overflow-hidden"
             style={{ background: "#fff", border: "1px solid #ddd", boxShadow: "0 4px 32px rgba(0,0,0,0.24)" }}>
 
             {/* Close */}

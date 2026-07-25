@@ -189,6 +189,11 @@ test.describe("Purchase journey", () => {
     await page.waitForURL(/checkout\.stripe\.com/, { timeout: 45_000 });
     expect(page.url()).toContain("checkout.stripe.com");
 
+    // Remember which session we pay for — this shopper accumulates orders across
+    // the suite, so "the newest order" is not a reliable way to find this one.
+    const paidSessionId = (page.url().match(/cs_test_[A-Za-z0-9]+/) ?? [])[0];
+    expect(paidSessionId, "a Stripe session id must be readable from the URL").toBeTruthy();
+
     // Best-effort completion of Stripe's own hosted card widget. The card fields
     // live in Stripe's nested Payment Element iframes; automating them is testing
     // Stripe's UI, not ours, and is inherently brittle — so a failure to drive the
@@ -199,15 +204,25 @@ test.describe("Purchase journey", () => {
     test.skip(!paid, "Stripe hosted card widget not automatable in this run — session reached Stripe, which is the part our code owns.");
 
     // If we did complete payment, verify our side finalizes the order correctly.
-    await page.waitForURL(/localhost:8080\/checkout\/success/, { timeout: 90_000 });
+    // Back on OUR success page. Derive it from BASE — the isolated stack runs the
+    // frontend on :8081, so a hardcoded :8080 would hang here forever.
+    await page.waitForURL(new RegExp(`${BASE.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}/checkout/success`), { timeout: 90_000 });
     await expect(page.getByText(/thank|confirmed|placed|success/i).first())
       .toBeVisible({ timeout: 30_000 });
 
-    const ordersRes = await page.request.get(`${API}/api/orders`);
-    expect(ordersRes.ok()).toBeTruthy();
-    const orders = await ordersRes.json();
-    expect(orders.length).toBeGreaterThan(0);
-    const order = orders[0];
+    // The success page finalizes the order by polling Stripe, so it does not exist
+    // the instant the URL changes — wait for THIS session's order to land.
+    const orderForSession = async () => {
+      const res = await page.request.get(`${API}/api/orders`);
+      expect(res.ok()).toBeTruthy();
+      const orders = await res.json();
+      return orders.find((o: { stripe_session_id?: string }) => o.stripe_session_id === paidSessionId);
+    };
+    await expect(async () => {
+      expect(await orderForSession(), "the paid order must finalize").toBeTruthy();
+    }).toPass({ timeout: 60_000 });
+
+    const order = await orderForSession();
     expect(order.payment_status).toBe("paid");
     expect(order.tracking_number).toMatch(/^OG/);
     expect(Number(order.total)).toBeGreaterThan(0);

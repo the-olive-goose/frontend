@@ -405,6 +405,11 @@ test.describe("Checkout UI", () => {
     await page.waitForURL(/checkout\.stripe\.com/, { timeout: 45_000 });
     expect(page.url()).toContain("checkout.stripe.com");
 
+    // Remember which session we're paying for: this shopper has older orders from
+    // earlier cases, so "the newest order" is not a safe way to find this one.
+    const paidSessionId = sessionIdFromUrl(page.url());
+    expect(paidSessionId, "a Stripe session id must be readable from the URL").toBeTruthy();
+
     // Best-effort: drive Stripe's hosted card widget (its UI, not ours — failing
     // to drive it is a skip). If it succeeds, verify the order finalized at the
     // discounted total and the code is now spent.
@@ -412,9 +417,21 @@ test.describe("Checkout UI", () => {
     test.skip(!paid, "Stripe hosted card widget not automatable in this run — the coded session reached Stripe, which is the part our code owns.");
 
     await page.waitForURL(/\/checkout\/success/, { timeout: 90_000 });
-    const orders = await (await page.request.get(`${API}/api/orders`)).json();
-    expect(Number(orders[0].discount_amount)).toBeGreaterThan(0);
-    expect(orders[0].payment_status).toBe("paid");
+
+    // The success page finalizes the order by polling Stripe, so the order does
+    // not exist the instant the URL changes. Wait for THIS session's order.
+    const orderForSession = async () => {
+      const orders = await (await page.request.get(`${API}/api/orders`)).json();
+      return orders.find((o: { stripe_session_id?: string }) => o.stripe_session_id === paidSessionId);
+    };
+    await expect(async () => {
+      expect(await orderForSession(), "the paid order must finalize").toBeTruthy();
+    }).toPass({ timeout: 60_000 });
+
+    const order = await orderForSession();
+    expect(Number(order.discount_amount), "the applied code must be recorded on the order")
+      .toBeGreaterThan(0);
+    expect(order.payment_status).toBe("paid");
 
     // Spent for good: the code no longer validates.
     const after = await (await page.request.post(`${API}/api/discount/validate`, { data: { code } })).json();

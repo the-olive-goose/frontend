@@ -7,6 +7,7 @@ import React, {
 } from "react";
 import { FaArrowLeft, FaArrowRight } from "react-icons/fa";
 import RichText from "@/lib/richtext";
+import useSwipe from "@/hooks/useSwipe";
 
 interface Testimonial {
   quote: string;
@@ -119,6 +120,14 @@ export const CircularTestimonials = ({
     return () => window.removeEventListener("keydown", handleKey);
   }, [handlePrev, handleNext]);
 
+  // Touch equivalent of the arrow buttons — the stack of photos is the obvious
+  // thing to swipe, so the whole card responds to it.
+  const swipe = useSwipe({
+    onSwipeLeft: handleNext,
+    onSwipeRight: handlePrev,
+    enabled: testimonialsLength > 1,
+  });
+
   function getImageStyle(index: number): React.CSSProperties {
     const gap = calculateGap(containerWidth);
     const maxStickUp = gap * 0.8;
@@ -162,7 +171,7 @@ export const CircularTestimonials = ({
   }
 
   return (
-    <div style={{ width: "100%", maxWidth: "56rem", padding: "0.5rem 2rem" }}>
+    <div {...swipe} style={{ width: "100%", maxWidth: "56rem", padding: "0.5rem 2rem", ...swipe.style }}>
       <div
         style={{
           display: "grid",

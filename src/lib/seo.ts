@@ -26,7 +26,7 @@ export interface RouteMeta {
  */
 export const ROUTE_META: Record<string, RouteMeta> = {
   "/": {
-    title: "The Olive Goose | Handmade Café-Inspired Candles, Dublin",
+    title: "The Olive Goose — the goose insisted, we made candles",
     description:
       "Luxury handmade candles from Dublin, Ireland. Coffee-scented, café-inspired soy candles, hand-poured in small batches. Free Irish shipping over €65.",
   },

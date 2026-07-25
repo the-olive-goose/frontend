@@ -58,7 +58,10 @@ const AddToCartButton = ({
       disabled={disabled}
       title={title}
       aria-label={ariaLabel}
-      className={className}
+      // `og-cta` is the hook for the phone-only 44px touch-target floor in
+      // index.css — these paddings alone come out ~26–36px tall, under the size
+      // the rest of the mobile UI is built to.
+      className={["og-cta", className].filter(Boolean).join(" ")}
       style={{
         fontFamily: "'Fredoka',sans-serif",
         fontWeight: 600,

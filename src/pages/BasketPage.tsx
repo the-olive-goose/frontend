@@ -61,7 +61,9 @@ const BasketPage = () => {
   };
 
   const shipping = subtotalNum >= pickup.free_shipping_threshold ? 0 : (pickup.flat_shipping_rate ?? 4.99);
-  const grandTotal = `€${Math.max(0, subtotalNum - bundleSavings + shipping).toFixed(2)}`;
+  // Capped at the subtotal, matching the backend's own clamp — a bundle saving worth
+  // more than the basket must not display a total below the shipping still owed.
+  const grandTotal = `€${Math.max(0, subtotalNum - Math.min(bundleSavings, subtotalNum) + shipping).toFixed(2)}`;
 
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
@@ -129,7 +131,7 @@ const BasketPage = () => {
                   </svg>
                 </div>
                 <h2 className="font-serif text-xl font-bold mb-2" style={{ color: "#0F1111" }}>Your Basket is empty.</h2>
-                <a href="/shop" className="font-sans text-sm hover:underline" style={{ color: "#C7511F" }}>
+                <a href="/shop" className="og-tap font-sans text-sm hover:underline" style={{ color: "#C7511F" }}>
                   Continue Shopping →
                 </a>
               </div>
@@ -192,25 +194,28 @@ const BasketPage = () => {
                           <div className="flex items-center gap-4 flex-wrap">
                             <div className="flex items-center rounded-full overflow-hidden"
                               style={{ border: "1px solid #DDD", background: "#f0f0f0" }}>
+                              {/* 44px on a phone (the touch-target floor the rest of
+                                  the mobile UI uses), back to a compact 32px from
+                                  the sm breakpoint up where there's a cursor. */}
                               <button
                                 onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
-                                className="w-8 h-8 flex items-center justify-center font-sans text-lg transition-colors hover:bg-gray-200"
+                                className="w-11 h-11 sm:w-8 sm:h-8 flex items-center justify-center font-sans text-lg transition-colors hover:bg-gray-200"
                                 style={{ color: "#0F1111" }}>−</button>
                               <span className="px-3 font-sans text-sm font-semibold min-w-[28px] text-center"
                                 style={{ color: "#0F1111" }}>{item.quantity}</span>
                               <button
                                 onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
-                                className="w-8 h-8 flex items-center justify-center font-sans text-lg transition-colors hover:bg-gray-200"
+                                className="w-11 h-11 sm:w-8 sm:h-8 flex items-center justify-center font-sans text-lg transition-colors hover:bg-gray-200"
                                 style={{ color: "#0F1111" }}>+</button>
                             </div>
                             <span style={{ color: "#DDD" }}>|</span>
                             <button onClick={() => removeFromCart(item.product.id)}
-                              className="font-sans text-sm transition-colors hover:underline"
+                              className="og-tap font-sans text-sm transition-colors hover:underline"
                               style={{ color: "#C7511F" }}>
                               Delete
                             </button>
                             <button onClick={() => navigate("/shop")}
-                              className="font-sans text-sm transition-colors hover:underline"
+                              className="og-tap font-sans text-sm transition-colors hover:underline"
                               style={{ color: "#007185" }}>
                               Save for later
                             </button>
@@ -243,7 +248,7 @@ const BasketPage = () => {
             {user && items.length > 0 && (
               <div className="mt-3 text-right">
                 <button onClick={handleClear} disabled={clearing}
-                  className="font-sans text-xs transition-colors hover:underline disabled:opacity-50"
+                  className="og-tap font-sans text-xs transition-colors hover:underline disabled:opacity-50"
                   style={{ color: "#C7511F" }}>
                   {clearing ? "Clearing…" : "Clear basket"}
                 </button>
@@ -317,7 +322,7 @@ const BasketPage = () => {
                 <motion.button
                   whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
                   onClick={() => navigate("/checkout")}
-                  className="w-full font-sans text-sm font-bold py-2.5 rounded-full transition-all"
+                  className="og-tap justify-center w-full font-sans text-sm font-bold py-2.5 rounded-full transition-all"
                   style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
                   Proceed to Checkout
                 </motion.button>
@@ -333,7 +338,7 @@ const BasketPage = () => {
               <p className="font-sans text-sm leading-relaxed mb-4" style={{ color: "#0F1111" }}>
                 The price and availability of items at The Olive Goose are subject to change. The shopping basket is a temporary place to store a list of your items and reflects each item's most recent price.
               </p>
-              <a href="/shop" className="font-sans text-sm font-semibold hover:underline transition-colors"
+              <a href="/shop" className="og-tap font-sans text-sm font-semibold hover:underline transition-colors"
                 style={{ color: "#C7511F" }}>
                 Continue Shopping →
               </a>

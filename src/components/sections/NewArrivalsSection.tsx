@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import useIsMobile from "@/hooks/useIsMobile";
+import useSwipe from "@/hooks/useSwipe";
 import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
 import {
   DEFAULT_CONTENT,
@@ -53,12 +54,25 @@ const NewArrivalsSection = () => {
       .filter((p): p is Product => !!p);
   }, [allProducts]);
 
+  // Everything the swipe handler needs is derived above the early return, so
+  // the hooks below run on every render.
+  const products  = useMemo(() => (cat ? resolveProducts(cat) : []), [cat, resolveProducts]);
+  const maxOffset = Math.max(0, products.length - perView);
+
+  // Rotating the phone changes how many cards fit; don't leave the window
+  // parked past the end of the list.
+  useEffect(() => { setCandleOffset(o => Math.min(o, maxOffset)); }, [maxOffset]);
+
+  const swipe = useSwipe({
+    onSwipeLeft:  () => setCandleOffset(o => Math.min(o + 1, maxOffset)),
+    onSwipeRight: () => setCandleOffset(o => Math.max(o - 1, 0)),
+    enabled: products.length > perView,
+  });
+
   if (!show || !cat) return null;
-  const products  = resolveProducts(cat);
   const isDark    = cat.bg_color.startsWith("#1") || cat.bg_color.startsWith("#17");
   // Cards use the global accent unless this category opted into its own.
   const cardAccent = resolveCardAccent(cardTheme, cat);
-  const maxOffset = Math.max(0, products.length - perView);
   const visible   = products.slice(candleOffset, candleOffset + perView);
   const canPrev   = candleOffset > 0;
   const canNext   = candleOffset < maxOffset;
@@ -172,21 +186,24 @@ const NewArrivalsSection = () => {
                         <motion.button key={label}
                           onClick={() => { if (active) setCandleOffset(candleOffset + dir); }}
                           whileHover={active ? {scale:1.12} : {}} whileTap={active ? {scale:0.9} : {}}
-                          style={{width:34, height:34, borderRadius:"50%", border:`1.5px solid ${active ? cat.accent_color : cat.accent_color+"40"}`, background: active ? `${cat.accent_color}18` : "transparent", color: active ? cat.accent_color : cat.accent_color+"40", cursor: active ? "pointer" : "default", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"1rem", fontWeight:600}}>
+                          style={{width:40, height:40, borderRadius:"50%", border:`1.5px solid ${active ? cat.accent_color : cat.accent_color+"40"}`, background: active ? `${cat.accent_color}18` : "transparent", color: active ? cat.accent_color : cat.accent_color+"40", cursor: active ? "pointer" : "default", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"1rem", fontWeight:600}}>
                           {label}
                         </motion.button>
                       ))}
                     </div>
                   )}
                   <a href={`/shop?category=${cat.slug}`}
-                    style={{fontFamily:"'Fredoka',sans-serif", fontSize:"clamp(0.82rem,1.2vw,0.95rem)", color:cat.accent_color, textDecoration:"none", opacity:0.8}}>
+                    style={{display:"inline-flex", alignItems:"center", minHeight:40, padding:"0 4px", fontFamily:"'Fredoka',sans-serif", fontSize:"clamp(0.82rem,1.2vw,0.95rem)", color:cat.accent_color, textDecoration:"none", opacity:0.8}}>
                     Shop All →
                   </a>
                 </div>
               </div>
 
-              {/* Cards */}
-              <div style={{display:"flex", gap:"clamp(8px,1.4vw,14px)", alignItems:"stretch"}}>
+              {/* Cards — swipeable; the arrows above are the pointer equivalent */}
+              <div
+                {...swipe}
+                style={{display:"flex", gap:"clamp(8px,1.4vw,14px)", alignItems:"stretch", ...swipe.style}}
+              >
                 {products.length === 0 ? (
                   <>
                     <PlaceholderCard accent={cat.accent_color} isDark={isDark} label={"add products via\nAdmin → Shop By Category"} />
@@ -205,14 +222,20 @@ const NewArrivalsSection = () => {
                 )}
               </div>
 
-              {/* Dots */}
+              {/* Dots — the dot stays 6px tall, but the button around it carries
+                  transparent padding so a fingertip can actually land on it */}
               {products.length > perView && (
-                <div style={{display:"flex", justifyContent:"center", gap:5, marginTop:12}}>
+                <div style={{display:"flex", justifyContent:"center", alignItems:"center", marginTop:6}}>
                   {Array.from({length: maxOffset+1}).map((_,i) => (
-                    <motion.button key={i} onClick={() => setCandleOffset(i)}
-                      animate={{width: i===candleOffset ? 18 : 6, background: i===candleOffset ? cat.accent_color : `${cat.accent_color}45`}}
-                      style={{height:6, borderRadius:3, border:"none", cursor:"pointer", padding:0}}
-                      transition={{duration:0.25}} />
+                    <button key={i} onClick={() => setCandleOffset(i)}
+                      aria-label={`Show candle ${i+1} of ${maxOffset+1}`}
+                      aria-current={i===candleOffset}
+                      style={{border:"none", background:"none", cursor:"pointer", padding:"10px 3px", display:"flex", alignItems:"center"}}>
+                      <motion.span
+                        animate={{width: i===candleOffset ? 18 : 6, background: i===candleOffset ? cat.accent_color : `${cat.accent_color}45`}}
+                        style={{height:6, borderRadius:3, display:"block", width: i===candleOffset ? 18 : 6, background: i===candleOffset ? cat.accent_color : `${cat.accent_color}45`}}
+                        transition={{duration:0.25}} />
+                    </button>
                   ))}
                 </div>
               )}

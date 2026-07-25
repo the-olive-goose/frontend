@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { submitFeedback, uploadImage } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 
 interface Props {
   open: boolean;
@@ -18,6 +19,7 @@ const Star = ({ filled, onClick }: { filled: boolean; onClick: () => void }) => 
 
 const FeedbackModal = ({ open, onClose }: Props) => {
   const { user } = useAuth();
+  useBodyScrollLock(open);
   const [rating,    setRating]    = useState(5);
   const [name,      setName]      = useState(user?.full_name?.trim() || user?.email?.split("@")[0] || "");
   const [email,     setEmail]     = useState(user?.email ?? "");
@@ -65,16 +67,18 @@ const FeedbackModal = ({ open, onClose }: Props) => {
         <motion.div ref={overlayRef}
           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+          className="fixed inset-0 z-[200] flex items-start sm:items-center justify-center p-4 overflow-y-auto overscroll-contain"
           style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
           onClick={e => { if (e.target === overlayRef.current) onClose(); }}>
 
+          {/* Scrolls within the overlay rather than being clipped — the review
+              form is taller than a phone screen once the keyboard is up. */}
           <motion.div
             initial={{ opacity: 0, y: 24, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 16, scale: 0.97 }}
             transition={{ duration: 0.24, ease: "easeOut" }}
-            className="relative w-full max-w-lg rounded-2xl overflow-hidden"
+            className="relative w-full max-w-lg my-auto rounded-2xl overflow-hidden"
             style={{ background: "#fdf6ef", boxShadow: "0 32px 80px rgba(0,0,0,0.28)" }}>
 
             {/* Paper grain */}
