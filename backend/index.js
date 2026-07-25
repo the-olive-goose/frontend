@@ -1849,30 +1849,56 @@ app.get('/api/auth/google/callback', async (req, res) => {
       id:             claims.sub,
     };
 
-    // Never silently merge a Google login into an account that was created
-    // with a different identity (password/Facebook/phone), and never trust
-    // an unverified provider email as proof of ownership — otherwise anyone
-    // who can obtain a Google identity reporting a victim's email (e.g. an
-    // unverified Workspace alias) could sign in as that victim.
+    // Never trust an unverified provider email as proof of ownership — anyone who
+    // can obtain a Google identity reporting a victim's address (e.g. an unverified
+    // Workspace alias) could otherwise sign in as that victim.
     if (!gUser.verified_email) {
       return res.redirect(`${FRONTEND_URL}/auth/callback?error=email_not_verified`);
     }
 
+    // ── Account linking ────────────────────────────────────────────────────────
+    // Attaching this Google identity to an existing account is safe only when BOTH
+    // sides have independently proven control of the same mailbox. Google has, just
+    // above. The local side is proven when the account was created through the
+    // password signup flow: /api/user/register/verify writes no users row until an
+    // emailed OTP comes back, so a provider='email' account cannot exist for an
+    // address its owner doesn't control. Same mailbox, both proven — same person,
+    // and linking is not a takeover. This is the standard rule (GitHub, Slack, …).
+    //
+    // A Facebook- or phone-created account that merely carries this email has not
+    // met that bar, so it is still refused. Both halves of the check are load-bearing:
+    // email_verified is now set honestly at every insert site and repaired for old
+    // rows (see repair_email_verified_by_provider in initDb), and provider='email'
+    // is what ties it to the OTP guarantee above.
     const { rows: existingRows } = await pool.query(
-      'SELECT provider FROM users WHERE email = $1', [gUser.email]
+      'SELECT provider, email_verified FROM users WHERE email = $1', [gUser.email]
     );
-    if (existingRows.length && existingRows[0].provider !== 'google') {
-      return res.redirect(`${FRONTEND_URL}/auth/callback?error=account_exists`);
+    const existing = existingRows[0];
+    const linkable = existing?.provider === 'email' && existing.email_verified;
+
+    if (existing && existing.provider !== 'google' && !linkable) {
+      // Pass the existing provider back so the callback screen can tell the user
+      // how they actually signed up ("use your password") instead of showing them
+      // a bare error code they can't act on.
+      return res.redirect(
+        `${FRONTEND_URL}/auth/callback?error=account_exists&provider=${encodeURIComponent(existing.provider)}`
+      );
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO users (email, full_name, avatar_url, provider, provider_id)
-       VALUES ($1, $2, $3, 'google', $4)
+      `INSERT INTO users (email, full_name, avatar_url, provider, provider_id, email_verified)
+       VALUES ($1, $2, $3, 'google', $4, true)
        ON CONFLICT (email) DO UPDATE SET
-         full_name   = COALESCE(EXCLUDED.full_name,   users.full_name),
-         avatar_url  = COALESCE(EXCLUDED.avatar_url,  users.avatar_url),
-         provider    = 'google',
-         provider_id = EXCLUDED.provider_id
+         -- Fill blanks from Google, never overwrite: a name or picture the shopper
+         -- set themselves must survive every subsequent sign-in.
+         full_name   = COALESCE(NULLIF(users.full_name,  ''), EXCLUDED.full_name),
+         avatar_url  = COALESCE(NULLIF(users.avatar_url, ''), EXCLUDED.avatar_url),
+         -- provider is deliberately NOT overwritten. On a linked account it has to
+         -- stay 'email', because /api/user/login matches on provider = 'email' —
+         -- flipping it to 'google' would silently stop accepting the password the
+         -- shopper still has and still expects to work.
+         provider_id = CASE WHEN users.provider = 'google'
+                            THEN EXCLUDED.provider_id ELSE users.provider_id END
        RETURNING id, email, full_name, avatar_url, provider`,
       [gUser.email, gUser.name, gUser.picture, gUser.id]
     );
@@ -1938,8 +1964,10 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO users (email, full_name, avatar_url, provider, provider_id)
-       VALUES ($1, $2, $3, 'facebook', $4)
+      // email_verified stays false: as noted above, Facebook gives us no reliable
+      // proof of address ownership, and this may not even be a real address.
+      `INSERT INTO users (email, full_name, avatar_url, provider, provider_id, email_verified)
+       VALUES ($1, $2, $3, 'facebook', $4, false)
        ON CONFLICT (email) DO UPDATE SET
          full_name   = COALESCE(EXCLUDED.full_name,   users.full_name),
          avatar_url  = COALESCE(EXCLUDED.avatar_url,  users.avatar_url),
@@ -2030,8 +2058,10 @@ app.post('/api/auth/phone/verify-otp', authLimiter, async (req, res) => {
     await pool.query('DELETE FROM phone_otps WHERE phone = $1', [phone]);
 
     const { rows: userRows } = await pool.query(
-      `INSERT INTO users (phone, provider)
-       VALUES ($1, 'phone')
+      // email_verified stays false: this account has no email address at all, and
+      // one added later from the profile page is self-asserted, not verified.
+      `INSERT INTO users (phone, provider, email_verified)
+       VALUES ($1, 'phone', false)
        ON CONFLICT (phone) DO UPDATE SET phone = EXCLUDED.phone
        RETURNING id, email, phone, full_name, avatar_url, provider`,
       [phone]
@@ -3882,6 +3912,15 @@ app.use((err, _req, res, _next) => {
 
 async function initDb() {
   await pool.query(`
+    -- Marker table for data migrations that must run exactly once. The DDL in this
+    -- block is all CREATE/ALTER ... IF NOT EXISTS, so re-running it every boot is
+    -- harmless — but an UPDATE is not self-limiting that way, and one placed here
+    -- re-applies on every single deploy. See runOnce() after this query.
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      key        TEXT        PRIMARY KEY,
+      applied_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS site_settings (
       id         UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
       key        TEXT        UNIQUE NOT NULL,
@@ -3964,8 +4003,14 @@ async function initDb() {
     ALTER TABLE phone_otps ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
 
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false;
-    -- Backfill existing accounts as verified so they aren't affected by the new flow.
-    UPDATE users SET email_verified = true WHERE email_verified = false;
+    -- Deliberately NO backfill here. This block re-runs on every boot, so the
+    -- "UPDATE users SET email_verified = true WHERE email_verified = false" that
+    -- used to sit on this line re-applied on every deploy — permanently forcing
+    -- the column true for every row, including Google/Facebook/phone accounts whose
+    -- inserts never set it. That made the flag useless as a security signal: it
+    -- said "verified" for accounts nobody had verified. The corrected, run-once
+    -- version is repair_email_verified_by_provider below; each insert site now sets
+    -- the column explicitly so no backfill is needed for new rows at all.
 
     ALTER TABLE users ADD COLUMN IF NOT EXISTS address_line1 TEXT DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS address_line2 TEXT DEFAULT '';
@@ -4265,6 +4310,53 @@ async function initDb() {
       created_at  TIMESTAMPTZ DEFAULT NOW()
     );
   `);
+
+  // ── Once-only data migrations ───────────────────────────────────────────────
+  // Everything above is idempotent DDL, safe to re-run on every boot. Data changes
+  // are not: an UPDATE written as a "one-time backfill" up there silently re-applies
+  // on every deploy forever. Route anything that rewrites existing rows through here.
+  //
+  // The marker row and the data change commit in one transaction, so a crash
+  // mid-migration can't leave a marker claiming work that never happened — that
+  // would skip it silently forever, the same failure in a new costume. The unique
+  // key doubles as a lock: if two instances boot at once the second blocks until
+  // the first commits, then sees rowCount 0 and skips.
+  const runOnce = async (key, run) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rowCount } = await client.query(
+        `INSERT INTO schema_migrations (key) VALUES ($1) ON CONFLICT (key) DO NOTHING`,
+        [key]
+      );
+      if (rowCount === 0) { await client.query('ROLLBACK'); return; } // earlier boot
+      await run(client);
+      await client.query('COMMIT');
+      console.log(`🗃️  migration applied: ${key}`);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => { /* connection already gone */ });
+      throw err;
+    } finally {
+      client.release();
+    }
+  };
+
+  // Repairs the damage left by the old always-on backfill: restores email_verified
+  // to what each account can actually prove about its address.
+  //   email    — /api/user/register/verify writes no users row until an emailed OTP
+  //              is confirmed, so every password account is genuinely verified.
+  //   google   — the callback refuses to proceed unless Google reports
+  //              email_verified, so every Google account is genuinely verified too.
+  //   facebook — the Graph API exposes no reliable verified flag (see that
+  //              callback), and the address may be a synthetic fb_<id>@noemail.local.
+  //   phone    — signs up with no email at all.
+  // Runs on the migration's own transaction (hence `client`, not `pool`) so the
+  // rewrite and its marker land together.
+  await runOnce('repair_email_verified_by_provider', (client) => client.query(`
+    UPDATE users
+       SET email_verified = (provider IN ('email', 'google'))
+     WHERE email_verified IS DISTINCT FROM (provider IN ('email', 'google'))
+  `));
 
   // One-time bootstrap: seed the admins table from the env vars if it's empty.
   // After this, ADMIN_EMAIL/ADMIN_PASSWORD_HASH are only a fallback for the very
