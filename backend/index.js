@@ -396,6 +396,19 @@ const publicWriteLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many submissions. Please try again later.' },
 });
+// Trying discount codes is a guessing game: welcome codes are 8 random characters
+// and effectively unguessable, but an admin can mint a short memorable one
+// ("SPRING20"), and the global 400/5min budget is plenty of room to enumerate
+// those. A real shopper types one or two codes, so this stays well clear of them.
+const discountValidateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  // Overridable like the other limiters so an e2e run (dozens of validate calls
+  // from one IP) isn't throttled; only ever raised on a trusted test host.
+  max: Number(process.env.DISCOUNT_VALIDATE_RATE_LIMIT_MAX) || 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many discount codes tried. Please wait a few minutes and try again.' },
+});
 // Analytics ingestion gets its own budget: the tracker batches client-side and
 // flushes at most every few seconds, so even a long, very active session stays
 // far below this — while a scripted flood from one IP is still capped.
@@ -409,6 +422,44 @@ const analyticsLimiter = rateLimit({
 
 // ── Validation helpers ──────────────────────────────────────────────────────────
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Canonical form of an address, for "one per real person" rules like the welcome
+// discount. Sub-addressing (`me+deals@…`) is delivered to `me@…` by essentially
+// every provider, and Google additionally ignores dots — so me@gmail.com,
+// m.e@gmail.com and me+1@gmail.com are ONE mailbox. Without this, a shopper can
+// subscribe as me+1, me+2, me+3…, verify each signup from the same inbox, and mint
+// an unlimited supply of "first order" discounts. Only ever used for abuse checks;
+// mail is still sent to, and accounts still keyed on, the address as typed.
+const GOOGLE_MAIL_DOMAINS = new Set(['gmail.com', 'googlemail.com']);
+const canonicalEmail = (raw) => {
+  const email = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  const at = email.lastIndexOf('@');
+  if (at <= 0 || at === email.length - 1) return email;
+  let local = email.slice(0, at);
+  let domain = email.slice(at + 1);
+  const plus = local.indexOf('+');
+  if (plus > 0) local = local.slice(0, plus);
+  if (GOOGLE_MAIL_DOMAINS.has(domain)) {
+    local = local.replace(/\./g, '');
+    domain = 'gmail.com';
+  }
+  return local ? `${local}@${domain}` : email;
+};
+
+// The canonical address behind a signed-in account, read from the users row (a JWT
+// minted before an email change would otherwise carry a stale address). Only a
+// *verified* address counts: a phone-signup account can type any email into its
+// profile, and treating that as proof would let anyone claim a code issued to
+// someone else simply by naming their address. Returns null when the account has
+// nothing it can prove.
+const canonicalEmailForUser = async (userId) => {
+  if (!userId) return null;
+  const { rows } = await pool.query(
+    'SELECT email, email_verified FROM users WHERE id = $1', [userId]
+  );
+  if (!rows[0]?.email_verified) return null;
+  return canonicalEmail(rows[0].email) || null;
+};
 
 // Returns an error string if invalid, or null if the password is acceptable.
 const validatePassword = (pw) => {
@@ -661,34 +712,51 @@ const normalizeCode = (raw) => (typeof raw === 'string' ? raw.trim().toUpperCase
 // basket; fixed is a flat amount, clamped so it can never exceed the subtotal
 // (which would drive the order total negative).
 const computeCodeDiscount = (type, value, subtotal) => {
-  const v = Number(value) || 0;
+  const v = Math.max(Number(value) || 0, 0);
   if (type === 'fixed') return Math.min(v, subtotal);
-  return subtotal * (v / 100);
+  // Percentages are validated at 0–100 on the way in, but a row written before
+  // that check existed must not be able to discount more than the basket is worth.
+  return subtotal * (Math.min(v, 100) / 100);
 };
 
 // Issue the one welcome code for a subscriber email. Idempotent on the unique
-// (email, source) index: if a code already exists it's returned rather than a
-// second one being minted. Retries only on the astronomically unlikely event of
-// a random-code collision.
+// canonical_email index: if a code already exists for that mailbox it's returned
+// rather than a second one being minted — and because the lookup is canonical,
+// subscribing again as me+2@gmail.com hands back the code me@gmail.com already
+// has instead of a fresh discount. Retries only on the astronomically unlikely
+// event of a random-code collision.
 const issueSubscriberDiscountCode = async (email, discountPercent) => {
+  const canonical = canonicalEmail(email);
+  // Clamp: the percent comes from admin-editable popup settings, which go through
+  // the generic content PUT and aren't range-checked there. A typo'd 1000 must not
+  // become a 1000%-off code sitting in the table.
+  const percent = Math.min(Math.max(Number(discountPercent) || 0, 0), 100);
+
   const existing = await pool.query(
-    `SELECT * FROM discount_codes WHERE email = $1 AND source = 'subscribe'`, [email]
+    `SELECT * FROM discount_codes
+      WHERE source = 'subscribe' AND (canonical_email = $1 OR email = $2)
+      ORDER BY created_at ASC LIMIT 1`,
+    [canonical, email]
   );
   if (existing.rows.length) return existing.rows[0];
 
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const { rows } = await pool.query(
-        `INSERT INTO discount_codes (code, email, discount_percent, discount_value, discount_type, source)
-         VALUES ($1, $2, $3, $3, 'percentage', 'subscribe') RETURNING *`,
-        [genDiscountCode(), email, discountPercent]
+        `INSERT INTO discount_codes (code, email, canonical_email, discount_percent, discount_value, discount_type, source)
+         VALUES ($1, $2, $3, $4, $4, 'percentage', 'subscribe') RETURNING *`,
+        [genDiscountCode(), email, canonical, percent]
       );
       return rows[0];
     } catch (err) {
-      // 23505 on (email, source) → another request just issued it; return that.
+      // 23505 on (email, source) or the canonical index → another request just
+      // issued it (or an alias of the same mailbox already holds one); return that.
       if (err.code === '23505') {
         const { rows } = await pool.query(
-          `SELECT * FROM discount_codes WHERE email = $1 AND source = 'subscribe'`, [email]
+          `SELECT * FROM discount_codes
+            WHERE source = 'subscribe' AND (canonical_email = $1 OR email = $2)
+            ORDER BY created_at ASC LIMIT 1`,
+          [canonical, email]
         );
         if (rows.length) return rows[0];
         // else it was a code collision — loop and try a fresh code.
@@ -698,6 +766,45 @@ const issueSubscriberDiscountCode = async (email, discountPercent) => {
     }
   }
   throw new Error('Could not generate a unique discount code');
+};
+
+// The two person-level guards on a welcome (subscribe) code, shared by the
+// read-only inspect and the authoritative reserve so the checkout can never be
+// stricter or looser than what the shopper was told at "Apply".
+//   1. Recipient binding — a welcome code is the *account holder's* first-order
+//      discount, not a bearer token. Without this, someone can farm codes on
+//      throwaway addresses (or buy one off a stranger) and spend them anywhere.
+//   2. One per person — enforced on canonical email as well as user id, so
+//      registering a second account from the same mailbox via a +tag alias
+//      doesn't buy a second "first order" discount.
+// `db` is the pool or an open transaction client, so reserve keeps its FOR UPDATE
+// lock while these run.
+const welcomeCodeBlockReason = async (db, target, userId, userCanonical) => {
+  if (target.source !== 'subscribe') return null; // admin promo codes are exempt
+
+  // Bound codes need a *proven* match: an account with no verified address (phone
+  // signup) can't claim one, or naming the recipient's address in your profile
+  // would be enough to take their discount. Codes issued before canonical_email
+  // existed are backfilled at boot, so they bind too — a subscriber whose account
+  // sits on a different address than the one they subscribed with is told to
+  // subscribe again with the account's address, which mints them their own code.
+  if (target.canonical_email && target.canonical_email !== userCanonical) {
+    return userCanonical
+      ? 'This welcome code was issued to a different email address. Subscribe with this account’s address to get your own code.'
+      : 'Sign in with the email address this welcome code was sent to in order to use it.';
+  }
+
+  const { rows } = await db.query(
+    `SELECT 1 FROM discount_codes
+      WHERE source = 'subscribe' AND code <> $2
+        AND ( redeemed_by_user_id = $1
+              OR ( $3::text IS NOT NULL AND canonical_email = $3 AND redeemed_at IS NOT NULL )
+              OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
+                   AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
+      LIMIT 1`,
+    [userId, target.code, userCanonical]
+  );
+  return rows.length ? "You've already used a welcome discount." : null;
 };
 
 // Read-only validation for the pre-checkout "apply code" UX. Never mutates —
@@ -715,21 +822,8 @@ const inspectDiscountCode = async (code, userId) => {
     return { valid: false, message: singleUse ? 'This code has already been used.' : 'This code has been fully redeemed.' };
   }
 
-  // The one-welcome-per-account cap only applies when the code being applied is
-  // itself a subscribe code — admin promo codes are exempt, and holding a welcome
-  // code must never block an admin code.
-  if (row.source === 'subscribe') {
-    const { rows: usedRows } = await pool.query(
-      `SELECT 1 FROM discount_codes
-        WHERE source = 'subscribe' AND code <> $2
-          AND ( redeemed_by_user_id = $1
-                OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
-                     AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
-        LIMIT 1`,
-      [userId, normalized]
-    );
-    if (usedRows.length) return { valid: false, message: "You've already used a welcome discount." };
-  }
+  const blocked = await welcomeCodeBlockReason(pool, row, userId, await canonicalEmailForUser(userId));
+  if (blocked) return { valid: false, message: blocked };
 
   // Held by someone else's in-flight checkout right now. Only single-use codes
   // take an exclusive hold; multi-use codes rely on the atomic redeem cap instead.
@@ -759,6 +853,9 @@ const reserveDiscountCode = async (code, userId, sessionId) => {
   const normalized = normalizeCode(code);
   if (!normalized) return { ok: false, message: 'Enter a code to apply.' };
 
+  // Resolved before BEGIN so the transaction holding the row lock stays short.
+  const userCanonical = await canonicalEmailForUser(userId);
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -776,21 +873,34 @@ const reserveDiscountCode = async (code, userId, sessionId) => {
       return { ok: false, message: singleUse ? 'This code has already been used.' : 'This code has been fully redeemed.' };
     }
 
-    // Per-account welcome-discount cap: any *other* subscribe code this user has
-    // already redeemed, or is actively holding, blocks a second one. Only enforced
-    // when the target itself is a subscribe code — admin codes are exempt and must
-    // not be blocked by a welcome code the user happens to hold.
-    if (target.source === 'subscribe') {
-      const { rows: usedRows } = await client.query(
-        `SELECT 1 FROM discount_codes
-          WHERE source = 'subscribe' AND code <> $2
-            AND ( redeemed_by_user_id = $1
-                  OR ( reserved_by_user_id = $1 AND redeemed_at IS NULL
-                       AND reserved_at > NOW() - INTERVAL '${DISCOUNT_RESERVATION_MINUTES} minutes' ) )
+    // Recipient binding + one-welcome-per-person, evaluated inside the same
+    // transaction that holds the FOR UPDATE lock (see welcomeCodeBlockReason).
+    const blocked = await welcomeCodeBlockReason(client, target, userId, userCanonical);
+    if (blocked) { await client.query('ROLLBACK'); return { ok: false, message: blocked }; }
+
+    // A single-use code already committed to a checkout that can still be paid.
+    // The exclusive hold below lapses after 30 minutes, but a Stripe Checkout
+    // session stays payable for ~24h and asynchronous methods (Klarna, SEPA) settle
+    // long after that — so without this, a shopper could open a coded checkout, wait
+    // out the hold, open a second one with the same code, and pay BOTH at a
+    // discount. redeemDiscountCode only ever fires once, so the second order would
+    // keep its discount with nothing spent for it. Multi-use codes are exempt: their
+    // capacity is enforced atomically at redeem, so concurrent checkouts are fine.
+    // The shopper's own earlier sessions were expired before we got here (see
+    // expirePriorCheckouts), so this can't lock someone out of their own code.
+    if (singleUse) {
+      const { rows: liveRows } = await client.query(
+        `SELECT 1 FROM pending_checkouts
+          WHERE consumed_at IS NULL AND expired_at IS NULL
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND payload->>'discount_code' = $1
           LIMIT 1`,
-        [userId, normalized]
+        [normalized]
       );
-      if (usedRows.length) { await client.query('ROLLBACK'); return { ok: false, message: "You've already used a welcome discount." }; }
+      if (liveRows.length) {
+        await client.query('ROLLBACK');
+        return { ok: false, message: 'This code is being used in another checkout right now.' };
+      }
     }
 
     // Claim it. For single-use codes the hold is exclusive (free, already ours,
@@ -844,9 +954,43 @@ const redeemDiscountCode = async (code, userId, orderId) => {
         AND ( dc.source <> 'subscribe' OR NOT EXISTS (
           SELECT 1 FROM discount_codes o
            WHERE o.source = 'subscribe' AND o.id <> dc.id
-             AND o.redeemed_by_user_id = $1 ) )`,
+             AND ( o.redeemed_by_user_id = $1
+                   -- …or the same mailbox already spent its welcome discount under
+                   -- a different address spelling / a second account.
+                   OR ( o.canonical_email IS NOT NULL
+                        AND o.canonical_email = dc.canonical_email
+                        AND o.redeemed_at IS NOT NULL ) ) ) )`,
     [userId, normalized, orderId]
   );
+};
+
+// Retire a shopper's earlier, still-payable checkout sessions before starting a
+// new one. Stripe keeps a Checkout Session payable for ~24h, so a shopper who
+// abandons a coded checkout and starts another would otherwise be left holding two
+// live sessions for the same basket — pay both and the single-use code funds two
+// discounted orders (the second redeem is a silent no-op). Expiring the old ones
+// makes "one live checkout per shopper" true at Stripe, not just in our tables.
+// Best-effort per session: `expire` legitimately fails for a session that's already
+// complete or expired, and that must never block the new checkout.
+const expirePriorCheckouts = async (userId) => {
+  const { rows } = await pool.query(
+    `SELECT id, stripe_session_id FROM pending_checkouts
+      WHERE user_id = $1 AND consumed_at IS NULL AND expired_at IS NULL
+        AND created_at > NOW() - INTERVAL '24 hours'`,
+    [userId]
+  );
+  for (const row of rows) {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(row.stripe_session_id);
+      // Already paid (or paying) — leave it alone so finalizeCheckoutSession can
+      // still turn it into the order the shopper's money belongs to.
+      if (session.payment_status === 'paid' || session.status === 'complete') continue;
+      if (session.status === 'open') await stripe.checkout.sessions.expire(row.stripe_session_id);
+      await pool.query('UPDATE pending_checkouts SET expired_at = NOW() WHERE id = $1', [row.id]);
+    } catch (err) {
+      console.error('[expirePriorCheckouts]', row.stripe_session_id, err?.message || err);
+    }
+  }
 };
 
 // Release an in-flight hold placed by reserveDiscountCode when the checkout it was
@@ -1016,6 +1160,15 @@ const finalizeCheckoutSession = async (sessionId) => {
 
   const session = await stripe.checkout.sessions.retrieve(sessionId);
   if (session.payment_status !== 'paid') return null;
+
+  // Superseded by a later checkout from the same shopper (expirePriorCheckouts).
+  // Stripe refuses payment on an expired session, so this should be unreachable —
+  // if it ever fires, the shopper's money is real and the order still stands, but
+  // it's logged loudly because it means the one-live-checkout guarantee slipped and
+  // a single-use code may have funded two discounted orders.
+  if (pending.expired_at) {
+    console.error('[finalizeCheckoutSession] paid a superseded session:', sessionId);
+  }
 
   const p = pending.payload;
   try {
@@ -2190,6 +2343,12 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
       [req.user.userId]
     );
     if (!cartRows.length) return res.status(400).json({ error: 'Your basket is empty' });
+
+    // Retire any earlier still-payable session for this shopper before we price a
+    // new one, so only ever one checkout of theirs can be paid. Also what keeps a
+    // shopper who abandoned a coded checkout from being locked out of their own
+    // code by the live-checkout guard in reserveDiscountCode.
+    await expirePriorCheckouts(req.user.userId);
 
     const { rows: userRows } = await pool.query(
       `SELECT email, full_name, phone, address_line1, address_line2, city, state, postal_code, country
@@ -3592,12 +3751,19 @@ app.post('/api/subscribers', publicWriteLimiter, async (req, res) => {
       console.error('[issueSubscriberDiscountCode]', err);
     }
 
+    // "This mailbox already spent its welcome discount" outranks "this exact
+    // spelling is new to the list". A +tag alias of a redeemed address is a genuinely
+    // new subscriber row, but answering 201-with-no-discount would show the signup
+    // card's success view with an empty space where the code belongs. Say plainly
+    // that the discount is gone — that's the part the shopper is asking about, and
+    // they stay subscribed either way.
+    if (alreadyUsed) return res.status(409).json({ error: 'already_subscribed', already_used: true });
     if (isNew) return res.status(201).json({ email, already_subscribed: false, discount });
     // Already on the list. If there's still an unused code, hand it over (200);
-    // otherwise there's genuinely nothing to give (used, or offer off) → 409, and
+    // otherwise there's genuinely nothing to give (offer switched off) → 409, and
     // the signup card invites them to try a different email.
     if (discount) return res.status(200).json({ email, already_subscribed: true, discount });
-    return res.status(409).json({ error: 'already_subscribed', already_used: alreadyUsed });
+    return res.status(409).json({ error: 'already_subscribed', already_used: false });
   } catch (err) {
     sendServerError(res, err);
   }
@@ -3606,7 +3772,7 @@ app.post('/api/subscribers', publicWriteLimiter, async (req, res) => {
 // ── POST /api/discount/validate — pre-checkout "apply code" check (customer) ──
 // Read-only: tells the checkout page whether a code is usable and for what %.
 // The binding hold + authoritative re-check happen at session creation.
-app.post('/api/discount/validate', requireUserAuth, async (req, res) => {
+app.post('/api/discount/validate', requireUserAuth, discountValidateLimiter, async (req, res) => {
   try {
     const result = await inspectDiscountCode(req.body?.code, req.user.userId);
     res.json(result);
@@ -4197,6 +4363,21 @@ async function initDb() {
     -- Admin codes carry no email; welcome codes still do.
     ALTER TABLE discount_codes ALTER COLUMN email DROP NOT NULL;
 
+    -- The mailbox behind the address (see canonicalEmail): +tag aliases and Gmail
+    -- dot variants all collapse to one value, so "one welcome code per person" can
+    -- actually mean per person rather than per spelling.
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS canonical_email TEXT;
+
+    -- Marks a pending checkout that was superseded by a later one from the same
+    -- shopper and expired at Stripe, so it can no longer be paid (see
+    -- expirePriorCheckouts) and no longer counts as a live hold on its code.
+    ALTER TABLE pending_checkouts ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ;
+
+    -- Looking up "is this code committed to a live checkout" on every reserve.
+    CREATE INDEX IF NOT EXISTS pending_checkouts_live_code_idx
+      ON pending_checkouts ((payload->>'discount_code'))
+      WHERE consumed_at IS NULL AND expired_at IS NULL;
+
     CREATE TABLE IF NOT EXISTS returns (
       id           UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
       order_id     UUID        REFERENCES orders(id) ON DELETE CASCADE,
@@ -4404,6 +4585,40 @@ async function initDb() {
        SET email_verified = (provider IN ('email', 'google'))
      WHERE email_verified IS DISTINCT FROM (provider IN ('email', 'google'))
   `));
+
+  // Fill canonical_email for welcome codes issued before the column existed, so the
+  // "one per mailbox" rule applies to the existing subscriber base too and isn't
+  // only enforced from this deploy forward. Canonicalisation is JS-side (the Gmail
+  // dot rule is awkward in SQL), so this reads and rewrites row by row.
+  await runOnce('backfill_discount_codes_canonical_email', async (client) => {
+    const { rows } = await client.query(
+      `SELECT id, email FROM discount_codes WHERE canonical_email IS NULL AND email IS NOT NULL`
+    );
+    for (const row of rows) {
+      const canonical = canonicalEmail(row.email);
+      if (!canonical) continue;
+      await client.query('UPDATE discount_codes SET canonical_email = $2 WHERE id = $1', [row.id, canonical]);
+    }
+    if (rows.length) console.log(`   canonicalised ${rows.length} welcome code email(s)`);
+  });
+
+  // Belt-and-braces behind issueSubscriberDiscountCode's canonical lookup: makes a
+  // second welcome code for the same mailbox impossible even under a race. Created
+  // best-effort — a store that already handed out aliased duplicates before this
+  // deploy would fail the index build, and that's not a reason to refuse to boot.
+  // The application-level check still holds the line in that case.
+  try {
+    await pool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS discount_codes_canonical_subscribe_uidx
+         ON discount_codes (canonical_email)
+       WHERE source = 'subscribe' AND canonical_email IS NOT NULL`
+    );
+  } catch (err) {
+    console.error(
+      '[discount_codes canonical index] not created — existing rows share a mailbox. ' +
+      'Welcome codes are still capped per mailbox in application code. Detail:', err?.message || err
+    );
+  }
 
   // One-time bootstrap: seed the admins table from the env vars if it's empty.
   // After this, ADMIN_EMAIL/ADMIN_PASSWORD_HASH are only a fallback for the very

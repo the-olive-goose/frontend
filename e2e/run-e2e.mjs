@@ -140,7 +140,13 @@ async function main() {
 
   log("starting backend (schema init) + frontend…");
   // First boot creates the schema and seeds the admin; then seed content/users.
-  const boot = startBackend({ AUTH_RATE_LIMIT_MAX: "100000", API_RATE_LIMIT_MAX: "100000", PUBLIC_WRITE_RATE_LIMIT_MAX: "100000", OTP_RATE_LIMIT_MAX: "100000" });
+  const boot = startBackend({
+    AUTH_RATE_LIMIT_MAX: "100000", API_RATE_LIMIT_MAX: "100000",
+    PUBLIC_WRITE_RATE_LIMIT_MAX: "100000", OTP_RATE_LIMIT_MAX: "100000",
+    // The discount suite tries far more codes from one IP than the 20/15min
+    // anti-enumeration budget a real shopper ever would.
+    DISCOUNT_VALIDATE_RATE_LIMIT_MAX: "100000",
+  });
   await waitForPort(BACKEND_PORT);
   startFrontend();
   await waitForPort(FRONTEND_PORT);
@@ -175,7 +181,7 @@ async function main() {
   log("PHASE 2: payment-security (default auth limit)");
   boot.kill("SIGTERM");
   killPort(BACKEND_PORT);
-  startBackend({ API_RATE_LIMIT_MAX: "100000" }); // auth limit left at its 20/15min default
+  startBackend({ API_RATE_LIMIT_MAX: "100000", DISCOUNT_VALIDATE_RATE_LIMIT_MAX: "100000" }); // auth limit left at its 20/15min default
   await waitForPort(BACKEND_PORT);
   ok = runPlaywright(["e2e/payment-security.spec.ts"], { E2E_SKIP_SEED: "1" }) && ok;
 

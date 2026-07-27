@@ -1,8 +1,15 @@
 # Security headers served by Netlify for every path.
 # Scripts are locked to this origin (the Vite bundle has no inline scripts);
 # inline styles + Google Fonts stay allowed so the site renders unchanged.
+#
+# frame-src must be listed explicitly: without it, embedded frames fall back to
+# default-src 'self' and every video the studio rail plays through an embed
+# (Admin → Content → Videos accepts YouTube/Vimeo/Instagram URLs, which
+# toEmbedUrl rewrites to these three hosts) is blocked in production while
+# working fine in dev, where no CSP is served. Kept to the exact hosts
+# toEmbedUrl can emit rather than a blanket https:. Covered by src/lib/csp.test.ts.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com https://www.instagram.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
   Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY

@@ -24,12 +24,43 @@ import type { Page } from "@playwright/test";
  *     payment methods on the Stripe account is what switches layouts, so this is
  *     a configuration change away at any time.
  */
+/**
+ * Report why we're giving up. A silent `false` here turns into a bare "skipped"
+ * in the run output, which reads identically whether Stripe's UI moved or the
+ * payment leg has quietly stopped being exercised at all — so say which it was.
+ */
+async function bail(page: Page, why: string): Promise<false> {
+  const methods = await page
+    .getByRole("radio")
+    .evaluateAll((els) => els.map((e) => e.getAttribute("id") || e.getAttribute("name") || "?"))
+    .catch(() => [] as string[]);
+  console.warn(`[stripe-checkout] not paying: ${why}${methods.length ? ` — methods on page: ${methods.join(", ")}` : ""}`);
+  return false;
+}
+
 export async function payStripeTestCard(page: Page): Promise<boolean> {
   // ── 1. Make sure the card form is the one on screen ──
+  // Wait for the page to actually render first. The caller gets here the moment the
+  // URL becomes checkout.stripe.com, which is well before Stripe has drawn anything;
+  // `isVisible()` does not auto-wait, so asking straight away answers "no" for every
+  // layout and sends us down the wrong branch — the second reason the payment leg
+  // was skipping. Either the method picker or the card form itself will do.
   const cardRadio = page.getByRole("radio", { name: /^card$/i }).first();
+  await Promise.race([
+    cardRadio.waitFor({ state: "visible", timeout: 30_000 }),
+    page.locator("#cardNumber").waitFor({ state: "visible", timeout: 30_000 }),
+  ]).catch(() => {});
+
   if (await cardRadio.isVisible().catch(() => false)) {
     if (!(await cardRadio.isChecked().catch(() => false))) {
-      await cardRadio.check({ timeout: 5_000 }).catch(() => {});
+      // `force` is load-bearing, not laziness. On the accordion layout the real
+      // <input type=radio> is present and visible but sits underneath the styled
+      // row that paints it, so Playwright's actionability check never clears and a
+      // plain check() just burns its timeout and leaves the form collapsed — which
+      // is what silently turned every payment leg of the suite into a skip. Nothing
+      // here depends on hit-testing: we verify the outcome (the card fields
+      // appearing) in step 2 rather than trusting the click.
+      await cardRadio.check({ force: true, timeout: 5_000 }).catch(() => {});
     }
   } else {
     // Older tabbed layout, where card selection really is a button.
@@ -53,7 +84,9 @@ export async function payStripeTestCard(page: Page): Promise<boolean> {
       'iframe[title*="payment" i], iframe[name*="stripe" i], iframe[src*="stripe"]'
     );
     numberField = fl.locator('input[name="number"], input#Field-numberInput').first();
-    if (!(await numberField.isVisible({ timeout: 15_000 }).catch(() => false))) return false;
+    if (!(await numberField.isVisible({ timeout: 15_000 }).catch(() => false))) {
+      return bail(page, "card number field never appeared (neither #cardNumber nor a Payment Element iframe input)");
+    }
 
     await numberField.fill("4242424242424242").catch(() => {});
     await fl.locator('input[name="expiry"], input#Field-expiryInput').first().fill("12 / 34").catch(() => {});
@@ -70,7 +103,9 @@ export async function payStripeTestCard(page: Page): Promise<boolean> {
   // Read it back: a fill() into a cross-origin iframe can be silently dropped, and
   // submitting an empty form is what produced the endless "Processing" spinner.
   const entered = (await numberField.inputValue().catch(() => "")).replace(/\s/g, "");
-  if (!entered.includes("4242")) return false;
+  if (!entered.includes("4242")) {
+    return bail(page, `card number did not stick in the form (read back "${entered}")`);
+  }
 
   // ── 4. Submit, and decide the outcome here rather than leaving the caller to
   //       burn its timeout guessing ──
@@ -81,5 +116,5 @@ export async function payStripeTestCard(page: Page): Promise<boolean> {
   return await page
     .waitForURL(url => !/checkout\.stripe\.com/.test(url.href), { timeout: 60_000 })
     .then(() => true)
-    .catch(() => false);
+    .catch(() => bail(page, "submitted, but Stripe never redirected back (inline card error, 3DS challenge, or a stuck spinner)"));
 }

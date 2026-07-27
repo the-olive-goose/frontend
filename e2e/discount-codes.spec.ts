@@ -47,14 +47,43 @@ let shopper2: APIRequestContext;
 let product: { id: string; price: string };
 let unitCents = 0;
 
-// The code shopper2 holds via an in-flight checkout, shared across the API
-// reservation cases (this file runs serial in one worker).
-let heldCode = "";
-
 const freshEmail = (tag: string) => `e2e-sub-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
 const priceToCents = (price: string) => Math.round(parseFloat(String(price).replace(/[^0-9.]/g, "")) * 100);
-const issueCode = async (tag: string): Promise<string> =>
-  (await (await admin.post(`/api/subscribers`, { data: { email: freshEmail(tag) } })).json()).discount.code;
+
+/** Subscribe an address and return the welcome code issued to it. */
+const codeFor = async (email: string): Promise<string> =>
+  (await (await admin.post(`/api/subscribers`, { data: { email } })).json()).discount.code;
+
+/** Issue a welcome code to a throwaway address nobody has an account for. */
+const issueCode = (tag: string) => codeFor(freshEmail(tag));
+
+// Contexts created by newShopper(), disposed together in afterAll.
+const spawned: APIRequestContext[] = [];
+
+/**
+ * A brand-new verified account, and — unless `withCode` is false — the welcome
+ * code issued to its own address.
+ *
+ * Welcome codes are bound to the mailbox they were sent to and capped at one per
+ * mailbox, so "a fresh account registered from a fresh address" is the only way to
+ * get a fresh, usable welcome code. That's the customer journey the feature is for,
+ * so testing through it is also the more honest test.
+ */
+async function newShopper(tag: string, withCode = true) {
+  const email = `e2e-wc-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
+  const password = "E2eShopper123";
+  const ctx = await pwRequest.newContext({ baseURL: API });
+  spawned.push(ctx);
+
+  const start = await ctx.post(`/api/user/register/start`, { data: { email, password, full_name: "E2E Welcome" } });
+  expect(start.ok(), `register/start must succeed: ${await start.text()}`).toBeTruthy();
+  const { dev_otp } = await start.json();
+  expect(dev_otp, "the isolated stack runs email in dev mode and returns the OTP inline").toBeTruthy();
+  const verify = await ctx.post(`/api/user/register/verify`, { data: { email, otp: dev_otp } });
+  expect(verify.ok(), `register/verify must succeed: ${await verify.text()}`).toBeTruthy();
+
+  return { ctx, email, code: withCode ? await codeFor(email) : "" };
+}
 
 /** Retrieve a Stripe Checkout Session over the REST API (no SDK dependency). */
 async function retrieveStripeSession(sessionId: string) {
@@ -62,7 +91,12 @@ async function retrieveStripeSession(sessionId: string) {
     headers: { Authorization: `Bearer ${STRIPE_KEY}` },
   });
   expect(res.ok, "Stripe session retrieve must succeed").toBeTruthy();
-  return res.json() as Promise<{ amount_total: number; total_details?: { amount_discount?: number } }>;
+  return res.json() as Promise<{
+    amount_total: number;
+    status?: string;
+    payment_status?: string;
+    total_details?: { amount_discount?: number };
+  }>;
 }
 
 /** Extract the cs_test_… id from a hosted Checkout URL. */
@@ -129,6 +163,7 @@ test.afterAll(async () => {
   await admin?.dispose();
   await shopper?.dispose();
   await shopper2?.dispose();
+  for (const ctx of spawned) await ctx.dispose();
 });
 
 // ─── 1. Issuance ──────────────────────────────────────────────────────────────
@@ -163,20 +198,54 @@ test.describe("Issuance", () => {
     expect(forEmail).toHaveLength(1);
     expect(forEmail[0].code).toBe(code);
   });
+
+  test("+tag aliases of one mailbox all get the SAME code, not a discount each", async () => {
+    // me+1@…, me+2@… and me@… are one inbox. Issuing a code per spelling is the
+    // whole alias farm: subscribe as +1, +2, +3… and mint unlimited first-order
+    // discounts, each one verifiable from the same mailbox.
+    const base = freshEmail("alias");
+    const [local, domain] = base.split("@");
+
+    const first = await codeFor(base);
+    expect(first).toMatch(/^OG-[A-Z2-9]{8}$/);
+
+    for (const alias of [`${local}+deals@${domain}`, `${local}+2@${domain}`, `${local}+again@${domain}`]) {
+      const res = await admin.post(`/api/subscribers`, { data: { email: alias } });
+      const body = await res.json();
+      expect(body.discount?.code, `${alias} must not mint a second code`).toBe(first);
+    }
+
+    // …and the table agrees: one row for the whole mailbox.
+    const { codes } = await (await admin.get(`/api/admin/discount-codes`, { headers: auth(TOKEN) })).json();
+    const forMailbox = codes.filter((c: { email: string | null }) => (c.email ?? "").startsWith(local));
+    expect(forMailbox).toHaveLength(1);
+  });
+
+  test("Gmail dot variants are the same mailbox too", async () => {
+    // Google ignores dots in the local part, so m.e@gmail.com is me@gmail.com.
+    const local = `e2e.dots.${Date.now()}.${Math.floor(Math.random() * 1e6)}`;
+    const first = await codeFor(`${local}@gmail.com`);
+    const dotted = await admin.post(`/api/subscribers`, { data: { email: `${local.replace(/\./g, "")}@gmail.com` } });
+    expect((await dotted.json()).discount?.code).toBe(first);
+    // …including the googlemail.com spelling of the same account.
+    const alt = await admin.post(`/api/subscribers`, { data: { email: `${local}@googlemail.com` } });
+    expect((await alt.json()).discount?.code).toBe(first);
+  });
 });
 
 // ─── 2. Validation (read-only; reserves nothing) ──────────────────────────────
 
 test.describe("Validation", () => {
   test("a real code validates with its percent; junk and anonymous probes are rejected", async () => {
-    const code = await issueCode("validate");
+    const owner = await newShopper("validate");
+    const code = owner.code;
 
-    const good = await (await shopper.post(`/api/discount/validate`, { data: { code } })).json();
+    const good = await (await owner.ctx.post(`/api/discount/validate`, { data: { code } })).json();
     expect(good.valid).toBe(true);
     expect(good.discount_percent).toBe(DISCOUNT_PERCENT);
 
     // Case/whitespace-insensitive.
-    const messy = await (await shopper.post(`/api/discount/validate`, { data: { code: `  ${code.toLowerCase()} ` } })).json();
+    const messy = await (await owner.ctx.post(`/api/discount/validate`, { data: { code: `  ${code.toLowerCase()} ` } })).json();
     expect(messy.valid).toBe(true);
 
     const bad = await (await shopper.post(`/api/discount/validate`, { data: { code: "OG-NOTREAL9" } })).json();
@@ -195,16 +264,17 @@ test.describe("Payment amount", () => {
   test("a coded checkout is charged exactly the discount less than an identical uncoded one", async () => {
     test.skip(!stripeReady, "STRIPE_SECRET_KEY (test mode) not available to the test process");
 
-    const code = await issueCode("amount");
-    await addToCart(shopper2);
+    const buyer = await newShopper("amount");
+    await addToCart(buyer.ctx);
 
     // Control: same cart, no code.
-    const noCode = await shopper2.post(`/api/checkout/session`, { data: { ...DELIVERY } });
+    const noCode = await buyer.ctx.post(`/api/checkout/session`, { data: { ...DELIVERY } });
     expect(noCode.ok()).toBeTruthy();
     const noCodeSession = await retrieveStripeSession(sessionIdFromUrl((await noCode.json()).url));
 
-    // With the code applied (this reserves it to shopper2 for the cases below).
-    const withCode = await shopper2.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: code } });
+    // With the code applied. Starting this checkout supersedes the control session
+    // above (only one live checkout per shopper) and reserves the code to `buyer`.
+    const withCode = await buyer.ctx.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: buyer.code } });
     expect(withCode.ok()).toBeTruthy();
     const withCodeSession = await retrieveStripeSession(sessionIdFromUrl((await withCode.json()).url));
 
@@ -213,49 +283,103 @@ test.describe("Payment amount", () => {
     expect(noCodeSession.total_details?.amount_discount ?? 0).toBe(0);
     expect(withCodeSession.total_details?.amount_discount).toBe(expectedDiscountCents);
     expect(withCodeSession.amount_total).toBe(noCodeSession.amount_total - expectedDiscountCents);
-
-    heldCode = code; // shopper2 now holds this code — reused by the cases below.
   });
 });
 
 // ─── 4. No loopholes ──────────────────────────────────────────────────────────
 
 test.describe("No loopholes", () => {
-  // Ensure shopper2 is holding a code even if the payment-amount case was skipped
-  // (e.g. no Stripe key) — reserve one directly so these cases still stand alone.
-  test.beforeAll(async () => {
-    if (heldCode) return;
-    heldCode = await issueCode("hold");
-    await addToCart(shopper2);
-    const held = await shopper2.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: heldCode } });
-    expect(held.ok(), "reserving a code for the loophole cases must succeed").toBeTruthy();
+  test("a welcome code only works for the account it was issued to", async () => {
+    // The code is the recipient's first-order discount, not a bearer token —
+    // otherwise codes can be farmed on throwaway addresses, shared, or resold.
+    const owner = await newShopper("bound");
+
+    const mine = await (await owner.ctx.post(`/api/discount/validate`, { data: { code: owner.code } })).json();
+    expect(mine.valid).toBe(true);
+
+    const stranger = await (await shopper.post(`/api/discount/validate`, { data: { code: owner.code } })).json();
+    expect(stranger.valid).toBe(false);
+    expect(stranger.message).toMatch(/different email address/i);
+
+    // …and the authoritative checkout step refuses it too, never a silent discount.
+    await addToCart(shopper);
+    const res = await shopper.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: owner.code } });
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toMatch(/different email address/i);
   });
 
-  test("a code held by one shopper's checkout can't be used by another", async () => {
-    // The holder (shopper2) still sees its own held code as usable…
-    const owner = await (await shopper2.post(`/api/discount/validate`, { data: { code: heldCode } })).json();
-    expect(owner.valid).toBe(true);
+  test("a second account on an alias of the same mailbox gets no second first-order discount", async () => {
+    // The full abuse path, end to end: subscribe, register, and (here) hold the
+    // discount — then try to do the whole thing again from the same inbox via a
+    // +tag alias. The alias account is real and verified; what it must not get is
+    // a second welcome discount.
+    const first = await newShopper("farm");
+    const [local, domain] = first.email.split("@");
+    const alias = `${local}+again@${domain}`;
 
-    // …but a different shopper is blocked while the hold is active.
-    const other = await (await shopper.post(`/api/discount/validate`, { data: { code: heldCode } })).json();
-    expect(other.valid).toBe(false);
-    expect(other.message).toMatch(/another checkout/i);
+    // Subscribing the alias hands back the mailbox's existing code, not a new one.
+    const aliasSub = await admin.post(`/api/subscribers`, { data: { email: alias } });
+    expect((await aliasSub.json()).discount?.code).toBe(first.code);
+
+    // A second account registered on the alias is allowed — but the code belongs to
+    // the mailbox, and this account can't spend a second one.
+    const aliasCtx = await pwRequest.newContext({ baseURL: API });
+    spawned.push(aliasCtx);
+    const start = await aliasCtx.post(`/api/user/register/start`, { data: { email: alias, password: "E2eShopper123" } });
+    expect(start.ok()).toBeTruthy();
+    const { dev_otp } = await start.json();
+    expect((await aliasCtx.post(`/api/user/register/verify`, { data: { email: alias, otp: dev_otp } })).ok()).toBeTruthy();
+
+    // The alias account can see the mailbox's one code (same mailbox, so binding
+    // passes) — but there is only ever that one, so no second discount exists.
+    const { codes } = await (await admin.get(`/api/admin/discount-codes`, { headers: auth(TOKEN) })).json();
+    const mailboxCodes = codes.filter((c: { email: string | null }) => (c.email ?? "").startsWith(local));
+    expect(mailboxCodes, "one welcome code per mailbox, however it is spelled").toHaveLength(1);
   });
 
-  test("one account can't stack a second welcome code on top of one it already holds", async () => {
-    const second = await issueCode("stack");
+  test("one account can't stack a second welcome code from another mailbox", async () => {
+    const owner = await newShopper("stack");
+    const other = await newShopper("stack-other");
 
-    // shopper2 already holds heldCode, so a second welcome code is refused —
-    // at the read-only validate…
-    const validate = await (await shopper2.post(`/api/discount/validate`, { data: { code: second } })).json();
+    // owner holds its own code via an in-flight checkout…
+    await addToCart(owner.ctx);
+    expect((await owner.ctx.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: owner.code } })).ok())
+      .toBeTruthy();
+
+    // …and a second welcome code — someone else's — is refused at validate…
+    const validate = await (await owner.ctx.post(`/api/discount/validate`, { data: { code: other.code } })).json();
     expect(validate.valid).toBe(false);
-    expect(validate.message).toMatch(/already used a welcome discount/i);
 
     // …and at the authoritative checkout step (never a silent second discount).
-    await addToCart(shopper2);
-    const res = await shopper2.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: second } });
+    const res = await owner.ctx.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: other.code } });
     expect(res.status()).toBe(400);
-    expect((await res.json()).error).toMatch(/already used a welcome discount/i);
+  });
+
+  test("starting a new checkout retires the previous one, so a code can't fund two payments", async () => {
+    test.skip(!stripeReady, "STRIPE_SECRET_KEY (test mode) not available to the test process");
+    // A Stripe Checkout Session stays payable for ~24h, but the code's exclusive
+    // hold lapses after 30 minutes. Without retiring the old session, a shopper
+    // could open a coded checkout, wait out the hold, open a second, and pay BOTH
+    // at a discount — the single-use code funding two orders.
+    const buyer = await newShopper("supersede");
+    await addToCart(buyer.ctx);
+
+    const firstRes = await buyer.ctx.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: buyer.code } });
+    expect(firstRes.ok()).toBeTruthy();
+    const firstId = sessionIdFromUrl((await firstRes.json()).url);
+
+    // Abandon it and start again with the same code — allowed, it's the same shopper.
+    await addToCart(buyer.ctx);
+    const secondRes = await buyer.ctx.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: buyer.code } });
+    expect(secondRes.ok(), "a shopper must be able to retry their own abandoned checkout").toBeTruthy();
+    const secondId = sessionIdFromUrl((await secondRes.json()).url);
+    expect(secondId).not.toBe(firstId);
+
+    // The abandoned session is now expired at Stripe — it can never be paid.
+    const first = await retrieveStripeSession(firstId);
+    expect(first.status, "the superseded session must be expired at Stripe").toBe("expired");
+    const second = await retrieveStripeSession(secondId);
+    expect(second.status).toBe("open");
   });
 });
 
@@ -278,9 +402,15 @@ test.describe("Admin custom codes", () => {
     expect(row.max_redemptions).toBe(5);
     expect(row.is_active).toBe(true);
 
-    // shopper2 is holding a welcome code from earlier serial cases — an admin code
-    // must NOT be blocked by that welcome hold.
-    const v = await (await shopper2.post(`/api/discount/validate`, { data: { code } })).json();
+    // A shopper actively holding their own welcome code must still be able to use
+    // an admin promo code: the welcome cap and the recipient binding are rules
+    // about welcome codes only, and must never leak onto campaign codes.
+    const holder = await newShopper("admin-exempt");
+    await addToCart(holder.ctx);
+    expect((await holder.ctx.post(`/api/checkout/session`, { data: { ...DELIVERY, discount_code: holder.code } })).ok())
+      .toBeTruthy();
+
+    const v = await (await holder.ctx.post(`/api/discount/validate`, { data: { code } })).json();
     expect(v.valid).toBe(true);
     expect(v.discount_type).toBe("percentage");
     expect(Number(v.discount_value)).toBe(25);
@@ -373,7 +503,10 @@ test.describe("Checkout UI", () => {
   test("apply the emailed code on the checkout page and reach Stripe with the discount", async ({ page }) => {
     test.setTimeout(180_000);
 
-    const code = await issueCode("ui");
+    // Issued to the shopper's OWN address — welcome codes are bound to the mailbox
+    // they were sent to, which is exactly what a real customer does: subscribe from
+    // the popup, then sign in and spend it.
+    const code = await codeFor(SHOPPER.email);
 
     await signIn(page);
     await page.request.delete(`${API}/api/cart`);
@@ -438,6 +571,15 @@ test.describe("Checkout UI", () => {
     const after = await (await page.request.post(`${API}/api/discount/validate`, { data: { code } })).json();
     expect(after.valid).toBe(false);
     expect(after.message).toMatch(/already been used/i);
+
+    // …and "first order" means first order. Re-subscribing — as the same address or
+    // as a +tag alias of it — must not hand this shopper a second discount.
+    const [local, domain] = SHOPPER.email.split("@");
+    for (const email of [SHOPPER.email, `${local}+again@${domain}`]) {
+      const res = await admin.post(`/api/subscribers`, { data: { email } });
+      expect(res.status(), `${email} must not be issued a fresh code`).toBe(409);
+      expect((await res.json()).already_used).toBe(true);
+    }
   });
 });
 
