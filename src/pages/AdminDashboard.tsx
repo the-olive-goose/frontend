@@ -4,6 +4,7 @@ import {
   logout,
   getContent,
   saveContent,
+  uploadImage,
   getSubscribers,
   deleteSubscriber,
   getAdminDiscountCodes,
@@ -78,6 +79,7 @@ import {
   type PickupSettingsContent,
   type SubscribePopupContent,
   type LegalPageContent,
+  type SeoSettings,
   type CandleCareCard,
   type VideoItem,
   type Testimonial,
@@ -85,6 +87,8 @@ import {
   type SocialLink,
 } from "@/lib/defaults";
 import { productSlug } from "@/lib/products";
+import { SITE_NAME, SITE_URL } from "@/lib/seo";
+import { META_SOURCES, previewMeta } from "@/lib/seoContent";
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
 import { RichInput, RichTextarea } from "@/components/admin/RichTextInput";
@@ -184,6 +188,24 @@ const Card = ({ children }: { children: React.ReactNode }) => (
   <div className="bg-muted/40 border border-border rounded-xl p-5 space-y-4">{children}</div>
 );
 
+/**
+ * Shown on every editor whose copy might quote an offer. Typing the figure by hand
+ * is how the storefront ended up advertising a free-shipping bar and a signup
+ * discount that checkout did not honour — the token keeps copy and config in step.
+ */
+const OfferTokenHint = () => (
+  <div className="rounded-lg p-3 text-xs font-sans space-y-1" style={{ background: "var(--muted)", color: "var(--muted-foreground)" }}>
+    <p className="font-medium text-foreground">Use a token instead of typing an offer figure</p>
+    <p><code>{"{free_shipping}"}</code> → “on orders over €65”, or “on all orders” when the threshold is 0</p>
+    <p><code>{"{free_shipping_threshold}"}</code> → just the amount, e.g. “€65”</p>
+    <p><code>{"{discount}"}</code> → the signup discount percent, e.g. “5”</p>
+    <p>
+      Tokens read the live settings (Ops → Pickup &amp; Delivery, and Subscribers &amp; Signup Popup),
+      so copy can never promise a number that checkout won’t honour.
+    </p>
+  </div>
+);
+
 // ── Section editors ────────────────────────────────────────────────────────────
 
 const AnnouncementBarEditor = ({
@@ -202,6 +224,8 @@ const AnnouncementBarEditor = ({
       title="Announcement Bar"
       desc="The coloured strip above the navbar. Messages rotate automatically."
     />
+
+    <OfferTokenHint />
 
     <div className="space-y-3">
       <label className="block text-sm font-sans font-medium text-foreground">
@@ -910,7 +934,7 @@ const VideosEditor = ({
 }) => {
   return (
     <div className="space-y-6">
-      <SectionHeading title="Videos" desc="Paste a video URL for each item — a YouTube, Vimeo, or Instagram link, or a direct .mp4 / .webm URL. The site plays it straight from the URL." />
+      <SectionHeading title="Videos" desc="Paste a video URL for each item — a direct .mp4 / .webm URL, or a YouTube or Vimeo link. Reels play automatically, muted and looping; tapping one opens it full screen with sound." />
       <Field label="Section Label">
         <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
       </Field>
@@ -920,6 +944,36 @@ const VideosEditor = ({
       <Field label="Section Subtext">
         <RichInput value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
       </Field>
+
+      <div className="space-y-3">
+        <label className="block text-sm font-sans font-medium text-foreground">
+          Scrolling strip
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Short phrases that scroll across the band above the videos, separated by a ✷.
+          Remove them all to hide the band.
+        </p>
+        {(data.ticker ?? []).map((phrase, i) => (
+          <div key={i} className="flex gap-2 items-center">
+            <Input
+              placeholder={`Phrase ${i + 1}`}
+              value={phrase}
+              onChange={(e) => {
+                const ticker = [...(data.ticker ?? [])];
+                ticker[i] = e.target.value;
+                onChange({ ...data, ticker });
+              }}
+            />
+            <RemoveButton
+              onClick={() => onChange({ ...data, ticker: (data.ticker ?? []).filter((_, j) => j !== i) })}
+            />
+          </div>
+        ))}
+        <AddButton
+          label="Add phrase"
+          onClick={() => onChange({ ...data, ticker: [...(data.ticker ?? []), ""] })}
+        />
+      </div>
 
       <div className="space-y-4">
         <label className="block text-sm font-sans font-medium text-foreground">Videos</label>
@@ -936,9 +990,27 @@ const VideosEditor = ({
                 onChange({ ...data, items });
               }} />
             </Field>
-            <Field label="Video URL" hint="YouTube, Vimeo, or Instagram link, or a direct .mp4 / .webm URL. Played straight from this URL.">
+            <Field label="Corner sticker" hint="The tilted tag in the reel's top corner — a different hook per video works best (&ldquo;how'd they do that&rdquo;, &ldquo;wait for the end&rdquo;). Leave blank for none.">
               <Input
-                placeholder="https://youtube.com/watch?v=…  or  https://…/reel.mp4"
+                placeholder="how'd they do that"
+                value={item.tag ?? ""}
+                onChange={(e) => {
+                  const items = [...data.items];
+                  items[i] = { ...items[i], tag: e.target.value };
+                  onChange({ ...data, items });
+                }}
+              />
+            </Field>
+            <Field label="Caption" hint="The line under the title on the card. Leave blank for none.">
+              <RichInput value={item.description} onChange={(e) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], description: e.target.value };
+                onChange({ ...data, items });
+              }} />
+            </Field>
+            <Field label="Video URL" hint="A direct .mp4 / .webm URL, or a YouTube or Vimeo link — these play automatically. An Instagram link also works but Instagram's embed will not autoplay: it shows a still until it's tapped.">
+              <Input
+                placeholder="https://…/reel.mp4  or  https://youtube.com/watch?v=…"
                 value={item.video_url}
                 onChange={(e) => {
                   const items = [...data.items];
@@ -955,7 +1027,7 @@ const VideosEditor = ({
         <AddButton
           label="Add video"
           onClick={() => {
-            const newVideo: VideoItem = { id: Date.now().toString(), title: "", description: "", video_url: "" };
+            const newVideo: VideoItem = { id: Date.now().toString(), title: "", description: "", video_url: "", tag: "how'd they do that" };
             onChange({ ...data, items: [...data.items, newVideo] });
           }}
         />
@@ -1289,6 +1361,7 @@ const LegalPageEditor = ({
 }) => (
   <div className="space-y-6">
     <SectionHeading title={title} desc={desc} />
+    <OfferTokenHint />
     <Field label="Heading">
       <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
     </Field>
@@ -2501,6 +2574,180 @@ const DiscountCodesPanel = () => {
           </table>
         </div>
       )}
+    </div>
+  );
+};
+
+// ── SEO panel ──────────────────────────────────────────────────────────────────
+// Site-wide search branding: the brand name, the icon beside the search result,
+// the Organization logo and the share image. Values are applied to <head> at
+// runtime by SeoManager; blank fields keep tracking the built-in defaults in
+// src/lib/seo.ts. Per-page titles/descriptions stay in ROUTE_META (code), so
+// the preview below shows them read-only.
+
+/** URL field with an upload shortcut and a preview — used for the icon/logo/share image. */
+const SeoImageField = ({
+  label,
+  hint,
+  value,
+  onChange,
+  previewClass,
+  onError,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (url: string) => void;
+  previewClass: string;
+  onError: (message: string) => void;
+}) => {
+  const [uploading, setUploading] = useState(false);
+
+  const pick = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      onChange(await uploadImage(file));
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-4">
+      <p className="font-sans text-sm font-semibold text-foreground">{label}</p>
+      <div className="flex items-start gap-4">
+        {value ? (
+          <img src={value} alt={`${label} preview`} className={`shrink-0 border border-border bg-card object-contain ${previewClass}`} />
+        ) : (
+          <div className={`shrink-0 border border-dashed border-border grid place-items-center text-muted-foreground font-sans text-[10px] ${previewClass}`}>
+            none
+          </div>
+        )}
+        <div className="flex-1 space-y-2">
+          <Input placeholder="https://…" value={value} onChange={(e) => onChange(e.target.value)} />
+          <div className="flex items-center gap-3">
+            <label className="font-sans text-xs px-3 py-1.5 rounded-lg border border-border cursor-pointer hover:bg-muted transition-colors">
+              {uploading ? "Uploading…" : "Upload file"}
+              <input type="file" accept="image/*" className="hidden" disabled={uploading}
+                onChange={(e) => { void pick(e.target.files?.[0]); e.target.value = ""; }} />
+            </label>
+            {value && (
+              <button onClick={() => onChange("")} className="font-sans text-xs text-muted-foreground hover:text-destructive transition-colors">
+                Clear
+              </button>
+            )}
+          </div>
+          <p className="font-sans text-xs text-muted-foreground">{hint}</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const SeoEditor = ({
+  data,
+  site,
+  onChange,
+  onSave,
+  saving,
+  onError,
+}: {
+  data: SeoSettings;
+  site: SiteContent;
+  onChange: (d: SeoSettings) => void;
+  onSave: () => void;
+  saving: boolean;
+  onError: (message: string) => void;
+}) => {
+  // The preview is the home-page result — what Google shows for the bare domain.
+  // Its text is derived from the Hero Banner section, exactly as the storefront
+  // derives it, so editing the hero here shows up in the preview immediately.
+  const homeMeta = previewMeta("/", site, data.site_name || SITE_NAME);
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading
+        title="SEO"
+        desc="How the site appears to search engines — the brand name, the icon beside the result, and the image used when a link is shared."
+      />
+
+      {/* Search-result preview — the home page entry, which is what the screenshot
+          in Google shows for theolivegoose.ie. */}
+      <div className="rounded-xl border border-border p-5 space-y-3">
+        <p className="font-sans text-sm font-semibold text-foreground">Search result preview</p>
+        <div className="rounded-lg bg-card border border-border p-4">
+          <div className="flex items-center gap-2.5">
+            {data.favicon_url ? (
+              <img src={data.favicon_url} alt="" className="w-7 h-7 rounded-full border border-border object-contain bg-white" />
+            ) : (
+              <img src="/favicon-96.png" alt="" className="w-7 h-7 rounded-full border border-border object-contain bg-white" />
+            )}
+            <div className="leading-tight">
+              <p className="font-sans text-[13px] text-foreground">{data.site_name || SITE_NAME}</p>
+              <p className="font-sans text-[12px] text-muted-foreground">{SITE_URL}</p>
+            </div>
+          </div>
+          <p className="font-sans text-[19px] text-[#1a0dab] mt-2 leading-snug">{homeMeta.title}</p>
+          <p className="font-sans text-[13px] text-muted-foreground mt-1 leading-snug">{homeMeta.description}</p>
+        </div>
+        <p className="font-sans text-xs text-muted-foreground">
+          Google decides when to re-crawl, so a change takes days to a few weeks to appear in search results — the browser tab updates immediately.
+        </p>
+      </div>
+
+      {/* Where each page's search text comes from — so it's clear the copy is
+          edited in that page's own section rather than duplicated here. */}
+      <div className="rounded-xl border border-border p-5 space-y-3">
+        <p className="font-sans text-sm font-semibold text-foreground">Where the search text comes from</p>
+        <p className="font-sans text-xs text-muted-foreground -mt-1">
+          Each page's title and description are built from the heading and intro you write in its own section, with the site name added.
+          Pages not listed here use built-in text, and each product writes its own from the product name and description.
+        </p>
+        <div className="space-y-1.5">
+          {Object.values(META_SOURCES).map((source) => (
+            <div key={source.page} className="flex items-baseline justify-between gap-4 font-sans text-xs">
+              <span className="text-foreground">{source.page}</span>
+              <span className="text-muted-foreground text-right">{source.from}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <Field label="Site name" hint="The brand name declared to search engines (og:site_name and the Organization/WebSite structured data). On-page brand text lives in the Navbar and Footer sections.">
+        <Input value={data.site_name} onChange={(e) => onChange({ ...data, site_name: e.target.value })} placeholder={SITE_NAME} />
+      </Field>
+
+      <SeoImageField
+        label="Search result icon (favicon)"
+        hint="Square PNG, at least 48×48 and a multiple of 48 — Google shows it beside the domain. Leave blank to keep the icons shipped with the site."
+        value={data.favicon_url}
+        onChange={(favicon_url) => onChange({ ...data, favicon_url })}
+        previewClass="w-14 h-14 rounded-full"
+        onError={onError}
+      />
+
+      <SeoImageField
+        label="Organization logo"
+        hint="Used in structured data — this is the logo Google can show in rich results and the knowledge panel. Square or wide, at least 112px tall."
+        value={data.logo_url}
+        onChange={(logo_url) => onChange({ ...data, logo_url })}
+        previewClass="w-14 h-14 rounded-lg"
+        onError={onError}
+      />
+
+      <SeoImageField
+        label="Share image"
+        hint="The image attached to a shared link. 1200×630 works best. Facebook, WhatsApp and X don't run the site's code, so they keep showing the image built into the site until it's redeployed — this setting reaches Google and in-browser previews."
+        value={data.og_image}
+        onChange={(og_image) => onChange({ ...data, og_image })}
+        previewClass="w-24 h-[3.15rem] rounded-lg"
+        onError={onError}
+      />
+
+      <SaveButton onClick={onSave} saving={saving} />
     </div>
   );
 };
@@ -3933,7 +4180,8 @@ type TabId =
   | "returns"
   | "ops"
   | "discountCodes"
-  | "analytics";
+  | "analytics"
+  | "seo";
 
 type NavItem = { id: TabId; label: string; icon: string };
 type NavGroup = { id: string; label: string; icon: string; items: NavItem[] };
@@ -4002,6 +4250,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "ops", label: "Ops Overview", icon: "📊" },
       { id: "discountCodes", label: "Discount Codes", icon: "🏷️" },
       { id: "analytics", label: "Analytics", icon: "📈" },
+      { id: "seo", label: "SEO", icon: "🔍" },
       { id: "subscribers", label: "Subscribers & Signup Popup", icon: "◉" },
       { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
     ],
@@ -4035,7 +4284,7 @@ const AdminDashboard = () => {
 
   const loadData = useCallback(async () => {
     // ── Content sections (getContent never throws — falls back to defaults) ──
-    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, productPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy] =
+    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, productPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo] =
       await Promise.all([
         getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
         getContent("navbar",          DEFAULT_CONTENT.navbar),
@@ -4058,8 +4307,9 @@ const AdminDashboard = () => {
         getContent("privacyPolicy",   DEFAULT_CONTENT.privacyPolicy),
         getContent("termsOfService",  DEFAULT_CONTENT.termsOfService),
         getContent("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
+        getContent("seo",             DEFAULT_CONTENT.seo),
       ]);
-    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, productPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy });
+    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, productPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo });
 
     // ── Shop categories ───────────────────────────────────────────────────────
     try {
@@ -4249,6 +4499,7 @@ const AdminDashboard = () => {
             {activeTab === "ops"          && <OpsPanel />}
             {activeTab === "discountCodes" && <DiscountCodesPanel />}
             {activeTab === "analytics"    && <AnalyticsPanel />}
+            {activeTab === "seo"          && <SeoEditor data={content.seo} site={content} onChange={update("seo")} onSave={() => handleSave("seo")} saving={saving} onError={(m) => toast({ title: "Error", description: m, variant: "destructive" })} />}
           </div>
         </main>
       </div>

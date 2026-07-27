@@ -314,6 +314,342 @@
     -webkit-overflow-scrolling: touch;
   }
 
+  /* ── Reels rail (VideosSection) ───────────────────────────────
+     A phone gets one reel centre stage with the next one peeking in, so the
+     rail reads as a set you can keep pulling through rather than a single
+     slide. Scrolling is the browser's own — momentum, rubber-band at the ends
+     and mid-gesture direction changes all come free, which a JS-stepped
+     carousel can't match. */
+  .og-reel-rail-wrap { position: relative; }
+
+  .og-reel-rail {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 8px 24px 12px;
+    scroll-snap-type: x mandatory;
+    scroll-padding-left: 24px;
+    -webkit-overflow-scrolling: touch;
+    /* Keep the horizontal drag here instead of chaining into the browser's
+       back-swipe when the rail is already at its first reel. */
+    overscroll-behavior-x: contain;
+  }
+
+  .og-reel-card {
+    flex: 0 0 72vw;
+    max-width: 320px;
+    scroll-snap-align: start;
+  }
+
+  .og-reel-frame {
+    position: relative;
+    aspect-ratio: 9 / 16;
+    border-radius: 22px;
+    overflow: hidden;
+    background: var(--color-forest-dark);
+    box-shadow:
+      0 18px 40px -18px rgba(29, 43, 27, 0.55),
+      0 0 0 1px rgba(29, 43, 27, 0.08);
+    transition: box-shadow 0.3s ease, transform 0.3s ease;
+  }
+
+  @media (hover: hover) {
+    .og-reel-frame:hover {
+      transform: translateY(-5px);
+      box-shadow:
+        0 26px 52px -18px rgba(29, 43, 27, 0.6),
+        0 0 0 1px var(--color-gold-soft);
+    }
+    .og-reel-frame:hover .og-reel-scrim { opacity: 0.75; }
+  }
+
+  /* The reason swipes work at all: an iframe eats every touch that lands on
+     it, so on a one-reel-wide phone layout there was nothing left to drag.
+     This sits on top, takes the touch, and lets the rail scroll — and a tap
+     that isn't a drag opens the reel properly. */
+  .og-reel-shield {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    display: block;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    color: var(--color-cream-text);
+    /* Must keep panning — the shield's whole job is to hand the drag to the
+       rail. Only the double-tap-zoom delay is given up. */
+    touch-action: manipulation;
+  }
+
+  .og-reel-scrim {
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(to top, rgba(12, 18, 11, 0.82) 0%, rgba(12, 18, 11, 0.25) 34%, rgba(12, 18, 11, 0) 58%),
+      linear-gradient(to bottom, rgba(12, 18, 11, 0.45) 0%, rgba(12, 18, 11, 0) 28%);
+    transition: opacity 0.3s ease;
+  }
+
+  .og-reel-index {
+    position: absolute;
+    top: 12px;
+    left: 13px;
+    font-family: var(--font-sans);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--color-cream-text);
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  }
+
+  .og-reel-peek {
+    position: absolute;
+    top: 10px;
+    right: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 9px;
+    border-radius: 999px;
+    font-family: var(--font-sans);
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+    color: var(--color-forest-dark);
+    background: var(--color-gold-soft);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    transform: rotate(2.5deg);
+  }
+
+  .og-reel-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--color-forest-dark);
+    animation: og-blink 1.6s ease-in-out infinite;
+  }
+
+  .og-reel-caption {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .og-reel-title {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    line-height: 1.2;
+    color: var(--color-cream-text);
+  }
+
+  .og-reel-desc {
+    font-family: var(--font-sans);
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: rgba(245, 239, 230, 0.72);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .og-reel-cta {
+    margin-top: 6px;
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 11px;
+    border-radius: 999px;
+    font-family: var(--font-sans);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-forest-dark);
+    background: var(--color-cream-text);
+  }
+  /* Only the reel in focus pulses — three at once is a fairground. */
+  .og-reel-card-active .og-reel-cta { animation: og-halo 2.8s ease-out infinite; }
+
+  /* ── Rail arrows — pointer equivalent of the swipe ── */
+  .og-rail-arrow {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-forest-dark);
+    background: rgba(245, 239, 230, 0.94);
+    border: 1.5px solid rgba(29, 43, 27, 0.16);
+    box-shadow: 0 6px 18px rgba(29, 43, 27, 0.16);
+    cursor: pointer;
+    transition: transform 0.18s ease, opacity 0.18s ease;
+    z-index: 2;
+  }
+  .og-rail-arrow-prev { left: 2px; }
+  .og-rail-arrow-next { right: 2px; }
+  .og-rail-arrow:hover:not(:disabled) { transform: translateY(-50%) scale(1.08); }
+  .og-rail-arrow:disabled { opacity: 0; pointer-events: none; }
+
+  @media (min-width: 640px) {
+    .og-reel-rail { gap: 20px; padding: 10px 44px 14px; scroll-padding-left: 44px; }
+    .og-reel-card { flex: 0 0 calc((100% - 40px) / 3); max-width: none; }
+    .og-rail-arrow { display: flex; }
+    .og-reel-title { font-size: 1.15rem; }
+  }
+
+  /* ── Lightbox — the interactive half: sound, controls, real Instagram UI ── */
+  .og-reel-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 24px 16px 76px;
+    background: rgba(9, 14, 9, 0.94);
+    backdrop-filter: blur(6px);
+  }
+
+  /* Sized from the width so the 9:16 frame never gets squashed: whichever of
+     "the screen is narrow" or "the screen is short" bites first wins. */
+  .og-reel-stage {
+    position: relative;
+    width: min(calc(100vw - 32px), calc((100dvh - 132px) * 0.5625), 440px);
+    aspect-ratio: 9 / 16;
+    border-radius: 20px;
+    overflow: hidden;
+    background: #000;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  }
+
+  /* Handed to the device's own full-screen mode: fill the height, keep the
+     9:16 shape, let the black do the rest. */
+  .og-reel-stage:fullscreen {
+    width: auto;
+    height: 100vh;
+    max-width: 100vw;
+    aspect-ratio: 9 / 16;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .og-reel-close,
+  .og-reel-expand,
+  .og-reel-nav {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    color: var(--color-cream-text);
+    background: rgba(245, 239, 230, 0.12);
+    border: 1px solid rgba(245, 239, 230, 0.22);
+    cursor: pointer;
+    flex: none;
+  }
+  .og-reel-close  { position: absolute; top: 16px; right: 16px; z-index: 2; }
+  .og-reel-expand { position: absolute; top: 16px; left: 16px; z-index: 2; }
+  .og-reel-nav:disabled { opacity: 0.25; pointer-events: none; }
+  .og-reel-nav-prev, .og-reel-nav-next { display: none; }
+
+  .og-reel-lightbox-meta {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 24px;
+    text-align: center;
+  }
+  .og-reel-lightbox-title {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    color: var(--color-cream-text);
+  }
+  .og-reel-lightbox-count {
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    color: rgba(245, 239, 230, 0.5);
+    margin-top: 2px;
+  }
+
+  @media (min-width: 640px) {
+    .og-reel-nav-prev, .og-reel-nav-next { display: flex; }
+  }
+
+  /* ── "in the studio" badge + ticker ───────────────────────── */
+  .og-reel-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 12px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-family: var(--font-sans);
+    font-size: var(--text-eyebrow);
+    font-weight: 600;
+    letter-spacing: var(--tracking-eyebrow);
+    text-transform: uppercase;
+    color: var(--color-cream-text);
+    background: var(--color-forest-dark);
+  }
+  .og-reel-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-gold);
+    animation: og-blink 1.6s ease-in-out infinite;
+  }
+
+  .og-marquee {
+    overflow: hidden;
+    margin: 4px 0 14px;
+    border-top: 1px solid rgba(29, 43, 27, 0.12);
+    border-bottom: 1px solid rgba(29, 43, 27, 0.12);
+    padding: 7px 0;
+    mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+  }
+  /* Duration is set inline, from the measured width of one half-track. */
+  .og-marquee-track {
+    display: flex;
+    width: max-content;
+    animation: og-marquee-scroll 26s linear infinite;
+  }
+  .og-marquee-run { display: flex; align-items: center; white-space: nowrap; }
+  .og-marquee-run > span { display: inline-flex; align-items: center; }
+  .og-marquee-word {
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgba(29, 43, 27, 0.6);
+  }
+  .og-marquee-star {
+    margin: 0 14px;
+    font-size: 0.6rem;
+    color: var(--color-gold);
+  }
+
   /* ── Glow helpers ─────────────────────────────────────────── */
   .text-glow        { text-shadow: 0 0 40px hsl(35 80% 55% / 0.3); }
   .bg-glow          { box-shadow: var(--shadow-glow); }
@@ -329,6 +665,25 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Reels: the "we're recording" dot, the tap-to-watch halo, and the ticker.
+   The track holds two identical runs, so sliding it half its width loops
+   seamlessly. */
+@keyframes og-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+@keyframes og-halo {
+  0%   { box-shadow: 0 0 0 0 rgba(245, 239, 230, 0.5); }
+  70%  { box-shadow: 0 0 0 12px rgba(245, 239, 230, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 239, 230, 0); }
+}
+
+@keyframes og-marquee-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
 }
 
 @keyframes glow-pulse {
@@ -465,6 +820,37 @@
     min-height: 44px;
     display: inline-flex;
     align-items: center;
+  }
+}
+
+/* ── Product card on phones ───────────────────────────────────
+   The storefront shows two product cards per row on a phone so a shopper can
+   scan the collection instead of scrolling one candle at a time. That leaves
+   each card around 165px wide, which is too narrow for the price and the
+   "Add to Cart" button to sit on one line — so the footer stacks and the button
+   takes the full card width (it still keeps the 44px floor from `og-cta`).
+   Descriptions are clamped to two lines so the buttons across a row line up. */
+@media (max-width: 640px) {
+  .og-card-foot {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .og-card-foot .og-cta {
+    width: 100%;
+  }
+
+  /* The price sits over the full-width button, so centre it on that axis. */
+  .og-card-foot > span {
+    text-align: center;
+  }
+
+  .og-card-desc {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 }
 

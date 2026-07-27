@@ -21,61 +21,84 @@ function resolveAsset(nameOrUrl: string): string {
   return key ? assetMap[key] : nameOrUrl;
 }
 
+/** The photo sits on the line it belongs to, like a word. Scales with the copy. */
 const InlineImage = ({ src, alt }: { src: string; alt: string }) => {
   const resolved = resolveAsset(src);
+  // An unset photo renders nothing at all — a grey "img" chip mid-sentence
+  // reads as a broken image to a customer, and the line still scans without it.
+  if (!resolved) return null;
   return (
     <span
-      className="inline-block align-middle mx-2 overflow-hidden shrink-0"
+      className="block overflow-hidden shrink-0"
       style={{
-        width: "72px",
-        height: "38px",
+        width: "clamp(46px,12vw,72px)",
+        height: "clamp(24px,6.4vw,38px)",
         borderRadius: "var(--radius-pill)",
         background: "var(--color-sage-pale)",
-        verticalAlign: "middle",
       }}
     >
-      {resolved ? (
-        <img src={resolved} alt={alt} loading="lazy" decoding="async" className="w-full h-full object-cover" />
-      ) : (
-        <span className="w-full h-full flex items-center justify-center text-xs" style={{ color: "var(--text-primary)" }}>
-          img
-        </span>
-      )}
+      <img src={resolved} alt={alt} loading="lazy" decoding="async" className="w-full h-full object-cover" />
     </span>
   );
 };
 
-const MomentPillSection = ({ data }: Props) => (
-  <section
-    className="w-full flex items-center justify-center py-14 px-6"
-    style={{ background: "var(--bg-moment-pill)" }}
-  >
-    <div
-      className="w-full max-w-3xl flex flex-wrap items-center justify-center gap-y-1 px-8 py-8"
-      style={{
-        background: "var(--color-white)",
-        borderRadius: "var(--radius-pill)",
-        border: "2px solid var(--color-forest-dark)",
-        lineHeight: 1.5,
-      }}
+const ALT1 = "A lit Olive Goose candle at home";
+const ALT2 = "Calm, nature-inspired candlelight";
+
+const MomentPillSection = ({ data }: Props) => {
+  // Admin copy routinely arrives with a leading or trailing blank line (the
+  // fields used to carry a literal "/n" line break). Untrimmed, that renders as
+  // an empty row inside the pill and reads as a spacing bug rather than content.
+  const line1 = (data.text1 ?? "").trim();
+  const line2 = (data.text2 ?? "").trim();
+  const line3 = (data.text3 ?? "").trim();
+
+  // One layout at every width — phone and desktop read identically. Type, photo
+  // and padding are all fluid instead, so the two lines still fit across a
+  // 390px phone without breaking apart.
+  // The whole row (type, photo, gaps) scales with the viewport, so a line that
+  // fits on one phone fits on every phone down to ~285px instead of breaking
+  // apart on the narrow ones.
+  const lineStyle: React.CSSProperties = {
+    fontSize: "clamp(0.86rem,4.1vw,1.25rem)",
+    color: "var(--text-primary)",
+  };
+  const rowClass = "font-display flex items-center justify-center";
+  const rowStyle: React.CSSProperties = { gap: "clamp(6px,1.8vw,12px)" };
+
+  return (
+    <section
+      className="w-full flex items-center justify-center py-12 sm:py-14 px-4 sm:px-6"
+      style={{ background: "var(--bg-moment-pill)" }}
     >
-      <p
-        className="font-display text-center w-full"
-        style={{ fontSize: "clamp(1rem, 2.5vw, 1.25rem)", color: "var(--text-primary)" }}
+      {/* Width follows the copy (capped at 3xl) rather than always filling the
+          row — a fixed-width stadium around two short lines is what left all
+          that empty space around the words. */}
+      <div
+        className="max-w-3xl inline-flex flex-col items-center justify-center gap-1.5"
+        style={{
+          background: "var(--color-white)",
+          borderRadius: "var(--radius-pill)",
+          border: "2px solid var(--color-forest-dark)",
+          lineHeight: 1.5,
+          padding: "clamp(20px,3vw,28px) clamp(18px,7vw,56px)",
+        }}
       >
-        <RichText text={data.text1} />
-        <InlineImage src={data.image1_url} alt="A lit Olive Goose candle at home" />
-        <RichText text={data.text2} />
-        <InlineImage src={data.image2_url} alt="Calm, nature-inspired candlelight" />
-      </p>
-      <p
-        className="font-display text-center w-full"
-        style={{ fontSize: "clamp(1rem, 2.5vw, 1.25rem)", color: "var(--text-primary)" }}
-      >
-        <RichText text={data.text3} />
-      </p>
-    </div>
-  </section>
-);
+        {/* Two lines, each a flex row so a photo can never be orphaned onto a
+            line of its own: line 1 is text1 + photo 1, line 2 runs
+            text2 + photo 2 + text3 straight through. */}
+        <p className={rowClass} style={{ ...rowStyle, ...lineStyle }}>
+          <span><RichText text={line1} /></span>
+          <InlineImage src={data.image1_url} alt={ALT1} />
+        </p>
+        <p className={rowClass} style={{ ...rowStyle, ...lineStyle }}>
+          <span><RichText text={line2} /></span>
+          <InlineImage src={data.image2_url} alt={ALT2} />
+          {line3 && <span><RichText text={line3} /></span>}
+        </p>
+      </div>
+    </section>
+  );
+};
 
 export default MomentPillSection;

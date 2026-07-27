@@ -10,6 +10,7 @@ import { formatPrice } from "@/lib/cart";
 import CartDrawer from "@/components/CartDrawer";
 import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 import RichText, { stripRichText } from "@/lib/richtext";
+import { fillOfferTokens, type OfferValues } from "@/lib/offerTokens";
 import AccountDropdown from "@/components/AccountDropdown";
 import logo from "@/assets/logo.jpg";
 import m1 from "@/assets/M1.png";
@@ -20,12 +21,16 @@ const FALLBACK_IMGS = [m1, m2];
 interface Props {
   data: NavbarContent;
   announcement: AnnouncementBarContent;
+  offer: OfferValues;
 }
 
 // ── Announcement bar ───────────────────────────────────────────────────────────
 
-const AnnouncementBar = ({ data }: { data: AnnouncementBarContent }) => {
-  const messages = data.messages?.length ? data.messages : ["Free shipping on orders over €65"];
+const AnnouncementBar = ({ data, offer }: { data: AnnouncementBarContent; offer: OfferValues }) => {
+  // Resolve {free_shipping} / {discount} against the live settings so the bar can
+  // never promise a threshold or a percent that checkout won't honour.
+  const raw = data.messages?.length ? data.messages : [`Free shipping {free_shipping}`];
+  const messages = raw.map(m => fillOfferTokens(m, offer));
   const interval = data.interval_ms ?? 3000;
   const [current, setCurrent] = useState(0);
   const [phase, setPhase]     = useState<"enter" | "show" | "exit">("enter");
@@ -53,7 +58,8 @@ const AnnouncementBar = ({ data }: { data: AnnouncementBarContent }) => {
 
   const cls = phase === "enter" ? "announce-enter" : phase === "exit" ? "announce-exit" : "";
   return (
-    <div className="w-full py-2 px-4 flex items-center justify-center overflow-hidden"
+    <div data-testid="announcement-bar"
+      className="w-full py-2 px-4 flex items-center justify-center overflow-hidden"
       style={{ background: "var(--bg-announce)", minHeight: "34px" }}>
       <p key={current} className={`font-display text-xs tracking-wide text-center ${cls}`}
         style={{ color: "var(--color-white)" }}>
@@ -103,7 +109,7 @@ const ShopDropdown = ({ categories, onClose }: { categories: ShopCategory[]; onC
 
 // ── Main Navbar ────────────────────────────────────────────────────────────────
 
-const NavbarSection = ({ data, announcement }: Props) => {
+const NavbarSection = ({ data, announcement, offer }: Props) => {
   const [mobileOpen, setMobileOpen]         = useState(false);
   const [shopOpen, setShopOpen]             = useState(false);
   const [mobileShopOpen, setMobileShopOpen] = useState(false);
@@ -223,7 +229,7 @@ const NavbarSection = ({ data, announcement }: Props) => {
     <div id="site-navbar" className="fixed top-0 left-0 right-0 z-50">
       {/* Measured header rows — see the --nav-h effect above. */}
       <div ref={headerRef}>
-      <AnnouncementBar data={announcement} />
+      <AnnouncementBar data={announcement} offer={offer} />
 
       <nav style={{ background: "var(--bg-nav)" }}>
 

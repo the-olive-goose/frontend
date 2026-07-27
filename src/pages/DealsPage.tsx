@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, DEFAULT_PRODUCT_CARD_THEME, resolveCardAccent, type Product, type Bundle, type DealsContent, type ProductCardTheme } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
+import useIsMobile from "@/hooks/useIsMobile";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
 import { productPath } from "@/lib/products";
@@ -22,6 +23,7 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
   const { user, openAuthModal } = useAuth();
   const { addToCart } = useCart();
   const [adding, setAdding] = useState(false);
+  const isMobile = useIsMobile();
 
   const bundleProducts = bundle.product_ids
     .map(id => allProducts.find(p => p.id === id))
@@ -61,6 +63,9 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
   };
 
   const rotate = idx % 2 === 0 ? "-0.8deg" : "0.6deg";
+  const discountLabel = bundle.discount_type === "percentage"
+    ? `${bundle.discount_value}% OFF`
+    : `€${bundle.discount_value} OFF`;
 
   return (
     <motion.div
@@ -83,14 +88,25 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
       {/* Paper grain */}
       <div style={{ position: "absolute", inset: 0, borderRadius: "inherit", backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E")`, pointerEvents: "none" }} />
 
-      {/* Discount badge */}
-      <div style={{ position: "absolute", top: 16, right: -10, background: accent, color: "#fff", fontFamily: "'Fredoka',sans-serif", fontSize: "0.95rem", padding: "4px 14px 4px 10px", borderRadius: "4px 0 0 4px", boxShadow: "2px 2px 8px rgba(0,0,0,0.2)", zIndex: 5 }}>
-        {bundle.discount_type === "percentage" ? `${bundle.discount_value}% OFF` : `€${bundle.discount_value} OFF`}
-      </div>
+      {/* Discount badge — a corner ribbon on desktop. On a phone the card is only
+          as wide as the screen, so the ribbon would sit on top of the bundle
+          name; there it becomes a centred pill in the flow above the name. */}
+      {!isMobile && (
+        <div style={{ position: "absolute", top: 16, right: -10, background: accent, color: "#fff", fontFamily: "'Fredoka',sans-serif", fontSize: "0.95rem", padding: "4px 14px 4px 10px", borderRadius: "4px 0 0 4px", boxShadow: "2px 2px 8px rgba(0,0,0,0.2)", zIndex: 5 }}>
+          {discountLabel}
+        </div>
+      )}
 
-      {/* Header */}
-      <div style={{ padding: "clamp(24px,4vw,36px) clamp(20px,3.5vw,32px) clamp(16px,2.5vw,24px)", textAlign: "center", position: "relative", zIndex: 2 }}>
-        <h3 style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1.5rem,3vw,2.2rem)", color: accent, lineHeight: 1, marginBottom: 8 }}>
+      {/* Header — the paddings are tighter at the small end than the type scale
+          would suggest on purpose: a phone should show a second bundle peeking
+          below the fold rather than one card filling the whole screen. */}
+      <div style={{ padding: "clamp(18px,4vw,36px) clamp(16px,3.5vw,32px) clamp(12px,2.5vw,24px)", textAlign: "center", position: "relative", zIndex: 2 }}>
+        {isMobile && (
+          <span style={{ display: "inline-block", background: accent, color: "#fff", fontFamily: "'Fredoka',sans-serif", fontSize: "0.8rem", padding: "3px 12px", borderRadius: "var(--radius-pill)", marginBottom: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.16)" }}>
+            {discountLabel}
+          </span>
+        )}
+        <h3 style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(1.35rem,3vw,2.2rem)", color: accent, lineHeight: 1, marginBottom: 8 }}>
           {bundle.name}
         </h3>
         {bundle.description && (
@@ -101,21 +117,25 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
       </div>
 
       {/* Divider */}
-      <div style={{ margin: "0 clamp(20px,3.5vw,32px)", height: 1, background: `${accent}18` }} />
+      <div style={{ margin: "0 clamp(16px,3.5vw,32px)", height: 1, background: `${accent}18` }} />
 
       {/* Products */}
-      <div style={{ display: "flex", gap: "clamp(8px,1.5vw,16px)", padding: "clamp(16px,2.5vw,24px) clamp(20px,3.5vw,32px)", position: "relative", zIndex: 2, background: "#f5e8d8", borderTop: "none" }}>
+      <div style={{ display: "flex", gap: "clamp(8px,1.5vw,16px)", padding: "clamp(12px,2.5vw,24px) clamp(16px,3.5vw,32px)", position: "relative", zIndex: 2, background: "#f5e8d8", borderTop: "none" }}>
         {bundleProducts.map((p, i) => {
           const img = p.image_url || FALLBACK_IMGS[i % 2];
           return (
-            <div key={p.id} style={{ flex: "1 1 0", minWidth: 0, textAlign: "center" }}>
+            <div key={p.id} style={{ flex: "1 1 0", minWidth: 0, textAlign: "center", position: "relative" }}>
               <Link to={productPath(p)} style={{ display: "block", aspectRatio: "3/4", borderRadius: 10, overflow: "hidden", marginBottom: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
                 <img src={img} alt={`${p.name} — handmade candle by The Olive Goose`} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: "multiply" }} />
               </Link>
               <Link to={productPath(p)} style={{ display: "block", fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.82rem,1.3vw,1rem)", color: accent, lineHeight: 1.1, marginBottom: 2 }}>{p.name}</Link>
               <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.72rem,1.1vw,0.88rem)", color: "rgba(30,20,10,0.55)", textDecoration: "line-through" }}>{formatPrice(p.price)}</p>
+              {/* "+" between two candles. It anchors to this product cell (which
+                  is `position: relative`) and centres itself in the gap — before,
+                  the nearest positioned ancestor was the whole bundle card, so
+                  every "+" piled up on the card's right edge. */}
               {i < bundleProducts.length - 1 && (
-                <span style={{ position: "absolute", top: "50%", right: -14, transform: "translateY(-50%)", fontFamily: "'Fredoka',sans-serif", fontSize: "1.2rem", color: accent, zIndex: 3 }}>+</span>
+                <span style={{ position: "absolute", top: "36%", right: 0, transform: "translate(50%,-50%)", marginRight: "calc(clamp(8px,1.5vw,16px) / -2)", fontFamily: "'Fredoka',sans-serif", fontSize: "1.2rem", color: accent, zIndex: 3 }}>+</span>
               )}
             </div>
           );
@@ -123,7 +143,7 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
       </div>
 
       {/* Pricing + CTA */}
-      <div style={{ padding: "clamp(14px,2vw,20px) clamp(20px,3.5vw,32px)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, position: "relative", zIndex: 2 }}>
+      <div style={{ padding: "clamp(12px,2vw,20px) clamp(16px,3.5vw,32px)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, position: "relative", zIndex: 2 }}>
         <div>
           <p style={{ fontFamily: "'Inter',sans-serif", fontSize: "clamp(0.6rem,0.85vw,0.7rem)", color: "rgba(30,20,10,0.45)", textDecoration: "line-through" }}>
             Was €{originalTotal.toFixed(2)}
@@ -231,7 +251,7 @@ const DealsPage = () => {
               <a href="/shop" style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "1rem", color: "#6b3520" }}>Browse all candles →</a>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "clamp(40px,5vw,56px)", paddingBottom: 32 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "clamp(26px,5vw,56px)", paddingBottom: 32 }}>
               {activeBundles
                 .sort((a, b) => a.display_order - b.display_order)
                 .map((bundle, i) => (

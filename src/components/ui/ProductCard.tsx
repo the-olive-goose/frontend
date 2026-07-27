@@ -42,7 +42,8 @@ const DENSITY: Record<ProductCardDensity, {
     price: "clamp(0.95rem,1.5vw,1.15rem)",
   },
   regular: {
-    padding: "16px",
+    // Two cards share a phone's width, so the padding scales down with it.
+    padding: "clamp(11px,3.2vw,16px)",
     name: "clamp(1rem,1.6vw,1.25rem)",
     desc: "clamp(0.78rem,1vw,0.875rem)",
     button: "md",
@@ -165,6 +166,7 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
 
           {product.description && (
             <p
+              className="og-card-desc"
               style={{
                 fontFamily: "'Inter',sans-serif",
                 fontSize: d.desc,
@@ -178,7 +180,12 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
             </p>
           )}
 
+          {/* Price + CTA. `og-card-foot` stacks them on a phone (see index.css):
+              at two cards per row there isn't width for a price and a 44px
+              "Add to Cart" side by side, and a squeezed button is the one thing
+              on the card a thumb has to hit. */}
           <div
+            className="og-card-foot"
             style={{
               display: "flex",
               alignItems: "center",

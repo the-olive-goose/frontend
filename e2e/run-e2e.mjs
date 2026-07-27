@@ -127,6 +127,10 @@ async function teardown() {
 
 async function main() {
   const keepData = process.argv.includes("--keep-data");
+  // Optional spec filter: `npm run test:e2e -- e2e/offer-copy.spec.ts`. Runs just
+  // those files in phase 1 and skips phase 2, so failure artifacts survive for
+  // inspection. No arguments = the full two-phase run.
+  const only = process.argv.slice(2).filter((a) => a.endsWith(".spec.ts"));
   if (!keepData && existsSync(path.join(REPO_ROOT, ".e2e-pgdata"))) {
     rmSync(path.join(REPO_ROOT, ".e2e-pgdata"), { recursive: true, force: true });
   }
@@ -147,17 +151,24 @@ async function main() {
   let ok = true;
 
   // Phase 1 — login-heavy + admin/API suites, rate limiters raised.
-  log("PHASE 1: storefront + customer + admin suites (raised limits)");
+  log(only.length
+    ? `PHASE 1 (scoped): ${only.join(", ")}`
+    : "PHASE 1: storefront + customer + admin suites (raised limits)");
   ok = runPlaywright(
-    [
+    only.length ? only : [
       "e2e/olive-goose.spec.ts", "e2e/auth-journey.spec.ts",
       "e2e/customer-journey.spec.ts", "e2e/mobile-journey.spec.ts",
       "e2e/admin-journey.spec.ts", "e2e/admin-payment-status.spec.ts",
       "e2e/discount-codes.spec.ts", "e2e/bundle-discounts.spec.ts",
-      "e2e/checkout-edge-cases.spec.ts",
+      "e2e/checkout-edge-cases.spec.ts", "e2e/offer-copy.spec.ts",
     ],
     {}
   ) && ok;
+
+  // A scoped run stops here. Phase 2 restarts the backend and starts a SECOND
+  // playwright run, which clears test-results/ on startup — that wipes the traces
+  // and screenshots phase 1 just wrote, exactly when you are trying to read them.
+  if (only.length) return ok;
 
   // Phase 2 — payment-security on the DEFAULT auth limit so its throttling
   // assertion holds. Restart the backend without AUTH_RATE_LIMIT_MAX.

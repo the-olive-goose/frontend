@@ -17,6 +17,9 @@ import FooterSection from "@/components/sections/FooterSection";
 
 // ── Shop Page ──────────────────────────────────────────────────────────────────
 
+/** The mood row is a single unwrapped line, so it can only carry so many. */
+const MAX_CATEGORY_TAGS = 3;
+
 const ShopPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [categories, setCategories]   = useState<ShopCategory[]>([]);
@@ -64,6 +67,16 @@ const ShopPage = () => {
   })();
 
   const activeCat = categories.find(c => c.slug === activeSlug);
+
+  // Categories are often saved with all their moods in one "• a • b • c" string.
+  // Split those back out so each mood is its own pill instead of one long pill
+  // that wraps into three ragged lines on a phone. Capped at three: the row is
+  // one unwrapped line, and a fourth pill would have nowhere to go.
+  const activeTags = (activeCat?.tags ?? [])
+    .flatMap(tag => tag.split("•"))
+    .map(tag => tag.trim())
+    .filter(Boolean)
+    .slice(0, MAX_CATEGORY_TAGS);
 
   // Breadcrumb trail for the canonical /shop view.
   useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["Shop", "/shop"]]));
@@ -199,28 +212,43 @@ const ShopPage = () => {
       {/* ── Product grid ── */}
       <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 py-8 sm:py-14">
 
-        {/* Category mood bar (when filtered) */}
-        {activeCat && activeSlug !== "all" && (
+        {/* Category mood bar (when filtered).
+            The mood line is deliberately NOT repeated here — the hero directly
+            above already states it, and squeezing a second copy of it next to
+            the tag pills was what made this strip unreadable on a phone.
+
+            One line, always: the pills scale with the viewport rather than
+            wrapping, since a wrapped second row read as clutter rather than as
+            part of the same strip. Type and padding shrink together down to a
+            floor, each pill may shrink past its content, and anything still too
+            long ends in an ellipsis — so an over-enthusiastic mood can't push
+            the row off the side of the phone. */}
+        {activeCat && activeSlug !== "all" && activeTags.length > 0 && (
           <motion.div
             key={activeSlug}
             initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-            className="flex items-center gap-3 mb-10"
+            className="flex flex-nowrap items-center mb-6 sm:mb-10"
+            style={{ gap: "clamp(5px, 1.6vw, 8px)" }}
           >
-            <div className="w-3 h-3 rounded-full" style={{ background: activeCat.accent_color }} />
-            <p className="font-sans text-sm" style={{ color: "rgba(30,41,24,0.6)" }}>
-              {activeCat.mood_description}
-            </p>
-            <div className="flex gap-2 ml-2">
-              {(activeCat.tags ?? []).map(tag => (
-                <span
-                  key={tag}
-                  className="font-sans text-xs px-2.5 py-0.5 rounded-full"
-                  style={{ background: `${activeCat.accent_color}18`, color: activeCat.accent_color, border: `1px solid ${activeCat.accent_color}35` }}
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
+            <div
+              className="rounded-full shrink-0"
+              style={{ width: 10, height: 10, background: activeCat.accent_color }}
+            />
+            {activeTags.map(tag => (
+              <span
+                key={tag}
+                className="font-sans rounded-full whitespace-nowrap overflow-hidden text-ellipsis min-w-0"
+                style={{
+                  fontSize: "clamp(0.6rem, 2.85vw, 0.75rem)",
+                  padding: "3px clamp(7px, 2.2vw, 12px)",
+                  background: `${activeCat.accent_color}18`,
+                  color: activeCat.accent_color,
+                  border: `1px solid ${activeCat.accent_color}35`,
+                }}
+              >
+                {tag}
+              </span>
+            ))}
           </motion.div>
         )}
 
@@ -261,7 +289,9 @@ const ShopPage = () => {
             <p className="font-sans text-xs text-right mb-6" style={{ color: "rgba(30,41,24,0.45)" }}>
               {visibleProducts.length} candle{visibleProducts.length !== 1 ? "s" : ""}
             </p>
-            <motion.div layout className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {/* Two per row on a phone: the whole catalogue is scannable at a
+                glance and a tap opens the one that catches the eye. */}
+            <motion.div layout className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
               <AnimatePresence mode="popLayout">
                 {visibleProducts.map((p, i) => (
                   <ProductCard

@@ -11,6 +11,7 @@
  */
 
 import { test, expect, Page } from "@playwright/test";
+import { payStripeTestCard } from "./stripe-checkout";
 
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
 const API = process.env.E2E_API ?? "http://localhost:3001";
@@ -37,50 +38,6 @@ async function signIn(page: Page, email = SHOPPER_EMAIL, password = SHOPPER_PASS
 /** Empty the cart via API using the page's session cookie. */
 async function clearCartViaApi(page: Page) {
   await page.request.delete(`${API}/api/cart`);
-}
-
-/**
- * Drive Stripe's hosted checkout card widget with the universal test card.
- * Handles both the legacy top-level card fields (#cardNumber) and the modern
- * Payment Element (fields inside nested iframes). Returns true if it managed to
- * submit, false if the widget layout couldn't be driven (caller treats false as
- * "skip", not "fail" — this is Stripe's UI, not ours).
- */
-async function payStripeTestCard(page: Page): Promise<boolean> {
-  // Select the card method if the page presents a multi-method chooser.
-  const cardChooser = page.getByRole("button", { name: /pay with card|^card$/i })
-    .or(page.getByText(/^card$/i));
-  if (await cardChooser.first().isVisible().catch(() => false)) {
-    await cardChooser.first().click().catch(() => {});
-  }
-
-  // Legacy layout: fields in the top document.
-  if (await page.locator("#cardNumber").isVisible().catch(() => false)) {
-    await page.locator("#cardNumber").fill("4242424242424242");
-    await page.locator("#cardExpiry").fill("12 / 34");
-    await page.locator("#cardCvc").fill("123");
-  } else {
-    // Payment Element: each field is inside a Stripe iframe. Try the known
-    // field ids/names across all Stripe frames.
-    const numberField = page
-      .frameLocator('iframe[title*="payment" i], iframe[name*="stripe" i], iframe[src*="stripe"]')
-      .locator('input[name="number"], input#Field-numberInput')
-      .first();
-    if (!(await numberField.isVisible({ timeout: 15_000 }).catch(() => false))) return false;
-    const fl = page.frameLocator('iframe[title*="payment" i], iframe[name*="stripe" i], iframe[src*="stripe"]');
-    await fl.locator('input[name="number"], input#Field-numberInput').first().fill("4242424242424242");
-    await fl.locator('input[name="expiry"], input#Field-expiryInput').first().fill("12 / 34");
-    await fl.locator('input[name="cvc"], input#Field-cvcInput').first().fill("123");
-  }
-
-  // Optional billing details.
-  const name = page.locator("#billingName");
-  if (await name.isVisible().catch(() => false)) await name.fill("E2E Shopper");
-  const postal = page.locator("#billingPostalCode");
-  if (await postal.isVisible().catch(() => false)) await postal.fill("D01AB12");
-
-  await page.locator(".SubmitButton, button[type=submit]").first().click();
-  return true;
 }
 
 // ─── 1. Guest browsing ────────────────────────────────────────────────────────

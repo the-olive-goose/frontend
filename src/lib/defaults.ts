@@ -1,3 +1,7 @@
+import { DEFAULT_SEO, type SeoSettings } from "@/lib/seo";
+
+export type { SeoSettings };
+
 // ── Interfaces ─────────────────────────────────────────────────────────────────
 
 export interface Bundle {
@@ -101,6 +105,12 @@ export interface VideoItem {
   title: string;
   description: string;
   video_url: string;
+  /**
+   * The little sticker in the reel's top corner ("how'd they do that").
+   * Blank or absent hides it — videos saved before the sticker existed have
+   * no tag, so nothing appears until an admin writes one.
+   */
+  tag?: string;
 }
 
 export interface Testimonial {
@@ -182,6 +192,8 @@ export interface VideosContent {
   label: string;
   headline: string;
   subtext: string;
+  /** Phrases in the scrolling strip above the reels. Empty hides the strip. */
+  ticker: string[];
   items: VideoItem[];
 }
 
@@ -314,6 +326,9 @@ export interface SiteContent {
   privacyPolicy: LegalPageContent;
   termsOfService: LegalPageContent;
   shippingPolicy: LegalPageContent;
+  // Search-engine metadata (titles, descriptions, icons). The shape and the
+  // fallbacks live in src/lib/seo.ts next to the code that applies them.
+  seo: SeoSettings;
 }
 
 // ── Default content ────────────────────────────────────────────────────────────
@@ -321,9 +336,9 @@ export interface SiteContent {
 export const DEFAULT_CONTENT: SiteContent = {
   announcementBar: {
     messages: [
-      "✨ Free shipping on orders over €65",
+      "✨ Free shipping {free_shipping}",
       "🕯️ New café collection dropping soon — Shop now →",
-      "💌 Sign up for early access & 10% off your first order",
+      "💌 Sign up for early access & {discount}% off your first order",
     ],
     interval_ms: 1500,
   },
@@ -458,24 +473,34 @@ export const DEFAULT_CONTENT: SiteContent = {
     label: "IN THE STUDIO",
     headline: "Watch how it's made",
     subtext: "From pour to packaging — a glimpse into our craft",
+    ticker: [
+      "poured by hand",
+      "no two the same",
+      "straight from the studio",
+      "unfiltered, unedited",
+      "yes, that's the real wax",
+    ],
     items: [
       {
         id: "1",
         title: "The Pour",
         description: "Hand-pouring our signature soy blend",
         video_url: "",
+        tag: "how'd they do that",
       },
       {
         id: "2",
         title: "The Fragrance",
         description: "Blending natural essential oils",
         video_url: "",
+        tag: "the secret bit",
       },
       {
         id: "3",
         title: "The Finish",
         description: "Labelling and packaging each candle",
         video_url: "",
+        tag: "wait for the end",
       },
     ],
   },
@@ -687,7 +712,10 @@ export const DEFAULT_CONTENT: SiteContent = {
       },
       {
         title: "Delivery times & rates",
-        body: "Standard delivery takes 3–7 business days depending on your location. Shipping is free on orders over €65; a flat rate applies below that. You'll receive a tracking link by email as soon as your order ships.",
+        // Deliberately no "a flat rate applies below that" tail: with a threshold
+        // of 0 the {free_shipping} clause reads "on all orders", and the tail would
+        // then contradict it. The clause implies the charge on its own.
+        body: "Standard delivery takes 3–7 business days depending on your location. Shipping is free {free_shipping}. You'll receive a tracking link by email as soon as your order ships.",
       },
       {
         title: "In-store pickup",
@@ -696,6 +724,8 @@ export const DEFAULT_CONTENT: SiteContent = {
     ],
     contact_email: "hello@theolivegoose.com",
   },
+
+  seo: DEFAULT_SEO,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

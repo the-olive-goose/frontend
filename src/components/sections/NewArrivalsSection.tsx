@@ -15,6 +15,7 @@ import {
   CandleCard,
   PlaceholderCard,
   CANDLES_PER_VIEW,
+  CANDLES_PER_VIEW_MOBILE,
   DEFAULT_SCRAPBOOK_SETTINGS,
   type ScrapbookSettings,
 } from "@/components/sections/ScrapbookSection";
@@ -45,7 +46,7 @@ const NewArrivalsSection = () => {
   }, []);
 
   const isMobile  = useIsMobile(); // must be above any early return
-  const perView   = isMobile ? 1 : CANDLES_PER_VIEW;
+  const perView   = isMobile ? CANDLES_PER_VIEW_MOBILE : CANDLES_PER_VIEW;
 
   const resolveProducts = useCallback((category: ShopCategory): Product[] => {
     if (!category.product_ids?.length) return [];
@@ -206,9 +207,11 @@ const NewArrivalsSection = () => {
               >
                 {products.length === 0 ? (
                   <>
-                    <PlaceholderCard accent={cat.accent_color} isDark={isDark} label={"add products via\nAdmin → Shop By Category"} />
-                    {!isMobile && <PlaceholderCard accent={cat.accent_color} isDark={isDark} label={"they'll appear\nhere automatically"} />}
-                    {!isMobile && <PlaceholderCard accent={cat.accent_color} isDark={isDark} label={"assign products\nto this category"} />}
+                    {["add products via\nAdmin → Shop By Category", "they'll appear\nhere automatically", "assign products\nto this category"]
+                      .slice(0, perView)
+                      .map(label => (
+                        <PlaceholderCard key={label} accent={cat.accent_color} isDark={isDark} label={label} />
+                      ))}
                   </>
                 ) : (
                   <AnimatePresence mode="sync">

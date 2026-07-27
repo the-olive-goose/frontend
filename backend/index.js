@@ -3877,13 +3877,60 @@ app.use('/uploads', express.static(uploadDir, {
   },
 }));
 
+const distPath = path.join(__dirname, '../dist');
+
+// ── GET /api/favicon/:file — the icon Google shows beside the search result ────
+// Google fetches favicons over plain HTTP and does not run the page's JavaScript
+// while doing it, so swapping <link rel="icon"> at runtime is invisible to it:
+// whatever bytes live at the icon URLs declared in the served index.html are what
+// end up in search. Netlify rewrites those URLs here (see public/_redirects) so
+// an icon uploaded in Admin → Ops → SEO is what the crawler downloads, with the
+// icon shipped in the build as the fallback.
+const SHIPPED_ICONS = new Set([
+  'favicon.ico', 'favicon.png', 'favicon-48.png', 'favicon-96.png',
+  'favicon-192.png', 'apple-touch-icon.png', 'icon-512.png',
+]);
+
+app.get('/api/favicon/:file', async (req, res) => {
+  // Only ever serve a known icon name: the path is attacker-supplied and both
+  // branches below turn it into a filesystem read.
+  const file = path.basename(req.params.file || '');
+  if (!SHIPPED_ICONS.has(file)) return res.status(404).json({ error: 'Not found' });
+
+  const sendShipped = () =>
+    res.sendFile(path.join(distPath, file), (err) => {
+      if (err && !res.headersSent) res.status(404).end();
+    });
+
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  try {
+    const { rows } = await pool.query("SELECT value FROM site_settings WHERE key = 'content_seo'");
+    const configured = String(rows[0]?.value?.favicon_url || '').trim();
+    if (configured) {
+      // Uploaded through the admin: serve the bytes from disk so the crawler gets
+      // a 200 with the real image rather than a hop it may not follow.
+      const uploaded = configured.match(/\/uploads\/([A-Za-z0-9._-]+)$/);
+      if (uploaded) {
+        const onDisk = path.join(uploadDir, uploaded[1]);
+        if (existsSync(onDisk)) return res.sendFile(onDisk);
+      } else if (/^https?:\/\//i.test(configured)) {
+        return res.redirect(302, configured);
+      }
+      // Configured but unusable (file deleted, or a path we can't resolve) —
+      // fall through to the shipped icon rather than 404ing the site's favicon.
+    }
+  } catch (err) {
+    console.error('[favicon]', err);
+  }
+  sendShipped();
+});
+
 // Unknown API routes must return a JSON 404 — without this they fall through to
 // the SPA catch-all below and return index.html with a 200, which masks bugs and
 // makes automated probing of the API surface noisier to reason about.
 app.all('/api/*', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
 // ── Serve React frontend (SPA catch-all) ──────────────────────────────────────
-const distPath = path.join(__dirname, '../dist');
 app.use(express.static(distPath, {
   setHeaders: (res, filePath) => {
     // Vite emits content-hashed filenames under /assets — safe to cache forever.

@@ -27,8 +27,15 @@ export interface RouteMeta {
 export const ROUTE_META: Record<string, RouteMeta> = {
   "/": {
     title: "The Olive Goose — the goose insisted, we made candles",
+    // Deliberately no shipping threshold here. These descriptions are a static,
+    // compile-time map read by SeoManager during navigation, so they cannot resolve
+    // the {free_shipping} token the storefront copy uses — the live settings arrive
+    // asynchronously, long after the meta tag is set and after a crawler has read
+    // it. A figure baked in here is a promise nobody will remember to update: this
+    // one said €65 while the configured threshold was €50, and search results were
+    // advertising the wrong bar.
     description:
-      "Luxury handmade candles from Dublin, Ireland. Coffee-scented, café-inspired soy candles, hand-poured in small batches. Free Irish shipping over €65.",
+      "Luxury handmade candles from Dublin, Ireland. Coffee-scented, café-inspired soy candles, hand-poured in small batches. Free Irish shipping on qualifying orders.",
   },
   "/shop": {
     title: "Shop Handmade Soy Candles Ireland | The Olive Goose",
@@ -120,17 +127,61 @@ export const DEFAULT_META: RouteMeta = {
   noindex: true, // unknown routes are 404s / unmapped pages — keep them out of the index
 };
 
-/** Longest-prefix lookup: exact key first, then wildcard ancestors. */
-export function metaForPath(pathname: string): RouteMeta {
-  const exact = ROUTE_META[pathname];
-  if (exact) return exact;
+// ── Admin-configurable layer ───────────────────────────────────────────────────
+// Branding only: the icon beside the search result, the Organization logo, the
+// share image and the brand name. Admin → Ops → SEO stores these in the "seo"
+// content section, which SeoManager loads once on boot and hands to
+// setSeoSettings(). Titles and descriptions stay in ROUTE_META above — they are
+// deliberately not editable, so page copy lives in one place.
+
+export interface SeoSettings {
+  /** Brand name declared to search engines (og:site_name + Organization/WebSite JSON-LD). */
+  site_name: string;
+  /** Icon Google shows beside the result. Square PNG, a multiple of 48px. Blank = the built-in favicons. */
+  favicon_url: string;
+  /** Organization logo for structured data (rich results / knowledge panel). */
+  logo_url: string;
+  /** Fallback share image for social cards (og:image / twitter:image). */
+  og_image: string;
+}
+
+export const DEFAULT_SEO: SeoSettings = {
+  site_name: SITE_NAME,
+  favicon_url: "",
+  logo_url: `${SITE_URL}/logo.png`,
+  og_image: DEFAULT_OG_IMAGE,
+};
+
+let settings: SeoSettings = DEFAULT_SEO;
+
+export const getSeoSettings = (): SeoSettings => settings;
+
+/** Install the admin's saved SEO settings. Missing fields fall back to DEFAULT_SEO. */
+export function setSeoSettings(next: Partial<SeoSettings> | null | undefined) {
+  settings = { ...DEFAULT_SEO, ...(next ?? {}) };
+}
+
+/**
+ * The ROUTE_META key a pathname resolves to — exact match first, then wildcard
+ * ancestors. Returns null for unmapped paths. Callers that need the key itself
+ * (to look up the admin section a page's copy comes from) use this; callers that
+ * just want the metadata use metaForPath.
+ */
+export function routeKeyForPath(pathname: string): string | null {
+  if (ROUTE_META[pathname]) return pathname;
   let path = pathname.replace(/\/+$/, "");
   while (path.length > 0) {
-    const wildcard = ROUTE_META[`${path}/*`];
-    if (wildcard) return wildcard;
+    const key = `${path}/*`;
+    if (ROUTE_META[key]) return key;
     path = path.slice(0, path.lastIndexOf("/"));
   }
-  return DEFAULT_META;
+  return null;
+}
+
+/** Longest-prefix lookup: exact key first, then wildcard ancestors. */
+export function metaForPath(pathname: string): RouteMeta {
+  const key = routeKeyForPath(pathname);
+  return key ? ROUTE_META[key] : DEFAULT_META;
 }
 
 // ── DOM helpers ─────────────────────────────────────────────────────────────────
@@ -159,13 +210,25 @@ export interface ApplyMetaOptions extends RouteMeta {
   /** Pathname used for the canonical URL (query strings are always stripped). */
   path: string;
   ogImage?: string;
+  /**
+   * True only for SeoManager's route-level defaults. Page-level callers (a
+   * product page writing its own title) leave it off, which tells SeoManager not
+   * to overwrite them when the admin's SEO settings land mid-navigation.
+   */
+  routeLevel?: boolean;
 }
+
+let routeLevelMetaIsCurrent = true;
+
+/** False once a page has written meta of its own for the current view. */
+export const isRouteLevelMetaCurrent = () => routeLevelMetaIsCurrent;
 
 /** Write title/description/canonical/robots/OG/Twitter tags into <head>. */
 export function applyMeta(opts: ApplyMetaOptions) {
+  routeLevelMetaIsCurrent = opts.routeLevel === true;
   document.title = opts.title;
   const canonical = `${SITE_URL}${opts.path === "/" ? "/" : opts.path.replace(/\/+$/, "")}`;
-  const image = opts.ogImage ?? DEFAULT_OG_IMAGE;
+  const image = opts.ogImage ?? settings.og_image ?? DEFAULT_OG_IMAGE;
 
   upsertMeta("name", "description", opts.description);
   upsertMeta("name", "robots", opts.noindex ? "noindex, nofollow" : "index, follow");
@@ -175,7 +238,7 @@ export function applyMeta(opts: ApplyMetaOptions) {
   upsertMeta("property", "og:description", opts.description);
   upsertMeta("property", "og:type", opts.ogType ?? "website");
   upsertMeta("property", "og:url", canonical);
-  upsertMeta("property", "og:site_name", SITE_NAME);
+  upsertMeta("property", "og:site_name", settings.site_name || SITE_NAME);
   upsertMeta("property", "og:locale", "en_IE");
   upsertMeta("property", "og:image", image);
 
@@ -183,6 +246,50 @@ export function applyMeta(opts: ApplyMetaOptions) {
   upsertMeta("name", "twitter:title", opts.title);
   upsertMeta("name", "twitter:description", opts.description);
   upsertMeta("name", "twitter:image", image);
+}
+
+/** Rewrite one of index.html's static JSON-LD blocks in place. */
+function patchStaticJsonLd(domId: string, patch: (data: Record<string, unknown>) => Record<string, unknown>) {
+  const el = document.getElementById(domId);
+  if (!el?.textContent) return;
+  try {
+    el.textContent = JSON.stringify(patch(JSON.parse(el.textContent)));
+  } catch {
+    // Malformed block — leave the shipped markup alone rather than blanking it.
+  }
+}
+
+/**
+ * Apply the site-wide branding an admin can configure: the icon Google shows
+ * beside the result, the Organization logo in structured data, and the brand
+ * name. Route-independent, so it runs once after the settings load.
+ *
+ * The icons shipped in index.html stay authoritative until an admin sets
+ * `favicon_url` — Google re-crawls favicons on its own schedule, so a change
+ * here can take days to appear in search even though the browser tab is instant.
+ */
+export function applyBranding() {
+  const { favicon_url, logo_url, site_name } = settings;
+
+  if (favicon_url) {
+    document.head
+      .querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"], link[rel="shortcut icon"]')
+      .forEach((el) => el.remove());
+    for (const rel of ["icon", "apple-touch-icon"]) {
+      const link = document.createElement("link");
+      link.setAttribute("rel", rel);
+      link.setAttribute("href", favicon_url);
+      document.head.appendChild(link);
+    }
+  }
+
+  const name = site_name || SITE_NAME;
+  patchStaticJsonLd("site-organization-jsonld", (data) => ({
+    ...data,
+    name,
+    ...(logo_url && { logo: logo_url }),
+  }));
+  patchStaticJsonLd("site-website-jsonld", (data) => ({ ...data, name }));
 }
 
 /**

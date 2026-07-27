@@ -23,6 +23,7 @@
  */
 
 import { test, expect, APIRequestContext, request as pwRequest, Page } from "@playwright/test";
+import { payStripeTestCard } from "./stripe-checkout";
 
 const API = process.env.E2E_API ?? "http://localhost:3001";
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
@@ -496,30 +497,3 @@ async function signIn(page: Page) {
   await expect(page.getByPlaceholder("Your password")).toBeHidden({ timeout: 10_000 });
 }
 
-async function payStripeTestCard(page: Page): Promise<boolean> {
-  const cardChooser = page.getByRole("button", { name: /pay with card|^card$/i }).or(page.getByText(/^card$/i));
-  if (await cardChooser.first().isVisible().catch(() => false)) {
-    await cardChooser.first().click().catch(() => {});
-  }
-  if (await page.locator("#cardNumber").isVisible().catch(() => false)) {
-    await page.locator("#cardNumber").fill("4242424242424242");
-    await page.locator("#cardExpiry").fill("12 / 34");
-    await page.locator("#cardCvc").fill("123");
-  } else {
-    const numberField = page
-      .frameLocator('iframe[title*="payment" i], iframe[name*="stripe" i], iframe[src*="stripe"]')
-      .locator('input[name="number"], input#Field-numberInput')
-      .first();
-    if (!(await numberField.isVisible({ timeout: 15_000 }).catch(() => false))) return false;
-    const fl = page.frameLocator('iframe[title*="payment" i], iframe[name*="stripe" i], iframe[src*="stripe"]');
-    await fl.locator('input[name="number"], input#Field-numberInput').first().fill("4242424242424242");
-    await fl.locator('input[name="expiry"], input#Field-expiryInput').first().fill("12 / 34");
-    await fl.locator('input[name="cvc"], input#Field-cvcInput').first().fill("123");
-  }
-  const name = page.locator("#billingName");
-  if (await name.isVisible().catch(() => false)) await name.fill("E2E Shopper");
-  const postal = page.locator("#billingPostalCode");
-  if (await postal.isVisible().catch(() => false)) await postal.fill("D01AB12");
-  await page.locator(".SubmitButton, button[type=submit]").first().click();
-  return true;
-}

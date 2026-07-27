@@ -43,8 +43,10 @@
       rel="stylesheet"
     />
 
-    <!-- Structured data: Organization + LocalBusiness + WebSite (site-wide, static) -->
-    <script type="application/ld+json">
+    <!-- Structured data: Organization + LocalBusiness + WebSite (site-wide, static).
+         The Organization and WebSite blocks carry ids because Admin → Ops → SEO
+         patches their name/logo at runtime (see applyBranding in src/lib/seo.ts). -->
+    <script type="application/ld+json" id="site-organization-jsonld">
       {
         "@context": "https://schema.org",
         "@type": "Organization",
@@ -93,7 +95,7 @@
         "priceRange": "€€"
       }
     </script>
-    <script type="application/ld+json">
+    <script type="application/ld+json" id="site-website-jsonld">
       {
         "@context": "https://schema.org",
         "@type": "WebSite",

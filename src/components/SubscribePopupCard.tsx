@@ -6,14 +6,16 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import type { SubscribePopupContent } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
+import { fillDiscountToken } from "@/lib/offerTokens";
 
 // Explicitly dismissed (X) or already subscribed — never show again on this device.
 const DISMISSED_KEY = "og_subscribe_popup_dismissed";
 // Already shown this browsing session — show at most once per session.
 const SEEN_KEY = "og_subscribe_popup_seen";
 
-const fillDiscount = (text: string, percent: number) =>
-  text.split("{discount}").join(String(percent));
+// Shared with the announcement bar and the policy pages, so every surface
+// substitutes {discount} identically.
+const fillDiscount = fillDiscountToken;
 
 interface Props {
   data: SubscribePopupContent;
