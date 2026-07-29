@@ -730,36 +730,57 @@ export const DEFAULT_CONTENT: SiteContent = {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** Convert any YouTube/Vimeo/Instagram URL to an embeddable src */
+/**
+ * Convert any video URL the admin can paste into something the reel rail can
+ * actually play.
+ *
+ * What people paste is whatever the share button handed them, which is rarely
+ * the canonical `watch?v=` form: a Shorts link (the natural match for a 9:16
+ * reel), a `youtu.be` link carrying a `?si=` tracking param, a mobile link with
+ * `v=` after some other query param, or a Cloudinary delivery URL whose
+ * transformation chain left no file extension. Anything unrecognised falls
+ * through as a direct file src, and a direct src that isn't a video file renders
+ * the empty placeholder — i.e. the video silently never appears on the home
+ * page. So every shape that can be resolved is resolved here.
+ */
 export const toEmbedUrl = (url: string): string => {
-  if (!url) return "";
+  const raw = (url ?? "").trim();
+  if (!raw) return "";
   // Already an embed
   if (
-    url.includes("youtube.com/embed/") ||
-    url.includes("player.vimeo.com") ||
-    url.includes("instagram.com/reel/") && url.endsWith("/embed/") ||
-    url.includes("instagram.com/p/") && url.endsWith("/embed/")
-  ) return url;
-  // YouTube watch or short URL
-  const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?/\s]+)/);
-  if (ytMatch) return `https://www.youtube.com/embed/${ytMatch[1]}?rel=0`;
+    /youtube(-nocookie)?\.com\/embed\//.test(raw) ||
+    raw.includes("player.vimeo.com") ||
+    raw.includes("instagram.com/reel/") && raw.endsWith("/embed/") ||
+    raw.includes("instagram.com/p/") && raw.endsWith("/embed/")
+  ) return raw;
+  // YouTube — youtu.be, /shorts/, /live/, /v/, or a `v=` param in any position
+  const ytId =
+    raw.match(/youtu\.be\/([^/?#&\s]+)/)?.[1] ??
+    raw.match(/youtube(?:-nocookie)?\.com\/(?:shorts|live|v|e)\/([^/?#&\s]+)/)?.[1] ??
+    raw.match(/youtube(?:-nocookie)?\.com\/\S*[?&]v=([^&#\s]+)/)?.[1];
+  if (ytId) return `https://www.youtube.com/embed/${ytId}?rel=0`;
   // Vimeo
-  const vimeoMatch = url.match(/vimeo\.com\/(\d+)/);
+  const vimeoMatch = raw.match(/vimeo\.com\/(\d+)/);
   if (vimeoMatch) return `https://player.vimeo.com/video/${vimeoMatch[1]}`;
   // Instagram Reel
-  const igReelMatch = url.match(/instagram\.com\/reel\/([^/?#\s]+)/);
+  const igReelMatch = raw.match(/instagram\.com\/reel\/([^/?#\s]+)/);
   if (igReelMatch) return `https://www.instagram.com/reel/${igReelMatch[1]}/embed/`;
   // Instagram Post
-  const igPostMatch = url.match(/instagram\.com\/p\/([^/?#\s]+)/);
+  const igPostMatch = raw.match(/instagram\.com\/p\/([^/?#\s]+)/);
   if (igPostMatch) return `https://www.instagram.com/p/${igPostMatch[1]}/embed/`;
+  // Cloudinary video delivery — extension-less URLs are common (the format is
+  // negotiated by the delivery chain); asking for .mp4 makes it a plain file src.
+  if (/res\.cloudinary\.com\/\S+\/video\/upload\//.test(raw) && !isDirectVideo(raw)) {
+    return `${raw.split(/[?#]/)[0].replace(/\/+$/, "")}.mp4`;
+  }
   // Fallback — treat as direct src
-  return url;
+  return raw;
 };
 
 export const isEmbedUrl = (url: string) =>
-  url.includes("youtube.com/embed") ||
+  /youtube(-nocookie)?\.com\/embed/.test(url) ||
   url.includes("player.vimeo.com") ||
   (url.includes("instagram.com") && url.includes("/embed/"));
 
 export const isDirectVideo = (url: string) =>
-  /\.(mp4|webm|ogg)(\?.*)?$/i.test(url);
+  /\.(mp4|webm|ogg|ogv|mov|m4v)([?#].*)?$/i.test(url);

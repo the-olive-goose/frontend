@@ -65,6 +65,7 @@ const allows = (policy: Record<string, string[]>, directive: string, url: string
 const ADMIN_VIDEO_URLS = [
   "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   "https://youtu.be/dQw4w9WgXcQ",
+  "https://youtube.com/shorts/dQw4w9WgXcQ?si=JtZcqcmQ5AO_F7hs",
   "https://vimeo.com/76979871",
   "https://www.instagram.com/reel/DaAwNjpoSuB/",
   "https://www.instagram.com/p/DaAwNjpoSuB/",

@@ -167,6 +167,7 @@ async function main() {
       "e2e/admin-journey.spec.ts", "e2e/admin-payment-status.spec.ts",
       "e2e/discount-codes.spec.ts", "e2e/bundle-discounts.spec.ts",
       "e2e/checkout-edge-cases.spec.ts", "e2e/offer-copy.spec.ts",
+      "e2e/video-reel.spec.ts",
     ],
     {}
   ) && ok;

@@ -1008,9 +1008,9 @@ const VideosEditor = ({
                 onChange({ ...data, items });
               }} />
             </Field>
-            <Field label="Video URL" hint="A direct .mp4 / .webm URL, or a YouTube or Vimeo link — these play automatically. An Instagram link also works but Instagram's embed will not autoplay: it shows a still until it's tapped.">
+            <Field label="Video URL" hint="A direct video file URL (.mp4 / .webm / .mov — including a Cloudinary or other CDN link), or a YouTube link in any form (watch, youtu.be or Shorts), or a Vimeo link. These play automatically. An Instagram link also works but Instagram's embed will not autoplay: it shows a still until it's tapped. A Google Drive or Dropbox share page is not a video file and will not play.">
               <Input
-                placeholder="https://…/reel.mp4  or  https://youtube.com/watch?v=…"
+                placeholder="https://…/reel.mp4  or  https://youtube.com/shorts/…"
                 value={item.video_url}
                 onChange={(e) => {
                   const items = [...data.items];

@@ -168,7 +168,7 @@ const ReelMedia = ({ item, interactive }: { item: VideoItem; interactive: boolea
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
           d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
-      <p className="font-sans text-xs">Add a video URL in admin — a direct .mp4 link, or YouTube or Vimeo</p>
+      <p className="font-sans text-xs">Add a video URL in admin — a direct .mp4 link, or YouTube (watch or Shorts) or Vimeo</p>
     </div>
   );
 };
