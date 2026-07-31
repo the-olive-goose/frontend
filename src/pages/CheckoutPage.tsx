@@ -6,16 +6,21 @@ import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
 import {
   createCheckoutSession, validateDiscountCode, SessionExpiredError,
-  fetchAddresses, createAddress,
+  fetchAddresses, createAddress, updateAddress,
   type DeliveryAddress, type FulfillmentType, type SavedAddress,
 } from "@/lib/userApi";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
-import { cartSubtotal, formatPrice } from "@/lib/cart";
+import { cartSubtotal, formatPrice, MIN_CHARGE_EUR } from "@/lib/cart";
 import { computeBundleSavings } from "@/lib/bundleSavings";
 import { track, getAnalyticsIds } from "@/lib/analytics";
 import { getBundleNudges } from "@/lib/bundleNudges";
-import { isPhoneValid, validateDeliveryAddress, type AddressErrors, type AddressField } from "@/lib/addressValidation";
+import {
+  validateDeliveryAddress, normalizeAddress, phoneError, formatAddressBlock, formatAddressOneLine,
+  formatPhoneDisplay, splitPhone, composePhone, ADDRESS_FIELDS,
+  type AddressErrors, type AddressField,
+} from "@/lib/addressValidation";
 import AddressFields from "@/components/AddressFields";
+import PhoneInput from "@/components/PhoneInput";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
 import FooterSection from "@/components/sections/FooterSection";
@@ -30,26 +35,19 @@ const inputStyle = { border: "1px solid #ccc", background: "#fff", color: "#111"
 const NEW_ADDRESS = "__new__";
 
 // The delivery fields on a saved address, as the checkout address form wants them.
-const toDeliveryAddress = (a: SavedAddress): DeliveryAddress => ({
+// Normalized on the way in so a legacy row (bare phone digits, lowercase Eircode)
+// compares equal to the same address once the form has tidied it.
+const toDeliveryAddress = (a: SavedAddress): DeliveryAddress => normalizeAddress({
   full_name: a.full_name, phone: a.phone,
   address_line1: a.address_line1, address_line2: a.address_line2,
   city: a.city, state: a.state, postal_code: a.postal_code, country: a.country,
 });
-
-// One-line summary of a saved address for the picker rows.
-const formatAddressLine = (a: SavedAddress): string =>
-  [a.address_line1, a.address_line2, a.city, a.state, a.postal_code, a.country]
-    .filter(Boolean).join(", ");
 
 // Two addresses are "the same" for save-offer purposes when every delivery field
 // matches (trimmed). Lets us skip offering to save an address already on file.
 const sameAddress = (a: DeliveryAddress, b: DeliveryAddress): boolean =>
   (["full_name", "phone", "address_line1", "address_line2", "city", "state", "postal_code", "country"] as const)
     .every(k => (a[k] ?? "").trim() === (b[k] ?? "").trim());
-
-// Red border when a field has a surfaced error, the shared input look otherwise.
-const errStyle = (error?: string) =>
-  error ? { ...inputStyle, border: "1px solid #C7511F" } : inputStyle;
 
 const CheckoutPage = () => {
   const { user, loading: authLoading, openAuthModal, requireAuth } = useAuth();
@@ -67,7 +65,13 @@ const CheckoutPage = () => {
   const [selectedAddressId, setSelectedAddressId] = useState<string>(NEW_ADDRESS);
   const [saveToAccount, setSaveToAccount] = useState(false);
   const [saveChoice, setSaveChoice] = useState<"default" | "another">("another");
+  // A saved address is shown read-only until the shopper asks to edit it. That's
+  // what keeps the highlighted card and the form from ever disagreeing: if the
+  // fields are editable, the card above them says "editing".
+  const [editingSaved, setEditingSaved] = useState(false);
+  const [saveEdits, setSaveEdits] = useState(true);
   const [contactPhone, setContactPhone] = useState("");
+  const [contactPhoneTouched, setContactPhoneTouched] = useState(false);
 
   // Publish the mobile sticky bar's height as --bottom-bar-h (mirrors the
   // navbar's --nav-h) so bottom-anchored overlays can clear it. Without this the
@@ -116,10 +120,14 @@ const CheckoutPage = () => {
 
   useEffect(() => {
     if (!user) return;
-    setContactPhone(user.phone ?? "");
+    // Numbers stored before phones became E.164 arrive as bare digits; read them
+    // against the account's country so the field starts valid instead of scolding
+    // the shopper about a code they never got to choose.
+    const accountPhone = splitPhone(user.phone, user.country);
+    setContactPhone(composePhone(accountPhone.dialCode, accountPhone.national));
     // A prefilled baseline from the account's default (mirrored on the user row),
     // used until the address book loads and/or if the shopper picks "new address".
-    setAddress({
+    setAddress(normalizeAddress({
       full_name: user.full_name ?? "",
       phone: user.phone ?? "",
       address_line1: user.address_line1 ?? "",
@@ -128,7 +136,7 @@ const CheckoutPage = () => {
       state: user.state ?? "",
       postal_code: user.postal_code ?? "",
       country: user.country ?? "",
-    });
+    }));
     // Load the address book; select the default (or first) so it's pre-picked.
     fetchAddresses().then(list => {
       setSavedAddresses(list);
@@ -142,11 +150,15 @@ const CheckoutPage = () => {
     }).catch(() => { /* fall back to the prefilled baseline above */ });
   }, [user?.id]);
 
-  // Pick a saved address: fill the form from it and stop offering to save it.
+  // Pick a saved address: it becomes the read-only "delivering to" card, and the
+  // editable form disappears so there's nothing to silently diverge from it.
   const selectSavedAddress = (a: SavedAddress) => {
     setSelectedAddressId(a.id);
     setAddress(toDeliveryAddress(a));
     setSaveToAccount(false);
+    setEditingSaved(false);
+    setSaveEdits(true);
+    setTouched({});
   };
 
   // Switch to a blank new address, keeping the account's name/phone as a convenience.
@@ -154,6 +166,7 @@ const CheckoutPage = () => {
     setSelectedAddressId(NEW_ADDRESS);
     setAddress({ full_name: user?.full_name ?? "", phone: user?.phone ?? "" });
     setTouched({});
+    setEditingSaved(false);
   };
 
   const subtotalNum = cartSubtotal(items);
@@ -186,15 +199,42 @@ const CheckoutPage = () => {
   const flatShipping = pickup.flat_shipping_rate ?? 4.99;
   const shipping = isPickup ? 0 : (subtotalNum >= pickup.free_shipping_threshold ? 0 : flatShipping);
   const grandTotal = Math.max(0, subtotalNum - discountAmount + shipping);
+  // Stripe can't take a payment under €0.50, and pickup is how a basket gets there:
+  // no shipping line to lift a cheap or deeply discounted basket over the floor.
+  // Say so on the button rather than failing after the shopper commits.
+  const belowMinCharge = grandTotal < MIN_CHARGE_EUR;
+  const minChargeNotice = `Card payments need a total of at least €${MIN_CHARGE_EUR.toFixed(2)}. Please add another item to your basket${isPickup ? ", or choose delivery" : ""}.`;
 
   const addressErrors: AddressErrors = fulfillment === "delivery" ? validateDeliveryAddress(address) : {};
   const addressComplete = Object.keys(addressErrors).length === 0;
+  const selectedSaved = savedAddresses.find(a => a.id === selectedAddressId);
+
+  // An address saved before these rules existed can be junk ("4444", no county, an
+  // undialable phone). It must not sail through just because it's on file — so a
+  // failing saved address opens for editing on its own, with its errors showing,
+  // rather than sitting behind a read-only card the shopper can't fix.
+  const savedAddressBroken = fulfillment === "delivery" && !!selectedSaved && !addressComplete;
+  useEffect(() => {
+    if (!savedAddressBroken) return;
+    setEditingSaved(true);
+    setTouched(Object.fromEntries(ADDRESS_FIELDS.map(f => [f, true])));
+  }, [savedAddressBroken, selectedAddressId]);
+
+  // The fields are editable for a new address, or for a saved one being edited.
+  const showAddressForm = !selectedSaved || editingSaved;
+
+  // Pickup still needs a number the shop can ring when the order is ready.
+  const contactPhoneError = isPickup ? phoneError(contactPhone) : undefined;
 
   // Offer to save only a complete, brand-new address that isn't already on file.
   const isNewUnsavedAddress =
     fulfillment === "delivery" && addressComplete &&
     selectedAddressId === NEW_ADDRESS &&
     !savedAddresses.some(a => sameAddress(toDeliveryAddress(a), address));
+
+  // Edits made to a saved address at checkout, which can be written back.
+  const savedAddressEdited =
+    !!selectedSaved && editingSaved && !sameAddress(toDeliveryAddress(selectedSaved), address);
 
   const markTouched = (f: AddressField) => setTouched(t => ({ ...t, [f]: true }));
 
@@ -249,9 +289,20 @@ const CheckoutPage = () => {
   // CheckoutSuccessPage), so there's no way to end up with an unpaid order.
   const handlePlaceOrder = async () => {
     setError("");
+    if (belowMinCharge) {
+      setError(minChargeNotice);
+      return;
+    }
+    if (isPickup && contactPhoneError) {
+      setContactPhoneTouched(true);
+      setError(contactPhoneError);
+      return;
+    }
     if (!isPickup && !addressComplete) {
-      // Reveal every field's error at once, then point at the first problem.
-      setTouched({ full_name: true, phone: true, address_line1: true, city: true, state: true, postal_code: true, country: true });
+      // Reveal every field's error at once, then point at the first problem. The
+      // form has to be open for that to be actionable when a saved address failed.
+      setEditingSaved(true);
+      setTouched(Object.fromEntries(ADDRESS_FIELDS.map(f => [f, true])));
       const firstError = Object.values(addressErrors)[0];
       setError(firstError ?? "Please complete your delivery address.");
       return;
@@ -259,16 +310,23 @@ const CheckoutPage = () => {
     setPlacing(true);
     track("begin_checkout", { total: +grandTotal.toFixed(2), items: count, fulfillment_type: fulfillment });
     try {
-      // Persist a newly entered address to the account first, if the shopper opted
-      // in. Best-effort: a save failure shouldn't block paying for the order.
+      // Persist the address-book side first, if the shopper opted in. Best-effort:
+      // a save failure shouldn't block paying for the order.
+      const normalized = normalizeAddress(address);
       if (isNewUnsavedAddress && saveToAccount) {
         try {
-          await createAddress({ ...address, make_default: saveChoice === "default" });
+          await createAddress({ ...normalized, make_default: saveChoice === "default" });
+        } catch { /* don't block checkout on an address-book write */ }
+      } else if (selectedSaved && savedAddressEdited && saveEdits) {
+        // Write corrections back so the same bad address doesn't come round again
+        // on the next order — the whole point of catching it here.
+        try {
+          await updateAddress(selectedSaved.id, normalized);
         } catch { /* don't block checkout on an address-book write */ }
       }
       const { url } = await createCheckoutSession({
         fulfillment_type: fulfillment,
-        shipping_address: isPickup ? undefined : address,
+        shipping_address: isPickup ? undefined : normalized,
         contact_phone: isPickup ? contactPhone : undefined,
         discount_code: appliedCode?.code,
         analytics: getAnalyticsIds(),
@@ -373,19 +431,25 @@ const CheckoutPage = () => {
                     {/* Saved-address picker — only when the shopper has an address book. */}
                     {savedAddresses.length > 0 && (
                       <div className="space-y-2">
-                        {savedAddresses.map(a => (
-                          <label key={a.id} className="flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors"
-                            style={{ border: `2px solid ${selectedAddressId === a.id ? "#e77600" : "#DDD"}`, background: selectedAddressId === a.id ? "#fff8f0" : "#fff" }}>
-                            <input type="radio" name="saved-address" checked={selectedAddressId === a.id} onChange={() => selectSavedAddress(a)} className="mt-1" />
-                            <div className="min-w-0">
-                              <p className="font-sans text-sm font-semibold" style={{ color: "#0F1111" }}>
-                                {a.full_name}
-                                {a.is_default && <span className="ml-2 font-sans text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: "#eef6ee", color: "#007600" }}>Default</span>}
-                              </p>
-                              <p className="font-sans text-xs" style={{ color: "#555" }}>{formatAddressLine(a)}</p>
-                            </div>
-                          </label>
-                        ))}
+                        {savedAddresses.map(a => {
+                          const tidied = toDeliveryAddress(a);
+                          const broken = Object.keys(validateDeliveryAddress(tidied)).length > 0;
+                          return (
+                            <label key={a.id} className="flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors"
+                              style={{ border: `2px solid ${selectedAddressId === a.id ? "#e77600" : "#DDD"}`, background: selectedAddressId === a.id ? "#fff8f0" : "#fff" }}>
+                              <input type="radio" name="saved-address" checked={selectedAddressId === a.id} onChange={() => selectSavedAddress(a)} className="mt-1" />
+                              <div className="min-w-0">
+                                <p className="font-sans text-sm font-semibold" style={{ color: "#0F1111" }}>
+                                  {a.full_name}
+                                  {a.is_default && <span className="ml-2 font-sans text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: "#eef6ee", color: "#007600" }}>Default</span>}
+                                  {broken && <span className="ml-2 font-sans text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: "#fdeeea", color: "#C7511F" }}>Needs details</span>}
+                                </p>
+                                <p className="font-sans text-xs" style={{ color: "#555" }}>{formatAddressOneLine(tidied)}</p>
+                                {tidied.phone && <p className="font-sans text-xs" style={{ color: "#888" }}>{formatPhoneDisplay(tidied.phone)}</p>}
+                              </div>
+                            </label>
+                          );
+                        })}
                         <label className="flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors"
                           style={{ border: `2px solid ${selectedAddressId === NEW_ADDRESS ? "#e77600" : "#DDD"}`, background: selectedAddressId === NEW_ADDRESS ? "#fff8f0" : "#fff" }}>
                           <input type="radio" name="saved-address" checked={selectedAddressId === NEW_ADDRESS} onChange={selectNewAddress} />
@@ -394,7 +458,43 @@ const CheckoutPage = () => {
                       </div>
                     )}
 
-                    <AddressFields value={address} errors={addressErrors} touched={touched} onChange={setAddress} onTouch={markTouched} />
+                    {/* A chosen saved address is read-only until "Edit" is pressed, so
+                        the highlighted card above and the parcel label can't diverge. */}
+                    {selectedSaved && !editingSaved && (
+                      <div className="p-4 rounded-lg" style={{ background: "#f8f8f8", border: "1px solid #eee" }}>
+                        <p className="font-sans text-xs font-semibold mb-2" style={{ color: "#555" }}>Delivering to</p>
+                        {formatAddressBlock(address).map(line => (
+                          <p key={line} className="font-sans text-sm" style={{ color: "#0F1111" }}>{line}</p>
+                        ))}
+                        <p className="font-sans text-sm mt-1" style={{ color: "#0F1111" }}>{formatPhoneDisplay(address.phone)}</p>
+                        <button type="button" onClick={() => { setEditingSaved(true); setTouched({}); }}
+                          className="mt-3 font-sans text-xs font-semibold underline" style={{ color: "#007185" }}>
+                          Edit these details
+                        </button>
+                      </div>
+                    )}
+
+                    {showAddressForm && (
+                      <>
+                        {selectedSaved && (
+                          <p className="font-sans text-xs" style={{ color: savedAddressBroken ? "#C7511F" : "#555" }}>
+                            {savedAddressBroken
+                              ? "This saved address is missing something a courier needs. Please complete it before paying."
+                              : `Editing “${selectedSaved.full_name}”.`}
+                          </p>
+                        )}
+                        <AddressFields value={address} errors={addressErrors} touched={touched} onChange={setAddress} onTouch={markTouched} />
+                      </>
+                    )}
+
+                    {/* Corrections to a saved address are written back by default, so the
+                        same undeliverable details don't reappear on the next order. */}
+                    {savedAddressEdited && (
+                      <label className="flex items-center gap-2 cursor-pointer p-3 rounded-lg" style={{ background: "#f8f8f8", border: "1px solid #eee" }}>
+                        <input type="checkbox" checked={saveEdits} onChange={e => setSaveEdits(e.target.checked)} />
+                        <span className="font-sans text-sm" style={{ color: "#0F1111" }}>Update this address in my address book too</span>
+                      </label>
+                    )}
 
                     {/* Offer to save a newly entered address to the account. Shown only
                         when the entered address is complete and isn't already saved. */}
@@ -430,13 +530,14 @@ const CheckoutPage = () => {
                     </div>
                     {pickup.notes && <p className="font-sans text-xs" style={{ color: "#555" }}><RichText text={pickup.notes} /></p>}
                     <div>
-                      <label className="font-sans text-xs font-semibold block mb-1" style={{ color: "#555" }}>Contact phone (for pickup notice)</label>
-                      <input value={contactPhone} inputMode="tel" autoComplete="tel"
-                        onChange={e => setContactPhone(e.target.value)} onBlur={() => markTouched("phone")}
-                        className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none"
-                        style={errStyle(contactPhone.trim() && !isPhoneValid(contactPhone) ? "invalid" : undefined)} />
-                      {contactPhone.trim() && !isPhoneValid(contactPhone) && (
-                        <p className="font-sans text-xs mt-1" style={{ color: "#C7511F" }}>Enter a valid phone number (7–15 digits).</p>
+                      <label htmlFor="pickup-phone" className="font-sans text-xs font-semibold block mb-1" style={{ color: "#555" }}>
+                        Contact phone (we ring you when the order is ready)
+                      </label>
+                      <PhoneInput id="pickup-phone" value={contactPhone} country={pickup.country}
+                        error={contactPhoneTouched ? contactPhoneError : undefined}
+                        onChange={setContactPhone} onBlur={() => setContactPhoneTouched(true)} />
+                      {contactPhoneTouched && contactPhoneError && (
+                        <p className="font-sans text-xs mt-1" style={{ color: "#C7511F" }}>{contactPhoneError}</p>
                       )}
                     </div>
                   </div>
@@ -485,7 +586,7 @@ const CheckoutPage = () => {
                       with the {bestNudge.bundle.name} bundle — save €{bestNudge.savings.toFixed(2)}.
                     </p>
                     <button onClick={handleAddNudge} disabled={addingNudge}
-                      className="shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
+                      className="og-tap justify-center shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
                       style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
                       {addingNudge ? "Adding…" : "Add & Save"}
                     </button>
@@ -564,11 +665,14 @@ const CheckoutPage = () => {
                       <span>Order total</span>
                       <span>€{grandTotal.toFixed(2)}</span>
                     </div>
+                    {belowMinCharge && (
+                      <p className="font-sans text-xs mt-1" style={{ color: "#C7511F" }}>{minChargeNotice}</p>
+                    )}
                   </div>
 
                   {error && <p className="font-sans text-sm" style={{ color: "#C7511F" }}>{error}</p>}
 
-                  <button onClick={handlePlaceOrder} disabled={placing}
+                  <button onClick={handlePlaceOrder} disabled={placing || belowMinCharge}
                     className="hidden lg:block w-full font-sans text-sm font-bold py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
                     style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
                     {placing ? "Redirecting to payment…" : `Continue to secure payment · €${grandTotal.toFixed(2)}`}
@@ -594,8 +698,10 @@ const CheckoutPage = () => {
       {user && items.length > 0 && (
         <div ref={bottomBarRef} className="lg:hidden fixed bottom-0 left-0 right-0 z-40 px-3 py-3"
           style={{ background: "#fff", borderTop: "1px solid #DDD", boxShadow: "0 -2px 12px rgba(0,0,0,0.08)" }}>
-          {error && <p className="font-sans text-xs mb-2 text-center" style={{ color: "#C7511F" }}>{error}</p>}
-          <button onClick={handlePlaceOrder} disabled={placing}
+          {(error || belowMinCharge) && (
+            <p className="font-sans text-xs mb-2 text-center" style={{ color: "#C7511F" }}>{error || minChargeNotice}</p>
+          )}
+          <button onClick={handlePlaceOrder} disabled={placing || belowMinCharge}
             className="w-full font-sans text-sm font-bold py-3 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
             style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
             {placing ? "Redirecting to payment…" : `Continue to secure payment · €${grandTotal.toFixed(2)}`}

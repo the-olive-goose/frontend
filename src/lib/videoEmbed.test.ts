@@ -5,7 +5,7 @@
 // (https://youtube.com/shorts/ID?si=…) sat live on the home page showing
 // nothing. These cases pin the shapes the field claims to accept.
 import { describe, it, expect } from "vitest";
-import { toEmbedUrl, isEmbedUrl, isDirectVideo } from "./defaults";
+import { toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled, DEFAULT_CONTENT } from "./defaults";
 
 /** What the rail does with a URL: iframe, <video>, or the empty placeholder. */
 const renderAs = (raw: string) => {
@@ -80,6 +80,27 @@ describe("toEmbedUrl — other sources", () => {
   it("does not mangle a Cloudinary URL that already names a file", () => {
     const raw = "https://res.cloudinary.com/demo/video/upload/v1/dog.mp4";
     expect(toEmbedUrl(raw)).toBe(raw);
+  });
+});
+
+// The section's on/off toggle is opt-OUT: every row already in the content table
+// was saved before the toggle existed and has no `enabled` key. If a missing key
+// read as "off", shipping the toggle would yank the reels off the live home page
+// on deploy — the same silent disappearance this file exists because of.
+describe("videos section toggle", () => {
+  it("is on when content predates the toggle (no `enabled` key)", () => {
+    expect(isVideosEnabled({} as { enabled?: boolean })).toBe(true);
+    expect(isVideosEnabled({ enabled: undefined })).toBe(true);
+  });
+
+  it("is on when explicitly enabled, off only when explicitly disabled", () => {
+    expect(isVideosEnabled({ enabled: true })).toBe(true);
+    expect(isVideosEnabled({ enabled: false })).toBe(false);
+  });
+
+  it("ships on by default in DEFAULT_CONTENT", () => {
+    expect(DEFAULT_CONTENT.videos.enabled).toBe(true);
+    expect(isVideosEnabled(DEFAULT_CONTENT.videos)).toBe(true);
   });
 });
 

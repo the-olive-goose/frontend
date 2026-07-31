@@ -13,6 +13,7 @@ import { productPath } from "@/lib/products";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import ProductCard from "@/components/ui/ProductCard";
+import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
 
 // ── Shop Page ──────────────────────────────────────────────────────────────────
@@ -37,10 +38,11 @@ const ShopPage = () => {
       getContent("navbar",          DEFAULT_CONTENT.navbar),
       getContent("footer",          DEFAULT_CONTENT.footer),
       getContent("products",        DEFAULT_CONTENT.products),
+      getContent("shopPage",        DEFAULT_CONTENT.shopPage),
       getShopCategories(),
       getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME),
-    ]).then(([announcementBar, navbar, footer, products, cats, theme]) => {
-      setContent(prev => ({ ...prev, announcementBar, navbar, footer, products }));
+    ]).then(([announcementBar, navbar, footer, products, shopPage, cats, theme]) => {
+      setContent(prev => ({ ...prev, announcementBar, navbar, footer, products, shopPage }));
       setAllProducts(products.items ?? []);
       setCategories(cats);
       if (theme) setCardTheme(theme);
@@ -67,6 +69,7 @@ const ShopPage = () => {
   })();
 
   const activeCat = categories.find(c => c.slug === activeSlug);
+  const isAllView = !searchTerm && activeSlug === "all";
 
   // Categories are often saved with all their moods in one "• a • b • c" string.
   // Split those back out so each mood is its own pill instead of one long pill
@@ -142,54 +145,36 @@ const ShopPage = () => {
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
 
-      {/* ── Hero ── */}
-      <div
-        className="w-full pt-[var(--nav-h,112px)]"
-        style={{ background: "var(--color-forest-dark)" }}
-      >
-        <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 py-10 sm:py-16 lg:py-20 text-center">
-          <motion.p
-            initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-            className="font-display text-xs tracking-[0.2em] uppercase mb-4"
-            style={{ color: "var(--color-gold)" }}
-          >
-            🕯️ &nbsp; The Collection &nbsp; 🕯️
-          </motion.p>
-          <motion.h1
-            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-            className="font-display font-semibold mb-4"
-            style={{ fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05 }}
-          >
-            {searchTerm ? `"${searchTerm}"` : activeSlug === "all" ? "All Candles" : (activeCat?.name ?? "Shop")}
-          </motion.h1>
-          <motion.p
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.18 }}
-            className="font-sans text-base max-w-md mx-auto leading-relaxed"
-            style={{ color: "rgba(245,239,230,0.7)" }}
-          >
-            {activeSlug === "all"
-              ? "Handpoured small-batch candles crafted for every mood, moment and era."
-              : (activeCat?.mood_description ?? "")}
-          </motion.p>
-        </div>
-      </div>
+      {/* ── Hero ── (shared band: owns the nav offset + page rhythm) */}
+      {/* Only the unfiltered view uses the configured headline — a search or a
+          category titles itself, so there is no gold half to apply. */}
+      <PageHero
+        eyebrow="The Collection"
+        title={searchTerm ? `"${searchTerm}"` : isAllView ? content.shopPage.page_title : (activeCat?.name ?? "Shop")}
+        titleGold={isAllView ? content.shopPage.page_title_gold : undefined}
+        subtitle={activeSlug === "all"
+          ? "Handpoured small-batch candles crafted for every mood, moment and era."
+          : (activeCat?.mood_description ?? "")}
+      />
 
       {/* ── Category filter pills ── */}
       {categories.length > 0 && (
         <div style={{ background: "var(--color-sage-mid)", borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
           <div className="max-w-7xl mx-auto px-6 sm:px-12 py-4 flex items-center gap-3 overflow-x-auto no-scrollbar">
-            {/* All pill */}
-            <button
-              onClick={() => setCategory("all")}
-              className="shrink-0 font-display text-sm font-semibold px-5 py-2 rounded-full transition-all"
-              style={{
-                background: activeSlug === "all" ? "var(--color-forest-dark)" : "rgba(255,255,255,0.22)",
-                color: activeSlug === "all" ? "var(--color-cream-text)" : "var(--color-forest-dark)",
-                border: "1.5px solid transparent",
-              }}
-            >
-              All
-            </button>
+            {/* An aggregate view is only useful when there is more than one category. */}
+            {categories.length > 1 && (
+              <button
+                onClick={() => setCategory("all")}
+                className="shrink-0 font-display text-sm font-semibold px-5 py-2 rounded-full transition-all"
+                style={{
+                  background: activeSlug === "all" ? "var(--color-forest-dark)" : "rgba(255,255,255,0.22)",
+                  color: activeSlug === "all" ? "var(--color-cream-text)" : "var(--color-forest-dark)",
+                  border: "1.5px solid transparent",
+                }}
+              >
+                All
+              </button>
+            )}
 
             {categories.map(cat => (
               <button
@@ -210,7 +195,7 @@ const ShopPage = () => {
       )}
 
       {/* ── Product grid ── */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 py-8 sm:py-14">
+      <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-12 pt-[var(--page-body-pt)] pb-8 sm:pb-14">
 
         {/* Category mood bar (when filtered).
             The mood line is deliberately NOT repeated here — the hero directly

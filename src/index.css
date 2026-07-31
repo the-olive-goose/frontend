@@ -114,6 +114,18 @@
     --space-14: 56px; --space-16: 64px; --space-20: 80px;
     --space-24: 96px; --space-32: 128px;
 
+    /* ── Page Chrome Rhythm ─────────────────────────────────────────
+       Every routed page renders the same three bands: the fixed nav (its
+       measured height is published as --nav-h by NavbarSection), a dark hero,
+       then the body. These two tokens own the hero's vertical padding and the
+       gap between the hero and the first body block, so the
+       nav → hero → content rhythm is byte-identical on every route.
+       Tune the rhythm here — never with per-page paddings, which is how the
+       Candle Care page drifted to a ~128px gap while Shop sat at ~32px. */
+
+    --page-hero-py: clamp(2.25rem, 4.5vw, 3.5rem);  /*  36 → 56px */
+    --page-body-pt: clamp(1.75rem, 3.5vw, 2.75rem); /*  28 → 44px */
+
     /* ── Border Radii ───────────────────────────────────────────── */
 
     --radius-pill:    100px;

@@ -1,8 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
+import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
+import RichText from "@/lib/richtext";
+import { resolveAboutFounder } from "@/lib/aboutFounder";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { breadcrumbJsonLd } from "@/lib/seo";
 
@@ -13,13 +17,26 @@ const fadeUp = (delay = 0) => ({
   transition: { duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94], delay },
 });
 
-// Above-the-fold hero content: animate immediately on mount (not on scroll),
-// otherwise the in-view observer may never fire for content already visible.
-const fadeIn = (delay = 0) => ({
-  initial: { opacity: 0, y: 24 },
-  animate: { opacity: 1, y: 0 },
-  transition: { duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94], delay },
-});
+const FounderCta = ({ href, text }: { href?: string; text?: string }) => {
+  if (!text) return null;
+  const isExternal = href?.startsWith("http://") || href?.startsWith("https://");
+  const className = "inline-flex items-center gap-2 font-display text-sm font-semibold px-6 py-3 rounded-full transition-all hover:opacity-90 hover:-translate-y-0.5";
+  const style = { background: "var(--color-forest-dark)", color: "var(--color-cream-text)" };
+
+  if (isExternal || (!href?.startsWith("/"))) {
+    return (
+      <a href={href || "#"} className={className} style={style}>
+        <RichText text={text} /> &nbsp;→
+      </a>
+    );
+  }
+
+  return (
+    <Link to={href || "/about"} className={className} style={style}>
+      <RichText text={text} /> &nbsp;→
+    </Link>
+  );
+};
 
 const AboutPage = () => {
   const [content, setContent] = useState(DEFAULT_CONTENT);
@@ -29,50 +46,59 @@ const AboutPage = () => {
       getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
       getContent("navbar",          DEFAULT_CONTENT.navbar),
       getContent("brandStory",      DEFAULT_CONTENT.brandStory),
+      getContent("aboutPage",       DEFAULT_CONTENT.aboutPage),
       getContent("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
+      getContent("aboutFounder",    DEFAULT_CONTENT.aboutFounder),
       getContent("footer",          DEFAULT_CONTENT.footer),
-    ]).then(([announcementBar, navbar, brandStory, welcomeClub, footer]) => {
-      setContent(prev => ({ ...prev, announcementBar, navbar, brandStory, welcomeClub, footer }));
+    ]).then(([announcementBar, navbar, brandStory, aboutPage, welcomeClub, aboutFounder, footer]) => {
+      setContent(prev => ({ ...prev, announcementBar, navbar, brandStory, aboutPage, welcomeClub, aboutFounder, footer }));
     });
   }, []);
 
   const story = content.brandStory;
-  const founder = content.welcomeClub;
+  const aboutPageContent = content.aboutPage;
+  const founder = resolveAboutFounder(content.aboutFounder, content.welcomeClub);
+
+  // The story CTA ("Learn More" by default) has no page to go to — it walks the
+  // reader down to the values strip, which leaves the maker section peeking in
+  // below it. A real (non-hash) link from the admin still navigates as written.
+  const valuesRef = useRef<HTMLElement>(null);
+  const scrollToStoryTarget = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    const href = story.cta_href || "#";
+    if (!href.startsWith("#")) return;
+    e.preventDefault();
+    const named = href.length > 1 ? document.querySelector(href) : null;
+    (named ?? valuesRef.current)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // "Meet the Founder" sits beside that CTA and jumps straight past the values
+  // strip to the maker block, for readers who came for the person, not the wax.
+  const founderRef = useRef<HTMLElement>(null);
+  const scrollToFounder = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    founderRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["Our Story", "/about"]]));
 
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
 
-      {/* ── Hero ── */}
-      <div className="w-full pt-[var(--nav-h,112px)]" style={{ background: "var(--color-forest-dark)" }}>
-        <div className="max-w-6xl mx-auto px-6 sm:px-12 py-16 sm:py-20 text-center">
-          <motion.p {...fadeIn(0)}
-            className="font-display text-xs tracking-[0.2em] uppercase mb-5"
-            style={{ color: "var(--color-gold)" }}
-          >
-            🕯️ &nbsp; Our Story &nbsp; 🕯️
-          </motion.p>
-          <motion.h1 {...fadeIn(0.1)}
-            className="font-display font-semibold mb-6"
-            style={{ fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05 }}
-          >
-            {story.headline}
-          </motion.h1>
-          <motion.p {...fadeIn(0.2)}
-            className="font-sans text-base leading-relaxed max-w-xl mx-auto"
-            style={{ color: "rgba(245,239,230,0.65)" }}
-          >
-            Handcrafted with intention. Poured with love. Made for moments that matter.
-          </motion.p>
-        </div>
-      </div>
+      {/* ── Hero ── (shared band: owns the nav offset + page rhythm) */}
+      <PageHero
+        eyebrow="Our Story"
+        title={aboutPageContent.page_title}
+        titleGold={aboutPageContent.page_title_gold}
+        subtitle={aboutPageContent.page_subtitle}
+      />
 
       {/* ── Brand story ── */}
-      <section className="max-w-6xl mx-auto px-6 sm:px-12 py-20 sm:py-28">
+      <section className="max-w-6xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-20 sm:pb-28">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-16 items-center">
           {/* Image */}
-          <motion.div {...fadeUp(0)} className="order-2 md:order-1">
+          {/* Photo leads on mobile — it sits above the story copy; on md+ it takes
+              the left column as before. */}
+          <motion.div {...fadeUp(0)}>
             <div
               className="w-full rounded-2xl overflow-hidden"
               style={{ aspectRatio: "4/5", background: "var(--color-sage-pale)" }}
@@ -88,7 +114,7 @@ const AboutPage = () => {
           </motion.div>
 
           {/* Text */}
-          <div className="order-1 md:order-2 space-y-6">
+          <div className="space-y-6">
             <motion.p {...fadeUp(0)}
               className="font-display text-xs tracking-[0.2em] uppercase"
               style={{ color: "var(--color-sage-light)" }}
@@ -109,21 +135,41 @@ const AboutPage = () => {
                 {para}
               </motion.p>
             ))}
-            {story.cta_text && (
-              <motion.a {...fadeUp(0.24)}
-                href={story.cta_href || "#"}
-                className="inline-flex items-center gap-2 font-display text-sm font-semibold px-6 py-3 rounded-full transition-all hover:opacity-90 hover:-translate-y-0.5"
-                style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
-              >
-                {story.cta_text} &nbsp;→
-              </motion.a>
-            )}
+            {/* Two buttons, one row — they wrap rather than shrink on narrow
+                phones so neither label is ever clipped. */}
+            <div className="flex flex-wrap items-center gap-3">
+              {story.cta_text && (
+                <motion.a {...fadeUp(0.24)}
+                  href={story.cta_href || "#values"}
+                  onClick={scrollToStoryTarget}
+                  className="inline-flex items-center gap-2 font-display text-sm font-semibold px-6 py-3 rounded-full transition-all hover:opacity-90 hover:-translate-y-0.5"
+                  style={{ background: "var(--color-forest-dark)", color: "var(--color-cream-text)" }}
+                >
+                  {story.cta_text} &nbsp;→
+                </motion.a>
+              )}
+              {founder.jump_cta_text && (
+                <motion.a {...fadeUp(0.3)}
+                  href="#meet-the-maker"
+                  onClick={scrollToFounder}
+                  className="inline-flex items-center gap-2 font-display text-sm font-semibold px-6 py-3 rounded-full border transition-all hover:opacity-80 hover:-translate-y-0.5"
+                  style={{ border: "1.5px solid var(--color-forest-dark)", color: "var(--color-forest-dark)" }}
+                >
+                  <RichText text={founder.jump_cta_text} /> &nbsp;↓
+                </motion.a>
+              )}
+            </div>
           </div>
         </div>
       </section>
 
-      {/* ── Values strip ── */}
-      <section style={{ background: "var(--color-sage-mid)" }}>
+      {/* ── Values strip ── (scroll target for the story CTA; scroll-margin keeps
+           the heading clear of the fixed nav) */}
+      <section
+        id="values"
+        ref={valuesRef}
+        style={{ background: "var(--color-sage-mid)", scrollMarginTop: "var(--nav-h, 112px)" }}
+      >
         <div className="max-w-6xl mx-auto px-6 sm:px-12 py-16 sm:py-20">
           <motion.h2 {...fadeUp(0)}
             className="font-serif text-2xl sm:text-3xl text-center mb-12"
@@ -150,49 +196,93 @@ const AboutPage = () => {
         </div>
       </section>
 
-      {/* ── Founder ── */}
-      <section className="max-w-6xl mx-auto px-6 sm:px-12 py-20 sm:py-28">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-16 items-center">
-          <div className="space-y-6">
-            <motion.p {...fadeUp(0)}
-              className="font-display text-xs tracking-[0.2em] uppercase"
-              style={{ color: "var(--color-sage-light)" }}
-            >
-              Meet the maker
-            </motion.p>
-            <motion.h2 {...fadeUp(0.08)}
-              className="font-serif font-semibold"
-              style={{ fontSize: "clamp(1.8rem,3.5vw,2.8rem)", color: "var(--color-forest-dark)", lineHeight: 1.15 }}
-            >
-              {founder.headline}
-            </motion.h2>
-            <motion.p {...fadeUp(0.14)}
-              className="font-sans text-base font-medium"
-              style={{ color: "var(--color-forest-dark)" }}
-            >
-              {founder.name_line}
-            </motion.p>
-            <motion.p {...fadeUp(0.18)}
-              className="font-sans text-base leading-relaxed"
-              style={{ color: "rgba(30,41,24,0.72)" }}
-            >
-              {founder.bio}
-            </motion.p>
-            {founder.cta_text && (
-              <motion.a {...fadeUp(0.24)}
-                href={founder.cta_href || "#"}
-                className="inline-flex items-center gap-2 font-display text-sm font-semibold px-6 py-3 rounded-full border transition-all hover:opacity-80"
-                style={{ border: "1.5px solid var(--color-forest-dark)", color: "var(--color-forest-dark)" }}
-              >
-                {founder.cta_text} &nbsp;→
-              </motion.a>
+      {/* ── Meet the maker ── (scroll target for the "Meet the Founder" button;
+           one centred column so the reading order — label, face, greeting, name,
+           bio, button — is the same on a phone as on a desktop) */}
+      {founder.mirrored ? (
+        <section
+          id="meet-the-maker"
+          ref={founderRef}
+          className="max-w-3xl mx-auto px-6 sm:px-12 py-20 sm:py-28 text-center"
+          style={{ scrollMarginTop: "var(--nav-h, 112px)" }}
+        >
+        <motion.p {...fadeUp(0)}
+          className="font-display text-xs tracking-[0.2em] uppercase"
+          style={{ color: "var(--color-sage-light)" }}
+        >
+          <RichText text={founder.label} />
+        </motion.p>
+
+        <motion.div {...fadeUp(0.06)} className="mt-8 mb-8 flex justify-center">
+          <div
+            className="rounded-full overflow-hidden"
+            style={{
+              width: "min(300px, 68vw)",
+              aspectRatio: "1/1",
+              background: "var(--color-sage-pale)",
+              border: "3px solid rgba(255,255,255,0.6)",
+            }}
+          >
+            {founder.photo_url ? (
+              <img src={founder.photo_url} alt="The founder of The Olive Goose" loading="lazy" decoding="async" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <span style={{ fontSize: "5rem", opacity: 0.35 }}>🌿</span>
+              </div>
             )}
           </div>
+        </motion.div>
 
-          <motion.div {...fadeUp(0.1)}>
+        <motion.h2 {...fadeUp(0.12)}
+          className="font-serif font-semibold"
+          style={{ fontSize: "clamp(1.8rem,3.5vw,2.8rem)", color: "var(--color-forest-dark)", lineHeight: 1.15 }}
+        >
+          <RichText text={founder.headline} />
+        </motion.h2>
+
+        <motion.p {...fadeUp(0.16)}
+          className="font-sans text-base font-medium mt-5"
+          style={{ color: "var(--color-forest-dark)" }}
+        >
+          <RichText text={founder.name_line} />
+        </motion.p>
+
+        <motion.p {...fadeUp(0.2)}
+          className="font-sans text-base leading-relaxed mt-4"
+          style={{ color: "rgba(30,41,24,0.72)" }}
+        >
+          <RichText text={founder.bio} />
+        </motion.p>
+
+        {founder.cta_text && (
+          <motion.div {...fadeUp(0.26)} className="mt-8">
+            <FounderCta href={founder.cta_href} text={founder.cta_text} />
+          </motion.div>
+        )}
+      </section>
+      ) : (
+        <section
+          id="meet-the-maker"
+          ref={founderRef}
+          className="max-w-3xl mx-auto px-6 sm:px-12 py-20 sm:py-28 text-center"
+          style={{ scrollMarginTop: "var(--nav-h, 112px)" }}
+        >
+          <motion.p {...fadeUp(0)}
+            className="font-display text-xs tracking-[0.2em] uppercase"
+            style={{ color: "var(--color-sage-light)" }}
+          >
+            <RichText text={founder.label} />
+          </motion.p>
+
+          <motion.div {...fadeUp(0.06)} className="mt-8 mb-8 flex justify-center">
             <div
-              className="w-full rounded-full overflow-hidden mx-auto"
-              style={{ width: "min(380px, 100%)", aspectRatio: "1/1", background: "var(--color-sage-pale)" }}
+              className="rounded-full overflow-hidden"
+              style={{
+                width: "min(300px, 68vw)",
+                aspectRatio: "1/1",
+                background: "var(--color-sage-pale)",
+                border: "3px solid rgba(255,255,255,0.6)",
+              }}
             >
               {founder.photo_url ? (
                 <img src={founder.photo_url} alt="The founder of The Olive Goose" loading="lazy" decoding="async" className="w-full h-full object-cover" />
@@ -203,8 +293,35 @@ const AboutPage = () => {
               )}
             </div>
           </motion.div>
-        </div>
-      </section>
+
+          <motion.h2 {...fadeUp(0.12)}
+            className="font-serif font-semibold"
+            style={{ fontSize: "clamp(1.8rem,3.5vw,2.8rem)", color: "var(--color-forest-dark)", lineHeight: 1.15 }}
+          >
+            <RichText text={founder.headline} />
+          </motion.h2>
+
+          <motion.p {...fadeUp(0.16)}
+            className="font-sans text-base font-medium mt-5"
+            style={{ color: "var(--color-forest-dark)" }}
+          >
+            <RichText text={founder.name_line} />
+          </motion.p>
+
+          <motion.p {...fadeUp(0.2)}
+            className="font-sans text-base leading-relaxed mt-4"
+            style={{ color: "rgba(30,41,24,0.72)" }}
+          >
+            <RichText text={founder.bio} />
+          </motion.p>
+
+          {founder.cta_text && (
+            <motion.div {...fadeUp(0.26)} className="mt-8">
+              <FounderCta href={founder.cta_href} text={founder.cta_text} />
+            </motion.div>
+          )}
+        </section>
+      )}
 
       <FooterSection data={content.footer} />
     </div>

@@ -43,7 +43,7 @@ const DELIVERY = {
   fulfillment_type: "delivery",
   shipping_address: {
     full_name: "E2E Shopper", phone: "+353851234567", address_line1: "1 Test Street",
-    city: "Dublin", postal_code: "D01AB12", country: "Ireland",
+    city: "Dublin", state: "Dublin", postal_code: "D01 F5P2", country: "Ireland",
   },
 };
 
@@ -179,6 +179,30 @@ test.describe("Pickup vs delivery", () => {
     expect(Array.isArray(orders)).toBeTruthy();
   });
 
+  // Regression: a €0.30 candle checked out for pickup sent Stripe a €0.30 session,
+  // which it refuses ("amount_too_small"), and the shopper got a bare
+  // "Something went wrong. Please try again." The same basket pays fine for
+  // delivery, because the shipping line lifts it over Stripe's €0.50 floor.
+  test("a basket under Stripe's minimum is refused with the reason, not a 500", async () => {
+    await admin.put(`/api/content/pickupSettings`, {
+      headers: auth(TOKEN), data: { ...originalPickup, enabled: true, discount_percent: 0 },
+    });
+    const cheap = { ...P, price: "0.30" };
+    await setProducts((originalProducts.items ?? []).map((p) => (p.id === P.id ? cheap : p)));
+    await setCart(cheap, 1);
+
+    const res = await shopper.post(`/api/checkout/session`, {
+      data: { fulfillment_type: "pickup", contact_phone: "+353851234567" },
+    });
+    expect(res.status(), `must be a stated 400, not a masked 500: ${await res.text()}`).toBe(400);
+    expect((await res.json()).error).toMatch(/at least €0\.50/i);
+
+    // The identical basket still reaches payment for delivery, where shipping applies.
+    const delivery = await shopper.post(`/api/checkout/session`, { data: DELIVERY });
+    expect(delivery.ok(), `delivery must still succeed: ${await delivery.text()}`).toBeTruthy();
+    await restoreCatalog();
+  });
+
   test("pickup is refused while it is switched off", async () => {
     await admin.put(`/api/content/pickupSettings`, {
       headers: auth(TOKEN), data: { ...originalPickup, enabled: false },
@@ -192,19 +216,77 @@ test.describe("Pickup vs delivery", () => {
     expect((await res.json()).error).toMatch(/not available/i);
   });
 
+  // The address stored on the order is what dispatch prints, so the API applies
+  // the same rules the checkout form does — a caller that skips the form can't
+  // put an undeliverable address on a paid order.
   test("delivery without a usable address is refused", async () => {
     await setCart(P, 1);
 
-    for (const shipping_address of [
-      {},
-      { full_name: "No Street", city: "Dublin", country: "Ireland" },      // no line 1
-      { full_name: "No City", address_line1: "1 Test Street", country: "Ireland" }, // no city
-    ]) {
+    const bad: [Record<string, string>, RegExp][] = [
+      // An omitted address falls back to the account profile, which carries a
+      // name but no delivery details — so the phone is the first thing missing.
+      [{}, /courier/i],
+      [{ ...DELIVERY.shipping_address, address_line1: "" }, /street address/i],
+      [{ ...DELIVERY.shipping_address, city: "" }, /city or town/i],
+      // Junk that satisfied the old "line 1 and city are non-empty" check.
+      [{ ...DELIVERY.shipping_address, address_line1: "4444" }, /street name/i],
+      [{ ...DELIVERY.shipping_address, city: "d" }, /city or town/i],
+      // A number no courier can ring: ten digits is not an Irish number.
+      [{ ...DELIVERY.shipping_address, phone: "6666666666" }, /valid Ireland number/i],
+      [{ ...DELIVERY.shipping_address, phone: "" }, /courier/i],
+      // Ireland needs a county, and the Eircode has to be a real one.
+      [{ ...DELIVERY.shipping_address, state: "" }, /county/i],
+      [{ ...DELIVERY.shipping_address, postal_code: "12345" }, /Eircode/i],
+      // A Dublin Eircode filed under another county.
+      [{ ...DELIVERY.shipping_address, state: "Cork" }, /County Dublin, not Cork/i],
+      [{ ...DELIVERY.shipping_address, country: "Narnia" }, /we ship to/i],
+    ];
+
+    for (const [shipping_address, expected] of bad) {
       const res = await shopper.post(`/api/checkout/session`, {
         data: { fulfillment_type: "delivery", shipping_address },
       });
       expect(res.status(), `address ${JSON.stringify(shipping_address)} must be refused`).toBe(400);
-      expect((await res.json()).error).toMatch(/delivery address/i);
+      expect((await res.json()).error, `message for ${JSON.stringify(shipping_address)}`).toMatch(expected);
+    }
+  });
+
+  // The number on the order is normalized before it is stored, so ops never has
+  // to guess whether "087…" is Irish, and the courier can dial it as-is.
+  test("a delivery phone is stored in E.164 whatever the shopper typed", async () => {
+    await setCart(P, 1);
+    const res = await shopper.post(`/api/checkout/session`, {
+      data: {
+        ...DELIVERY,
+        shipping_address: { ...DELIVERY.shipping_address, phone: "087 123 4567", postal_code: "d01f5p2" },
+      },
+    });
+    expect(res.ok(), `checkout must accept a nationally-formatted number: ${await res.text()}`).toBeTruthy();
+
+    // The order row only exists once Stripe confirms, so assert the normalization
+    // through the address book — the same normalizer runs on both paths.
+    const saved = await shopper.post(`/api/user/addresses`, {
+      data: { ...DELIVERY.shipping_address, phone: "087 123 4567", postal_code: "d01f5p2" },
+    });
+    expect(saved.ok(), `saving must succeed: ${await saved.text()}`).toBeTruthy();
+    const body = await saved.json();
+    expect(body.phone, "a national number is stored dialable").toBe("+353871234567");
+    expect(body.postal_code, "the Eircode is stored canonically").toBe("D01 F5P2");
+    await shopper.delete(`/api/user/addresses/${body.id}`);
+  });
+
+  test("the address book refuses what checkout refuses", async () => {
+    for (const [patch, expected] of [
+      [{ address_line1: "4444" }, /street name/i],
+      [{ city: "d" }, /city or town/i],
+      [{ phone: "6666666666" }, /valid Ireland number/i],
+      [{ state: "" }, /county/i],
+    ] as [Record<string, string>, RegExp][]) {
+      const res = await shopper.post(`/api/user/addresses`, {
+        data: { ...DELIVERY.shipping_address, ...patch },
+      });
+      expect(res.status(), `address book must refuse ${JSON.stringify(patch)}`).toBe(400);
+      expect((await res.json()).error).toMatch(expected);
     }
   });
 

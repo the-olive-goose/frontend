@@ -21,6 +21,7 @@
  */
 
 import { test, expect, devices, Page } from "@playwright/test";
+import { fillDeliveryAddress } from "./address-form";
 
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
 const API = process.env.E2E_API ?? "http://localhost:3001";
@@ -33,6 +34,28 @@ test.use({
   viewport: devices["iPhone 13"].viewport,
   hasTouch: true,
   isMobile: true,
+});
+
+// The storefront has two bottom-anchored overlays that both appear on a timer:
+// the cookie banner (CookieConsent, z-110) and the newsletter card
+// (SubscribePopupCard). On a phone each spans `left-4 right-4` and lands
+// squarely over the mobile menu's "Sign In / Sign Up" button — so whether a test
+// could click that button was a race against an animation, and Playwright would
+// retry the click into the banner for the full 60s timeout when it lost.
+//
+// Seed both dismissal keys before any navigation. It has to be BOTH: the
+// newsletter card deliberately holds itself back until the cookie key exists
+// (it polls for it), so dismissing the banner alone would only swap one
+// bottom-anchored overlay for the other and move the flake rather than fix it.
+// Seeding, rather than clicking Accept, means there is no window in which the
+// overlay exists at all.
+test.beforeEach(async ({ context }) => {
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem("og_cookie_consent", "accepted");     // CookieConsent
+      localStorage.setItem("og_subscribe_popup_dismissed", "1"); // SubscribePopupCard
+    } catch { /* storage blocked — the overlays are this test's problem again */ }
+  });
 });
 
 /** Pages every visitor can reach without signing in. */
@@ -392,12 +415,9 @@ test.describe("Mobile purchase journey", () => {
     await expect(page).toHaveURL(/\/checkout/, { timeout: 15_000 });
 
     // Fill the delivery address on a phone-width form.
-    await page.getByPlaceholder("Full name").fill("E2E Mobile Shopper");
-    await page.getByPlaceholder("Phone").fill("+353851234567");
-    await page.getByPlaceholder("Address line 1").fill("1 Test Street");
-    await page.locator("select").filter({ hasText: "Select country" }).selectOption("Ireland");
-    await page.getByPlaceholder("City").fill("Dublin");
-    await page.getByPlaceholder("Eircode").fill("D18 K7W2");
+    // Every field is labelled, so address them by label rather than placeholder.
+    // Country first: it drives the county dropdown and the Eircode rules below it.
+    await fillDeliveryAddress(page, "E2E Mobile Shopper");
 
     // No sideways scroll once the form is populated either.
     expect(await horizontalOverflow(page), "checkout overflows horizontally when filled")

@@ -51,6 +51,7 @@ import {
   type AutomationSettings,
   type AdminDecision,
 } from "@/lib/api";
+import { formatAddressBlock, formatPhoneDisplay } from "@/lib/addressValidation";
 import {
   DEFAULT_CONTENT,
   DEFAULT_DEALS,
@@ -66,8 +67,12 @@ import {
   type MomentPillContent,
   type WelcomeClubContent,
   type BrandStoryContent,
+  type AboutPageContent,
+  type AboutFounderContent,
+  type OurStoryPageContent,
   type ProductsContent,
   type ProductPageContent,
+  type ShopPageContent,
   type CandleCareContent,
   type VideosContent,
   type TestimonialsContent,
@@ -95,6 +100,275 @@ import { RichInput, RichTextarea } from "@/components/admin/RichTextInput";
 import AnalyticsPanel from "@/components/admin/AnalyticsPanel";
 import logo from "@/assets/logo.jpg";
 import { DEFAULT_SCRAPBOOK_SETTINGS, type ScrapbookSettings } from "@/components/sections/ScrapbookSection";
+
+const AboutPageEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: AboutPageContent;
+  onChange: (d: AboutPageContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="About" desc="The hero banner copy for the About page, including the page title shown in the shared page hero." />
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Page Title (plain)" hint={`e.g. "Our Story"`}>
+        <RichInput value={data.page_title} onChange={(e) => onChange({ ...data, page_title: e.target.value })} />
+      </Field>
+      <Field label="Page Title (gold)" hint={`e.g. "About" — shown in gold after the plain part`}>
+        <RichInput value={data.page_title_gold} onChange={(e) => onChange({ ...data, page_title_gold: e.target.value })} />
+      </Field>
+    </div>
+    <Field label="Page Subtitle" hint="Shown underneath the hero title on the About page">
+      <RichTextarea rows={2} value={data.page_subtitle} onChange={(e) => onChange({ ...data, page_subtitle: e.target.value })} />
+    </Field>
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const AboutFounderEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: AboutFounderContent;
+  onChange: (d: AboutFounderContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Meet the Maker" desc="Controls the founder block on the About page, including whether it mirrors the home-page welcome section or uses its own content." />
+    <label className="flex items-center gap-2 text-sm text-foreground">
+      <input
+        type="checkbox"
+        checked={data.use_home_content !== false}
+        onChange={(e) => onChange({ ...data, use_home_content: e.target.checked })}
+      />
+      Use the Home Page Welcome section for this block
+    </label>
+    <Field label="Section Label" hint="Small uppercase label above the block">
+      <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+    </Field>
+    <Field label="Headline" hint={data.use_home_content === false ? "Shown in the founder block when using your own content" : "Shown when using the Home Page Welcome content"}>
+      <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+    </Field>
+    <Field label="Founder Photo URL" hint="Circular profile photo — paste a direct image URL">
+      <Input placeholder="https://…" value={data.photo_url} onChange={(e) => onChange({ ...data, photo_url: e.target.value })} />
+    </Field>
+    <Field label="Name Line">
+      <RichInput value={data.name_line} onChange={(e) => onChange({ ...data, name_line: e.target.value })} />
+    </Field>
+    <Field label="Bio">
+      <RichTextarea rows={3} value={data.bio} onChange={(e) => onChange({ ...data, bio: e.target.value })} />
+    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Story Button Text">
+        <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+      </Field>
+      <Field label="Story Button Link">
+        <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+      </Field>
+    </div>
+    <Field label="Jump Button Text" hint="The button that scrolls to the founder block from the About page intro">
+      <Input value={data.jump_cta_text} onChange={(e) => onChange({ ...data, jump_cta_text: e.target.value })} />
+    </Field>
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
+const OurStoryPageEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+  onError,
+}: {
+  data: OurStoryPageContent;
+  onChange: (d: OurStoryPageContent) => void;
+  onSave: () => void;
+  saving: boolean;
+  onError: (message: string) => void;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading title="Founder Diary" desc="The page shown when the founder block's story button is clicked — styled like the other site pages." />
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Page Label" hint="Small uppercase label above the hero title">
+        <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+      </Field>
+      <Field label="Page Title (gold)" hint={`e.g. "Studio" — shown in gold after the plain part`}>
+        <RichInput value={data.page_title_gold} onChange={(e) => onChange({ ...data, page_title_gold: e.target.value })} />
+      </Field>
+    </div>
+    <Field label="Page Title (plain)" hint={`e.g. "A Day in the"`}>
+      <RichInput value={data.page_title} onChange={(e) => onChange({ ...data, page_title: e.target.value })} />
+    </Field>
+    <Field label="Page Subtitle">
+      <RichTextarea rows={2} value={data.page_subtitle} onChange={(e) => onChange({ ...data, page_subtitle: e.target.value })} />
+    </Field>
+    <Field label="Intro" hint="First paragraph shown under the hero section">
+      <RichTextarea rows={4} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
+    </Field>
+    <div className="space-y-4 rounded-xl border border-border bg-card/50 p-4">
+      <div>
+        <h3 className="font-display text-base text-foreground">Intro details</h3>
+        <p className="mt-1 text-xs font-sans text-muted-foreground">Everything above the candle, including the small tags and headline.</p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="First Tag">
+          <RichInput value={data.intro_tag_primary} onChange={(e) => onChange({ ...data, intro_tag_primary: e.target.value })} />
+        </Field>
+        <Field label="Second Tag">
+          <RichInput value={data.intro_tag_secondary} onChange={(e) => onChange({ ...data, intro_tag_secondary: e.target.value })} />
+        </Field>
+        <Field label="Intro Headline (plain)">
+          <RichInput value={data.intro_headline} onChange={(e) => onChange({ ...data, intro_headline: e.target.value })} />
+        </Field>
+        <Field label="Intro Headline (gold)">
+          <RichInput value={data.intro_headline_gold} onChange={(e) => onChange({ ...data, intro_headline_gold: e.target.value })} />
+        </Field>
+      </div>
+      <Field label="Candle Prompt" hint="Small line below the intro copy">
+        <RichInput value={data.intro_hint} onChange={(e) => onChange({ ...data, intro_hint: e.target.value })} />
+      </Field>
+    </div>
+    <div className="space-y-4 rounded-xl border border-border bg-card/50 p-4">
+      <div>
+        <h3 className="font-display text-base text-foreground">Interactive Candle</h3>
+        <p className="mt-1 text-xs font-sans text-muted-foreground">Controls all copy in the unbox → light → blow-out journey that unlocks the diary.</p>
+      </div>
+      <Field label="Candle Card Label">
+        <RichInput value={data.candle_label} onChange={(e) => onChange({ ...data, candle_label: e.target.value })} />
+      </Field>
+      <SeoImageField
+        label="Café Candle Artwork"
+        hint="The product photograph used as the interactive candle. Upload a replacement or paste a direct image URL."
+        value={data.candle_image_url}
+        previewClass="h-24 w-20 rounded-lg"
+        onError={onError}
+        onChange={(candle_image_url) => onChange({ ...data, candle_image_url })}
+      />
+      {([
+        ["wrapped", "Unboxing"],
+        ["ready", "Ready to light"],
+        ["lit", "Lit candle"],
+      ] as const).map(([stage, label]) => (
+        <div key={stage} className="grid gap-3 rounded-lg border border-border bg-background p-3 sm:grid-cols-3">
+          <Field label={`${label} title`}>
+            <RichInput value={data[`candle_${stage}_title`]} onChange={(e) => onChange({ ...data, [`candle_${stage}_title`]: e.target.value })} />
+          </Field>
+          <Field label={`${label} button`}>
+            <RichInput value={data[`candle_${stage}_action`]} onChange={(e) => onChange({ ...data, [`candle_${stage}_action`]: e.target.value })} />
+          </Field>
+          <Field label={`${label} note`}>
+            <RichInput value={data[`candle_${stage}_note`]} onChange={(e) => onChange({ ...data, [`candle_${stage}_note`]: e.target.value })} />
+          </Field>
+        </div>
+      ))}
+      <Field label="Celebration Message" hint="Appears with the confetti after the candle is blown out.">
+        <RichInput value={data.celebration_message} onChange={(e) => onChange({ ...data, celebration_message: e.target.value })} />
+      </Field>
+    </div>
+    <div className="space-y-4 rounded-xl border border-border bg-card/50 p-4">
+      <div>
+        <h3 className="font-display text-base text-foreground">Photo Diary heading</h3>
+        <p className="mt-1 text-xs font-sans text-muted-foreground">This area appears after the candle is blown out.</p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Diary Label">
+          <RichInput value={data.diary_label} onChange={(e) => onChange({ ...data, diary_label: e.target.value })} />
+        </Field>
+        <Field label="Diary Headline">
+          <RichInput value={data.diary_headline} onChange={(e) => onChange({ ...data, diary_headline: e.target.value })} />
+        </Field>
+      </div>
+      <Field label="Diary Interaction Hint">
+        <RichInput value={data.diary_hint} onChange={(e) => onChange({ ...data, diary_hint: e.target.value })} />
+      </Field>
+      <Field label="Empty Diary Message">
+        <RichInput value={data.diary_empty_message} onChange={(e) => onChange({ ...data, diary_empty_message: e.target.value })} />
+      </Field>
+    </div>
+    <Field label="Closing Label" hint="Small uppercase text above the final diary message">
+      <RichInput value={data.closing_label} onChange={(e) => onChange({ ...data, closing_label: e.target.value })} />
+    </Field>
+    <Field label="Closing Headline">
+      <RichInput value={data.closing_headline} onChange={(e) => onChange({ ...data, closing_headline: e.target.value })} />
+    </Field>
+    <Field label="Closing Body">
+      <RichTextarea rows={3} value={data.closing_body} onChange={(e) => onChange({ ...data, closing_body: e.target.value })} />
+    </Field>
+    <div className="space-y-4 rounded-xl border border-border bg-card/50 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-display text-base text-foreground">Daily Photo Diary</h3>
+          <p className="mt-1 text-xs font-sans text-muted-foreground">These images become the interactive photo wall on the Our Story page. Visitors can open each one full-screen.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => onChange({
+            ...data,
+            photos: [...data.photos, { id: `diary-${Date.now()}-${data.photos.length}`, image_url: "", caption: "" }],
+          })}
+          className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 font-sans text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+        >
+          + Add photo
+        </button>
+      </div>
+      {data.photos.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center font-sans text-sm text-muted-foreground">No diary photos yet — add a photo URL to start the wall.</p>
+      ) : (
+        <div className="space-y-3">
+          {data.photos.map((photo, index) => (
+            <div key={photo.id || index} className="grid gap-3 rounded-lg border border-border bg-background p-3 sm:grid-cols-[112px_1fr_auto] sm:items-center">
+              <div className="aspect-[4/3] overflow-hidden rounded-md bg-muted">
+                {photo.image_url ? <img src={photo.image_url} alt="Diary preview" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-xl">📷</div>}
+              </div>
+              <div className="space-y-2">
+                <SeoImageField
+                  label={`Diary photo ${index + 1}`}
+                  hint="Paste a direct image URL or upload a studio snapshot."
+                  value={photo.image_url}
+                  previewClass="hidden"
+                  onError={onError}
+                  onChange={(image_url) => {
+                    const photos = [...data.photos];
+                    photos[index] = { ...photo, image_url };
+                    onChange({ ...data, photos });
+                  }}
+                />
+                <RichInput placeholder="Caption — make it feel like a little diary note" value={photo.caption} onChange={(e) => {
+                  const photos = [...data.photos];
+                  photos[index] = { ...photo, caption: e.target.value };
+                  onChange({ ...data, photos });
+                }} />
+              </div>
+              <button
+                type="button"
+                onClick={() => onChange({ ...data, photos: data.photos.filter((_, photoIndex) => photoIndex !== index) })}
+                className="justify-self-end rounded-lg px-3 py-2 font-sans text-xs text-destructive transition-colors hover:bg-destructive/10"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Call to Action Text">
+        <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+      </Field>
+      <Field label="Call to Action Link">
+        <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+      </Field>
+    </div>
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
 
 // ── Shared UI helpers ──────────────────────────────────────────────────────────
 
@@ -471,7 +745,15 @@ const BrandStoryEditor = ({
   saving: boolean;
 }) => (
   <div className="space-y-6">
-    <SectionHeading title="Brand Story" desc="The 'Our Story' two-column section." />
+    <SectionHeading title="Brand Story" desc="The 'Our Story' two-column section, plus the banner headline on the About page it feeds." />
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="About Page Title (plain)" hint={`Banner on /about — e.g. "From Café Moments to"`}>
+        <RichInput value={data.page_title} onChange={(e) => onChange({ ...data, page_title: e.target.value })} />
+      </Field>
+      <Field label="About Page Title (gold)" hint={`e.g. "Candle Glow" — shown in gold after the plain part`}>
+        <RichInput value={data.page_title_gold} onChange={(e) => onChange({ ...data, page_title_gold: e.target.value })} />
+      </Field>
+    </div>
     <Field label="Section Label" hint="Small uppercase label above the headline">
       <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
     </Field>
@@ -492,7 +774,7 @@ const BrandStoryEditor = ({
       <Field label="CTA Button Text">
         <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
       </Field>
-      <Field label="CTA Button Link">
+      <Field label="CTA Button Link" hint={`On /about, "#values" (or any "#" link) scrolls down to "What we believe in"`}>
         <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
       </Field>
     </div>
@@ -841,6 +1123,34 @@ const WelcomeClubEditor = ({
   </div>
 );
 
+const ShopPageEditor = ({
+  data,
+  onChange,
+  onSave,
+  saving,
+}: {
+  data: ShopPageContent;
+  onChange: (d: ShopPageContent) => void;
+  onSave: () => void;
+  saving: boolean;
+}) => (
+  <div className="space-y-6">
+    <SectionHeading
+      title="Shop Banner"
+      desc="The headline on the Shop page. It titles the unfiltered view — searching or picking a category titles the page after the search term or category instead."
+    />
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Page Title (plain)" hint={`e.g. "All"`}>
+        <RichInput value={data.page_title} onChange={(e) => onChange({ ...data, page_title: e.target.value })} />
+      </Field>
+      <Field label="Page Title (gold)" hint={`e.g. "Candles" — shown in gold after the plain part`}>
+        <RichInput value={data.page_title_gold} onChange={(e) => onChange({ ...data, page_title_gold: e.target.value })} />
+      </Field>
+    </div>
+    <SaveButton onClick={onSave} saving={saving} />
+  </div>
+);
+
 const CandleCareEditor = ({
   data,
   onChange,
@@ -934,7 +1244,20 @@ const VideosEditor = ({
 }) => {
   return (
     <div className="space-y-6">
-      <SectionHeading title="Videos" desc="Paste a video URL for each item — a direct .mp4 / .webm URL, or a YouTube or Vimeo link. Reels play automatically, muted and looping; tapping one opens it full screen with sound." />
+      <SectionHeading title="Videos" desc="Paste a video URL for each item — a direct .mp4 / .webm URL, or a YouTube link in any form (watch, youtu.be or Shorts), or a Vimeo link. Reels play automatically, muted and looping; tapping one opens it full screen with sound." />
+
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          // Absent means on, so content saved before this toggle existed keeps
+          // showing its reels — see isVideosEnabled.
+          checked={data.enabled !== false}
+          onChange={(e) => onChange({ ...data, enabled: e.target.checked })}
+          className="accent-primary"
+        />
+        <span className="text-sm font-sans text-foreground">Show the videos section on the home page</span>
+      </label>
+
       <Field label="Section Label">
         <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
       </Field>
@@ -1297,9 +1620,14 @@ const ReturnPolicyEditor = ({
 }) => (
   <div className="space-y-6">
     <SectionHeading title="Return Policy" desc="Content shown on the Returns & Refunds page, plus the return-request form." />
-    <Field label="Heading">
-      <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
-    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Heading (plain)" hint={`e.g. "Delivery &"`}>
+        <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+      </Field>
+      <Field label="Heading (gold)" hint={`e.g. "Returns" — shown in gold after the plain part`}>
+        <RichInput value={data.heading_gold} onChange={(e) => onChange({ ...data, heading_gold: e.target.value })} />
+      </Field>
+    </div>
     <Field label="Intro">
       <RichTextarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
     </Field>
@@ -1362,9 +1690,14 @@ const LegalPageEditor = ({
   <div className="space-y-6">
     <SectionHeading title={title} desc={desc} />
     <OfferTokenHint />
-    <Field label="Heading">
-      <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
-    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Heading (plain)" hint={`e.g. "Privacy"`}>
+        <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+      </Field>
+      <Field label="Heading (gold)" hint={`e.g. "Policy" — shown in gold after the plain part`}>
+        <RichInput value={data.heading_gold} onChange={(e) => onChange({ ...data, heading_gold: e.target.value })} />
+      </Field>
+    </div>
     <Field label="Intro">
       <RichTextarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
     </Field>
@@ -1474,9 +1807,14 @@ const CustomerServiceEditor = ({
 }) => (
   <div className="space-y-6">
     <SectionHeading title="Customer Service" desc="Content shown on the Customer Service page, including FAQs." />
-    <Field label="Heading">
-      <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
-    </Field>
+    <div className="grid grid-cols-2 gap-4">
+      <Field label="Heading (plain)" hint={`e.g. "Contact"`}>
+        <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />
+      </Field>
+      <Field label="Heading (gold)" hint={`e.g. "Us" — shown in gold after the plain part`}>
+        <RichInput value={data.heading_gold} onChange={(e) => onChange({ ...data, heading_gold: e.target.value })} />
+      </Field>
+    </div>
     <Field label="Intro">
       <RichTextarea rows={2} value={data.intro} onChange={(e) => onChange({ ...data, intro: e.target.value })} />
     </Field>
@@ -1491,6 +1829,17 @@ const CustomerServiceEditor = ({
 
     <div className="space-y-4">
       <label className="block text-sm font-sans font-medium text-foreground">FAQs</label>
+      <p className="font-sans text-xs text-muted-foreground">
+        These Q&amp;As appear on both this page and the FAQ page (/faq), whose banner headline is below.
+      </p>
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="FAQ Page Title (plain)" hint={`e.g. "Frequently Asked"`}>
+          <RichInput value={data.faq_heading} onChange={(e) => onChange({ ...data, faq_heading: e.target.value })} />
+        </Field>
+        <Field label="FAQ Page Title (gold)" hint={`e.g. "Questions" — shown in gold after the plain part`}>
+          <RichInput value={data.faq_heading_gold} onChange={(e) => onChange({ ...data, faq_heading_gold: e.target.value })} />
+        </Field>
+      </div>
       {data.faqs.map((faq, i) => (
         <Card key={i}>
           <div className="flex items-center justify-between">
@@ -1607,6 +1956,48 @@ const EVENT_ICON: Record<string, string> = {
   payment_status_changed: "💶",
 };
 
+// The despatch address, laid out the way it goes on the parcel. This used to be
+// line1 + city + country squeezed onto one muted line, which meant the recipient
+// name, the phone, the county and the Eircode — everything a courier actually
+// needs — weren't visible anywhere in the admin at all. One glance, one copy.
+const OrderAddressCard = ({ order }: { order: AdminOrderRecord }) => {
+  const addr = (order.shipping_address ?? {}) as Record<string, string>;
+  const isPickup = order.fulfillment_type === "pickup";
+  const lines = isPickup
+    ? [addr.location_name, addr.address_line1, addr.city, addr.eircode, addr.country].filter(Boolean)
+    : formatAddressBlock(addr);
+  const phone = isPickup ? addr.contact_phone : addr.phone;
+  const contactName = isPickup ? addr.contact_name : addr.full_name;
+
+  const copyable = [contactName, ...lines.filter(l => l !== contactName), phone && formatPhoneDisplay(phone)]
+    .filter(Boolean).join("\n");
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-sans text-xs font-semibold text-foreground mb-1">
+            {isPickup ? "Collecting from" : "Deliver to"}
+          </p>
+          {lines.length === 0 && <p className="font-sans text-xs text-muted-foreground">—</p>}
+          {lines.map((line, i) => (
+            <p key={`${line}-${i}`} className="font-sans text-xs text-foreground leading-5">{line}</p>
+          ))}
+          {phone && (
+            <p className="font-sans text-xs text-foreground leading-5 mt-1">
+              📞 <a href={`tel:${phone}`} className="underline">{formatPhoneDisplay(phone)}</a>
+            </p>
+          )}
+        </div>
+        <button type="button" onClick={() => navigator.clipboard?.writeText(copyable)}
+          className="font-sans text-xs px-2 py-1 rounded border border-border hover:bg-muted shrink-0">
+          Copy
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpdate: (o: AdminOrderRecord) => void }) => {
   const [detail, setDetail] = useState<(AdminOrderRecord & { timeline: OrderTimelineEvent[]; refund_reminders: RefundReminder[] }) | null>(null);
   const [deciding, setDeciding] = useState(false);
@@ -1702,12 +2093,9 @@ const OrderDetailPanel = ({ order, onUpdate }: { order: AdminOrderRecord; onUpda
             <span>{(item.product_data?.price as string) || ""}</span>
           </div>
         ))}
-        <p className="font-sans text-xs text-muted-foreground pt-1">
-          {order.fulfillment_type === "pickup" ? "Pickup" : "Shipping"} address:{" "}
-          {[order.shipping_address?.address_line1, order.shipping_address?.city, order.shipping_address?.country]
-            .filter(Boolean).join(", ") || "—"}
-        </p>
       </div>
+
+      <OrderAddressCard order={order} />
 
       {order.payment_status !== "paid" && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 flex items-center justify-between gap-3">
@@ -3134,13 +3522,16 @@ const DealsEditor = ({
       <SectionHeading title="Today's Deals" desc="Create Bundle & Save offers. Discounts apply automatically when all bundle products are in the basket." />
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Page Title">
+        <Field label="Page Title (plain)" hint={`e.g. "Today's"`}>
           <RichInput value={deals.page_title} onChange={e => setDeals(d => ({ ...d, page_title: e.target.value }))} />
         </Field>
-        <Field label="Page Subtitle">
-          <RichInput value={deals.page_subtitle} onChange={e => setDeals(d => ({ ...d, page_subtitle: e.target.value }))} />
+        <Field label="Page Title (gold)" hint={`e.g. "Deals" — shown in gold after the plain part`}>
+          <RichInput value={deals.page_title_gold} onChange={e => setDeals(d => ({ ...d, page_title_gold: e.target.value }))} />
         </Field>
       </div>
+      <Field label="Page Subtitle">
+        <RichInput value={deals.page_subtitle} onChange={e => setDeals(d => ({ ...d, page_subtitle: e.target.value }))} />
+      </Field>
 
       <div className="space-y-4">
         {deals.bundles.map((bundle, bi) => (
@@ -4154,6 +4545,10 @@ type TabId =
   | "announcementBar"
   | "navbar"
   | "hero"
+  | "aboutPage"
+  | "aboutFounder"
+  | "ourStoryPage"
+  | "shopPage"
   | "shopCategories"
   | "deals"
   | "momentPill"
@@ -4199,7 +4594,9 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "hero",            label: "Hero Banner",      icon: "🖼️" },
       { id: "momentPill",      label: "Moment Pill",      icon: "💊" },
       { id: "welcomeClub",     label: "Welcome Club",     icon: "🫶" },
-      { id: "brandStory",      label: "Brand Story",      icon: "🕯️" },
+      { id: "aboutPage",       label: "About",            icon: "🕯️" },
+      { id: "aboutFounder",    label: "Meet the Maker",   icon: "🌿" },
+      { id: "ourStoryPage",    label: "Founder Diary",    icon: "📷" },
       { id: "products",        label: "Products",         icon: "◈" },
       { id: "candleCare",      label: "Candle Care",      icon: "♨" },
       { id: "videos",          label: "Videos",           icon: "▶" },
@@ -4213,6 +4610,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Shop Page",
     icon: "🛍️",
     items: [
+      { id: "shopPage",       label: "Shop Banner",      icon: "🖼" },
       { id: "shopCategories", label: "Shop By Category", icon: "📖" },
       { id: "productPage",    label: "Product Page",     icon: "🕯️" },
       { id: "deals",          label: "Today's Deals",    icon: "🏷️" },
@@ -4284,7 +4682,7 @@ const AdminDashboard = () => {
 
   const loadData = useCallback(async () => {
     // ── Content sections (getContent never throws — falls back to defaults) ──
-    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, productPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo] =
+    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo] =
       await Promise.all([
         getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
         getContent("navbar",          DEFAULT_CONTENT.navbar),
@@ -4292,8 +4690,12 @@ const AdminDashboard = () => {
         getContent("momentPill",      DEFAULT_CONTENT.momentPill),
         getContent("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
         getContent("brandStory",      DEFAULT_CONTENT.brandStory),
+        getContent("aboutPage",       DEFAULT_CONTENT.aboutPage),
+        getContent("aboutFounder",    DEFAULT_CONTENT.aboutFounder),
+        getContent("ourStoryPage",    DEFAULT_CONTENT.ourStoryPage),
         getContent("products",        DEFAULT_CONTENT.products),
         getContent("productPage",     DEFAULT_CONTENT.productPage),
+        getContent("shopPage",        DEFAULT_CONTENT.shopPage),
         getContent("candleCare",      DEFAULT_CONTENT.candleCare),
         getContent("videos",          DEFAULT_CONTENT.videos),
         getContent("testimonials",    DEFAULT_CONTENT.testimonials),
@@ -4309,7 +4711,7 @@ const AdminDashboard = () => {
         getContent("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
         getContent("seo",             DEFAULT_CONTENT.seo),
       ]);
-    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, products, productPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo });
+    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo });
 
     // ── Shop categories ───────────────────────────────────────────────────────
     try {
@@ -4475,10 +4877,14 @@ const AdminDashboard = () => {
             {activeTab === "momentPill"   && <MomentPillEditor   data={content.momentPill}   onChange={update("momentPill")}   onSave={() => handleSave("momentPill")}   saving={saving} />}
             {activeTab === "welcomeClub"  && <WelcomeClubEditor  data={content.welcomeClub}  onChange={update("welcomeClub")}  onSave={() => handleSave("welcomeClub")}  saving={saving} />}
             {activeTab === "navbar"       && <NavbarEditor       data={content.navbar}       onChange={update("navbar")}       onSave={() => handleSave("navbar")}       saving={saving} />}
-            {activeTab === "hero"         && <HeroEditor         data={content.hero}         onChange={update("hero")}         onSave={() => handleSave("hero")}         saving={saving} />}
+            {activeTab === "hero"         && <HeroEditor         data={content.hero}         onChange={update("hero")}         onSave={() => handleSave("hero")}       saving={saving} />}
+            {activeTab === "aboutPage"    && <AboutPageEditor    data={content.aboutPage}    onChange={update("aboutPage")}    onSave={() => handleSave("aboutPage")}    saving={saving} />}
+            {activeTab === "aboutFounder" && <AboutFounderEditor data={content.aboutFounder} onChange={update("aboutFounder")} onSave={() => handleSave("aboutFounder")} saving={saving} />}
+            {activeTab === "ourStoryPage" && <OurStoryPageEditor data={content.ourStoryPage} onChange={update("ourStoryPage")} onSave={() => handleSave("ourStoryPage")} saving={saving} onError={handleError} />}
             {activeTab === "brandStory"   && <BrandStoryEditor   data={content.brandStory}   onChange={update("brandStory")}   onSave={() => handleSave("brandStory")}   saving={saving} />}
             {activeTab === "products"     && <ProductsEditor     data={content.products}     onChange={update("products")}     onSave={() => handleSave("products")}     saving={saving} />}
             {activeTab === "productPage"  && <ProductPageEditor  data={content.productPage}  onChange={update("productPage")}  onSave={() => handleSave("productPage")}  saving={saving} />}
+            {activeTab === "shopPage"     && <ShopPageEditor     data={content.shopPage}     onChange={update("shopPage")}     onSave={() => handleSave("shopPage")}     saving={saving} />}
             {activeTab === "candleCare"   && <CandleCareEditor   data={content.candleCare}   onChange={update("candleCare")}   onSave={() => handleSave("candleCare")}   saving={saving} />}
             {activeTab === "videos"       && <VideosEditor       data={content.videos}       onChange={update("videos")}       onSave={() => handleSave("videos")}       saving={saving} />}
             {activeTab === "testimonials" && <TestimonialsEditor data={content.testimonials} onChange={update("testimonials")} onSave={() => handleSave("testimonials")} saving={saving} />}

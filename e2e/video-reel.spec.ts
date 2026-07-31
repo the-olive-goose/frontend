@@ -162,6 +162,57 @@ test("a URL that is a web page, not a video, shows the admin placeholder", async
   await expect(card.locator("iframe, video")).toHaveCount(0);
 });
 
+/* ── Section on/off toggle ─────────────────────────────────────────────────────
+   Admin → Videos can hide the whole section. It is opt-OUT: content saved before
+   the toggle existed carries no `enabled` key, and that must keep rendering.  */
+test.describe("show/hide toggle", () => {
+  const reel = { id: "e2e-toggle", title: "E2E reel", description: "", tag: "", video_url: "/videos/V2.mp4" };
+
+  async function saveVideos(data: Record<string, unknown>) {
+    const res = await admin.put("/api/content/videos", { headers: auth(TOKEN), data });
+    expect(res.ok(), "saving videos content must succeed").toBeTruthy();
+  }
+
+  test("content with no `enabled` key still shows — the toggle is opt-out", async ({ page }) => {
+    // This is the regression that matters on deploy day: every existing row in
+    // the content table looks like this, and none of them may go dark.
+    const { enabled, ...withoutKey } = { ...originalVideos, items: [reel] } as Record<string, unknown>;
+    expect(enabled, "the fixture must genuinely lack the key").toBeUndefined();
+    await saveVideos(withoutKey);
+
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("#journal")).toBeVisible();
+    await expect(page.locator("#journal .og-reel-card")).toHaveCount(1);
+  });
+
+  test("enabled: true shows the section", async ({ page }) => {
+    await saveVideos({ ...originalVideos, enabled: true, items: [reel] });
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("#journal")).toBeVisible();
+    await expect(page.locator("#journal video")).toHaveCount(1);
+  });
+
+  test("enabled: false removes the section from the home page", async ({ page }) => {
+    await saveVideos({ ...originalVideos, enabled: false, items: [reel] });
+    await page.goto(`${BASE}/`);
+    // Gone entirely, not merely hidden — and the reels must not still be
+    // loading behind a display:none.
+    await expect(page.locator("#journal")).toHaveCount(0);
+    await expect(page.locator(".og-reel-card")).toHaveCount(0);
+    await expect(page.locator("video, iframe")).toHaveCount(0);
+  });
+
+  test("turning it back on restores the rail", async ({ page }) => {
+    await saveVideos({ ...originalVideos, enabled: false, items: [reel] });
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("#journal")).toHaveCount(0);
+
+    await saveVideos({ ...originalVideos, enabled: true, items: [reel] });
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("#journal .og-reel-card")).toHaveCount(1);
+  });
+});
+
 test("the whole configured rail plays — no blank frames", async ({ page }) => {
   // The per-shape tests each run a rail of one. This is the check that was
   // missing entirely: whatever is actually saved, every card plays something.

@@ -8,14 +8,19 @@ import {
   fetchAddresses, createAddress, updateAddress, deleteAddress, setDefaultAddress,
   type SavedAddress, type DeliveryAddress,
 } from "@/lib/userApi";
-import { validateDeliveryAddress, type AddressField } from "@/lib/addressValidation";
+import {
+  validateDeliveryAddress, normalizeAddress, formatAddressOneLine, formatPhoneDisplay,
+  ADDRESS_FIELDS, type AddressField,
+} from "@/lib/addressValidation";
 
-// One-line summary of a saved address for the list rows.
-const formatAddressLine = (a: SavedAddress): string =>
-  [a.address_line1, a.address_line2, a.city, a.state, a.postal_code, a.country]
-    .filter(Boolean).join(", ");
+// One-line summary of a saved address for the list rows. Normalized first so a
+// row saved before the current rules still reads tidily (canonical Eircode,
+// "Co. Dublin", a phone with its country code).
+const formatAddressLine = (a: SavedAddress): string => formatAddressOneLine(normalizeAddress(a));
 
-const ALL_FIELDS: AddressField[] = ["full_name", "phone", "address_line1", "city", "state", "postal_code", "country"];
+// First thing wrong with a saved address, or undefined when it's dispatchable.
+const incompleteReason = (a: SavedAddress): string | undefined =>
+  Object.values(validateDeliveryAddress(normalizeAddress(a)))[0];
 
 const AddressesPage = () => {
   const { user, loading: authLoading, openAuthModal } = useAuth();
@@ -44,7 +49,7 @@ const AddressesPage = () => {
 
   const openAdd = () => {
     setEditingId("new");
-    setForm({ full_name: user?.full_name ?? "", phone: user?.phone ?? "" });
+    setForm(normalizeAddress({ full_name: user?.full_name ?? "", phone: user?.phone ?? "" }));
     setTouched({});
     setMakeDefault(addresses.length === 0); // first address is always the default
     setError("");
@@ -52,11 +57,11 @@ const AddressesPage = () => {
 
   const openEdit = (a: SavedAddress) => {
     setEditingId(a.id);
-    setForm({
+    setForm(normalizeAddress({
       full_name: a.full_name, phone: a.phone,
       address_line1: a.address_line1, address_line2: a.address_line2,
       city: a.city, state: a.state, postal_code: a.postal_code, country: a.country,
-    });
+    }));
     setTouched({});
     setMakeDefault(a.is_default);
     setError("");
@@ -69,13 +74,13 @@ const AddressesPage = () => {
     setError("");
     // Block save on any validation error — reveal every field's message at once.
     if (Object.keys(errors).length > 0) {
-      setTouched(Object.fromEntries(ALL_FIELDS.map(f => [f, true])));
+      setTouched(Object.fromEntries(ADDRESS_FIELDS.map(f => [f, true])));
       setError(Object.values(errors)[0] ?? "Please complete the address.");
       return;
     }
     setSaving(true);
     try {
-      const payload = { ...form, make_default: makeDefault };
+      const payload = { ...normalizeAddress(form), make_default: makeDefault };
       if (editingId === "new") await createAddress(payload);
       else if (editingId) await updateAddress(editingId, payload);
       await refresh();
@@ -156,7 +161,15 @@ const AddressesPage = () => {
                             )}
                           </p>
                           <p className="font-sans text-sm mt-1" style={{ color: "#555" }}>{formatAddressLine(a)}</p>
-                          {a.phone && <p className="font-sans text-xs mt-0.5" style={{ color: "#888" }}>{a.phone}</p>}
+                          {a.phone && <p className="font-sans text-xs mt-0.5" style={{ color: "#888" }}>{formatPhoneDisplay(normalizeAddress(a).phone)}</p>}
+                          {/* Rows saved before the current rules can be missing a county
+                              or carry an undialable number. Flag them here rather than
+                              letting checkout be the first place the shopper finds out. */}
+                          {incompleteReason(a) && (
+                            <p className="font-sans text-xs mt-1" style={{ color: "#C7511F" }}>
+                              Needs attention — {incompleteReason(a)}
+                            </p>
+                          )}
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 mt-4">

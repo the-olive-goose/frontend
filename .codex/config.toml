@@ -1,0 +1,19 @@
+[mcp_servers.code-review-graph]
+command = "/Users/bhardwaj/Olive-Goose/.venv/bin/python"
+args = [
+    "-m",
+    "code_review_graph",
+    "serve",
+]
+
+[mcp_servers.code-review-graph.tools.semantic_search_nodes_tool]
+approval_mode = "approve"
+
+[mcp_servers.code-review-graph.tools.query_graph_tool]
+approval_mode = "approve"
+
+[mcp_servers.code-review-graph.tools.get_impact_radius_tool]
+approval_mode = "approve"
+
+[mcp_servers.code-review-graph.tools.detect_changes_tool]
+approval_mode = "approve"

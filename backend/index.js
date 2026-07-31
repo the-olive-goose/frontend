@@ -17,6 +17,10 @@ import { sendOtpEmail, sendPasswordResetEmail, sendOrderConfirmationEmail, sendO
   sendReturnRequestedEmail, sendReturnDecisionEmail, sendRefundCompletedEmail, sendCustomerMessageEmail,
   sendBackInStockEmail, sendAdminPasswordResetEmail, sendDiscountCodeEmail } from './email.js';
 import { startRefundReminderScheduler } from './scheduler.js';
+import {
+  validateAddress, normalizeAddress, toE164, phoneError as validatePhone,
+  nameError as validateName, tidy, ACCOUNT_NAME_COPY,
+} from './addressRules.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1624,26 +1628,60 @@ app.get('/api/user/me', requireUserAuth, async (req, res) => {
   }
 });
 
-// ── PUT /api/user/me — update profile & address ──────────────────────────────
+// ── PUT /api/user/me — update the account's contact details ──────────────────
+// Contact details only. The six address columns on the users row are a *mirror*
+// of whichever address book row is currently the default (syncDefaultAddressToUser
+// maintains them), so a direct write here would be both unvalidated and transient
+// — silently clobbered the next time the address book changed. Address edits go
+// through /api/user/addresses, which applies the full per-country rules.
+const PROFILE_ADDRESS_FIELDS =
+  ['address_line1', 'address_line2', 'city', 'state', 'postal_code', 'country'];
+
 app.put('/api/user/me', requireUserAuth, async (req, res) => {
-  const {
-    full_name, phone, address_line1, address_line2, city, state, postal_code, country,
-  } = req.body;
+  if (PROFILE_ADDRESS_FIELDS.some(f => req.body[f] !== undefined)) {
+    return res.status(400).json({
+      error: 'Addresses are managed in your address book. Use /api/user/addresses to add or edit a delivery address.',
+    });
+  }
+
+  // The account name goes on pickup notices and prefills the parcel label, so it
+  // is held to the same standard as a recipient name — this endpoint is not a
+  // back door around the form. Absent means "leave it alone" (the COALESCE
+  // below); present is validated and stored tidied.
+  let full_name = req.body.full_name;
+  if (full_name !== undefined && full_name !== null) {
+    const problem = validateName(full_name, ACCOUNT_NAME_COPY);
+    if (problem) return res.status(400).json({ error: problem });
+    full_name = tidy(full_name);
+  }
+
   try {
+    // The account phone is what checkout falls back to when an address carries no
+    // number of its own, so it's held to the same standard and stored in E.164.
+    // An explicit empty string still clears it; only a number that's actually
+    // there has to be dialable. A bare number with no country code is read
+    // against the account's own country — the same reading the profile form
+    // applies — falling back to Ireland for an account that has no address yet.
+    let phone = req.body.phone;
+    if (phone !== undefined && phone !== null && String(phone).trim() !== '') {
+      let homeCountry = '';
+      if (!String(phone).trim().startsWith('+')) {
+        const { rows: own } = await pool.query(`SELECT country FROM users WHERE id = $1`, [req.user.userId]);
+        homeCountry = own[0]?.country || '';
+      }
+      phone = toE164(phone, homeCountry);
+      const problem = validatePhone(phone);
+      if (problem) return res.status(400).json({ error: problem });
+    }
+
     const { rows } = await pool.query(
       `UPDATE users SET
-         full_name     = COALESCE($1, full_name),
-         phone         = COALESCE($2, phone),
-         address_line1 = COALESCE($3, address_line1),
-         address_line2 = COALESCE($4, address_line2),
-         city          = COALESCE($5, city),
-         state         = COALESCE($6, state),
-         postal_code   = COALESCE($7, postal_code),
-         country       = COALESCE($8, country)
-       WHERE id = $9
+         full_name = COALESCE($1, full_name),
+         phone     = COALESCE($2, phone)
+       WHERE id = $3
        RETURNING id, email, phone, full_name, provider, avatar_url,
                  address_line1, address_line2, city, state, postal_code, country`,
-      [full_name, phone, address_line1, address_line2, city, state, postal_code, country, req.user.userId]
+      [full_name, phone, req.user.userId]
     );
     if (!rows.length) return res.status(404).json({ error: 'User not found' });
     res.json(rows[0]);
@@ -1678,18 +1716,10 @@ async function syncDefaultAddressToUser(userId) {
   );
 }
 
-// Required-field gate for a saved address. Mirrors the frontend's required checks
-// (addressValidation.ts) so an address can't be persisted with essentials missing;
-// the per-country postal-format rules stay a frontend concern.
-function validateAddressBody(b) {
-  if (!b.full_name || !b.full_name.trim())         return "Enter the recipient's full name.";
-  if (!b.phone || !b.phone.trim())                 return 'Enter a contact phone number.';
-  if (!b.address_line1 || !b.address_line1.trim()) return 'Enter your street address.';
-  if (!b.city || !b.city.trim())                   return 'Enter your city or town.';
-  if (!b.country || !b.country.trim())             return 'Select a country.';
-  if (!b.postal_code || !b.postal_code.trim())     return 'Enter your postal code.';
-  return null;
-}
+// Saved addresses go through validateAddress/normalizeAddress from addressRules.js
+// — the same per-country postal, county and phone rules the form applies. The API
+// is not a back door around the form: an address book row is what dispatch prints,
+// so it is stored in exactly one shape and only when a courier could deliver to it.
 
 const ADDRESS_COLS =
   'id, full_name, phone, address_line1, address_line2, city, state, postal_code, country, is_default, created_at';
@@ -1711,8 +1741,9 @@ app.get('/api/user/addresses', requireUserAuth, async (req, res) => {
 // ── POST /api/user/addresses — add an address ───────────────────────────────────
 app.post('/api/user/addresses', requireUserAuth, async (req, res) => {
   const b = req.body || {};
-  const err = validateAddressBody(b);
+  const err = validateAddress(b);
   if (err) return res.status(400).json({ error: err });
+  const a = normalizeAddress(b);
   try {
     // The very first address a user saves is always their default; after that,
     // only make it default when explicitly asked (make_default).
@@ -1729,8 +1760,8 @@ app.post('/api/user/addresses', requireUserAuth, async (req, res) => {
         (user_id, full_name, phone, address_line1, address_line2, city, state, postal_code, country, is_default)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING ${ADDRESS_COLS}`,
-      [req.user.userId, b.full_name, b.phone, b.address_line1, b.address_line2 || '',
-       b.city, b.state || '', b.postal_code, b.country, makeDefault]
+      [req.user.userId, a.full_name, a.phone, a.address_line1, a.address_line2,
+       a.city, a.state, a.postal_code, a.country, makeDefault]
     );
     if (makeDefault) await syncDefaultAddressToUser(req.user.userId);
     res.status(201).json(rows[0]);
@@ -1742,8 +1773,9 @@ app.post('/api/user/addresses', requireUserAuth, async (req, res) => {
 // ── PUT /api/user/addresses/:id — edit an address ───────────────────────────────
 app.put('/api/user/addresses/:id', requireUserAuth, async (req, res) => {
   const b = req.body || {};
-  const err = validateAddressBody(b);
+  const err = validateAddress(b);
   if (err) return res.status(400).json({ error: err });
+  const a = normalizeAddress(b);
   try {
     const { rows: owned } = await pool.query(
       'SELECT is_default FROM user_addresses WHERE id = $1 AND user_id = $2',
@@ -1763,8 +1795,8 @@ app.put('/api/user/addresses/:id', requireUserAuth, async (req, res) => {
          city=$5, state=$6, postal_code=$7, country=$8, is_default=$9
        WHERE id=$10 AND user_id=$11
        RETURNING ${ADDRESS_COLS}`,
-      [b.full_name, b.phone, b.address_line1, b.address_line2 || '', b.city,
-       b.state || '', b.postal_code, b.country, makeDefault, req.params.id, req.user.userId]
+      [a.full_name, a.phone, a.address_line1, a.address_line2, a.city,
+       a.state, a.postal_code, a.country, makeDefault, req.params.id, req.user.userId]
     );
     await syncDefaultAddressToUser(req.user.userId);
     res.json(rows[0]);
@@ -2250,6 +2282,12 @@ app.get('/api/cart', requireUserAuth, async (req, res) => {
 const MAX_CART_QTY = 99;
 const isValidQty = (q) => Number.isInteger(q) && q >= 1 && q <= MAX_CART_QTY;
 
+// Stripe refuses to create a Checkout Session whose total due is under €0.50
+// ("amount_too_small"), so we have to catch that ourselves — the raw Stripe error
+// is a 500 the shopper only ever sees as "Something went wrong". Mirrored by
+// MIN_CHARGE_EUR in src/lib/cart.ts so the button explains it before it's clicked.
+const MIN_CHARGE_EUR = 0.5;
+
 app.post('/api/cart/items', requireUserAuth, async (req, res) => {
   const { product_id, product_data, quantity = 1 } = req.body;
   if (!product_id || !product_data)
@@ -2411,6 +2449,12 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
       if (!pickup.enabled) return res.status(400).json({ error: 'In-store pickup is not available right now.' });
 
       discountPercent = Number(pickup.discount_percent) || 0;
+      // Someone has to be reachable when the order is ready to collect — the
+      // shopper's own number if they gave one, otherwise the account's.
+      const pickupPhone = toE164(contactPhone || profile.phone || '', pickup.country || 'Ireland');
+      const pickupPhoneProblem = validatePhone(pickupPhone);
+      if (pickupPhoneProblem) return res.status(400).json({ error: pickupPhoneProblem });
+
       shippingAddress = {
         fulfillment_type: 'pickup',
         location_name:   pickup.location_name || 'The Olive Goose',
@@ -2420,12 +2464,14 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
         country:         pickup.country || 'Ireland',
         hours:           pickup.hours || '',
         contact_name:    profile.full_name || '',
-        contact_phone:   contactPhone || profile.phone || '',
+        contact_phone:   pickupPhone,
       };
     } else {
       shipping = subtotal >= freeShippingThreshold ? 0 : flatShippingRate;
-      shippingAddress = {
-        fulfillment_type: 'delivery',
+      // Last gate before money moves: the address stored on the order is the one
+      // dispatch prints, so it gets the full rules rather than a line1/city
+      // presence check that let "4444, d" through to a picking slip.
+      const merged = {
         full_name:      addressOverride.full_name ?? profile.full_name ?? '',
         phone:          addressOverride.phone ?? profile.phone ?? '',
         address_line1:  addressOverride.address_line1 ?? profile.address_line1 ?? '',
@@ -2435,8 +2481,9 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
         postal_code:    addressOverride.postal_code ?? profile.postal_code ?? '',
         country:        addressOverride.country ?? profile.country ?? '',
       };
-      if (!shippingAddress.address_line1 || !shippingAddress.city)
-        return res.status(400).json({ error: 'Please provide a delivery address.' });
+      const addressProblem = validateAddress(merged);
+      if (addressProblem) return res.status(400).json({ error: addressProblem });
+      shippingAddress = { fulfillment_type: 'delivery', ...normalizeAddress(merged) };
     }
 
     // Today's Deals bundle savings — per-unit, non-overlapping allocation (same
@@ -2465,9 +2512,17 @@ app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
     // negative, hard-blocking an otherwise legitimate checkout.
     const discountAmount = +Math.min(pickupDiscountAmount + bundleSavings + codeDiscountAmount, subtotal).toFixed(2);
     const total = +(subtotal - discountAmount + shipping).toFixed(2);
-    if (total <= 0) {
+    // Pickup is where a real basket meets Stripe's €0.50 floor: it drops the
+    // shipping line, so a low-priced or heavily discounted basket that pays fine
+    // for delivery has nothing left to carry it over the minimum. Answer with the
+    // reason instead of letting Stripe's amount_too_small surface as a blank 500.
+    if (total <= 0 || total < MIN_CHARGE_EUR) {
       if (appliedCode) await releaseDiscountReservation(appliedCode, req.user.userId);
-      return res.status(400).json({ error: 'Order total must be greater than zero.' });
+      return res.status(400).json({
+        error: total <= 0
+          ? 'Order total must be greater than zero.'
+          : `Card payments need a total of at least €${MIN_CHARGE_EUR.toFixed(2)} — yours comes to €${total.toFixed(2)}. Please add another item to your basket.`,
+      });
     }
     const trackingNumber = genTrackingNumber();
 

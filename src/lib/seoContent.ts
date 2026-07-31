@@ -14,6 +14,7 @@
 import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type SiteContent } from "@/lib/defaults";
 import { fillOfferTokens, resolveOfferValues, type OfferValues } from "@/lib/offerTokens";
+import { joinPageTitle } from "@/lib/pageTitle";
 import { stripRichText } from "@/lib/richtext";
 import {
   getSeoSettings,
@@ -56,8 +57,13 @@ function defineSource<T>(
 /**
  * Which admin section supplies each route's title and description, keyed by
  * ROUTE_META key. Routes absent from here keep the copy in ROUTE_META: /shop and
- * /faq render headings hardcoded in the page, /track-order has no editable copy,
- * and /products/* is written per product by ProductDetailPage.
+ * /faq have editable banner headlines but keyword-written meta titles worth more
+ * to search than "All Candles" would be, /track-order has no editable copy, and
+ * /products/* is written per product by ProductDetailPage.
+ *
+ * A banner headline is stored as a plain half plus a gold half, so titles are
+ * rejoined here — a search result should read "Delivery & Returns", not
+ * "Delivery &".
  */
 export const META_SOURCES: Record<string, MetaSource> = {
   "/": defineSource("Home page", "Home Page → Hero Banner", "hero", DEFAULT_CONTENT.hero, (c) => ({
@@ -65,15 +71,19 @@ export const META_SOURCES: Record<string, MetaSource> = {
     description: c.subtext,
   })),
   "/deals": defineSource("Today's Deals", "Shop Page → Today's Deals", "deals", DEFAULT_DEALS, (c) => ({
-    title: c.page_title,
+    title: joinPageTitle(c.page_title, c.page_title_gold),
     description: c.page_subtitle,
   })),
   "/about": defineSource("Our Story", "Home Page → Brand Story", "brandStory", DEFAULT_CONTENT.brandStory, (c) => ({
-    title: c.headline,
+    title: joinPageTitle(c.page_title, c.page_title_gold),
     description: c.body,
   })),
+  "/our-story": defineSource("Founder Diary", "About Page → Founder Diary", "ourStoryPage", DEFAULT_CONTENT.ourStoryPage, (c) => ({
+    title: joinPageTitle(c.page_title, c.page_title_gold),
+    description: c.page_subtitle,
+  })),
   "/candle-care": defineSource("Candle Care", "Home Page → Candle Care", "candleCare", DEFAULT_CONTENT.candleCare, (c) => ({
-    title: [c.headline_part1, c.headline_part2].filter(Boolean).join(" "),
+    title: joinPageTitle(c.headline_part1, c.headline_part2),
     description: c.hero_subtitle ?? "",
   })),
   "/gift-cards": defineSource("Gift Cards", "Policy & Info Pages → Gift Cards", "giftCards", DEFAULT_CONTENT.giftCards, (c) => ({
@@ -81,23 +91,23 @@ export const META_SOURCES: Record<string, MetaSource> = {
     description: c.intro,
   })),
   "/customer-service": defineSource("Customer Service", "Policy & Info Pages → Customer Service", "customerService", DEFAULT_CONTENT.customerService, (c) => ({
-    title: c.heading,
+    title: joinPageTitle(c.heading, c.heading_gold),
     description: c.intro,
   })),
   "/returns": defineSource("Returns & Refunds", "Policy & Info Pages → Return Policy", "returnPolicy", DEFAULT_CONTENT.returnPolicy, (c) => ({
-    title: c.heading,
+    title: joinPageTitle(c.heading, c.heading_gold),
     description: c.intro,
   })),
   "/shipping-policy": defineSource("Shipping Policy", "Policy & Info Pages → Shipping Policy", "shippingPolicy", DEFAULT_CONTENT.shippingPolicy, (c) => ({
-    title: c.heading,
+    title: joinPageTitle(c.heading, c.heading_gold),
     description: c.intro,
   })),
   "/privacy-policy": defineSource("Privacy Policy", "Policy & Info Pages → Privacy Policy", "privacyPolicy", DEFAULT_CONTENT.privacyPolicy, (c) => ({
-    title: c.heading,
+    title: joinPageTitle(c.heading, c.heading_gold),
     description: c.intro,
   })),
   "/terms-of-service": defineSource("Terms of Service", "Policy & Info Pages → Terms of Service", "termsOfService", DEFAULT_CONTENT.termsOfService, (c) => ({
-    title: c.heading,
+    title: joinPageTitle(c.heading, c.heading_gold),
     description: c.intro,
   })),
 };

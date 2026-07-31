@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { changePassword } from "@/lib/userApi";
+import PhoneInput from "@/components/PhoneInput";
+import { phoneError as validatePhone, splitPhone, composePhone } from "@/lib/addressValidation";
 import PageSubNav, { ACCOUNT_NAV } from "@/components/PageSubNav";
 import FooterSection from "@/components/sections/FooterSection";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
@@ -22,11 +24,19 @@ const SecurityPage = () => {
 
   useEffect(() => {
     if (!user) return;
-    setPhone(user.phone ?? "");
+    // Read a legacy bare number against the account's country so it lands in the
+    // dial-code control already valid, instead of failing the moment it renders.
+    const parts = splitPhone(user.phone, user.country);
+    setPhone(composePhone(parts.dialCode, parts.national));
   }, [user?.id]);
+
+  // This number is the fallback the courier and the pickup notice use when an
+  // address carries none, so it gets the same rules as every other phone field.
+  const phoneProblem = phone ? validatePhone(phone) : undefined;
 
   const handlePhoneSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (phoneProblem) { setPhoneError(phoneProblem); return; }
     setSavingPhone(true);
     setPhoneError("");
     setPhoneSaved(false);
@@ -97,14 +107,16 @@ const SecurityPage = () => {
                       style={{ ...inputStyle, background: "#f3f3f3" }} />
                   </div>
                   <div>
-                    <label className="font-sans text-xs font-semibold block mb-1" style={{ color: "#555" }}>Phone</label>
-                    <input value={phone} onChange={e => setPhone(e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg font-sans text-sm outline-none" style={inputStyle} />
+                    <label htmlFor="account-phone" className="font-sans text-xs font-semibold block mb-1" style={{ color: "#555" }}>Phone</label>
+                    <PhoneInput id="account-phone" value={phone} country={user.country}
+                      error={phoneProblem} onChange={setPhone} />
                   </div>
                 </div>
-                {phoneError && <p className="font-sans text-sm" style={{ color: "#C7511F" }}>{phoneError}</p>}
+                {(phoneError || phoneProblem) && (
+                  <p className="font-sans text-sm" style={{ color: "#C7511F" }}>{phoneError || phoneProblem}</p>
+                )}
                 <div className="flex items-center gap-4">
-                  <button type="submit" disabled={savingPhone}
+                  <button type="submit" disabled={savingPhone || !!phoneProblem}
                     className="font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
                     style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
                     {savingPhone ? "Saving…" : "Save changes"}

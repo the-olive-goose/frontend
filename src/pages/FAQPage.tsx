@@ -41,14 +41,15 @@ const FAQPage = () => {
 
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
-      <div className="pt-[var(--nav-h,112px)]">
+      <div>
         <PageHero
           eyebrow="Good to Know"
-          title="Frequently Asked Questions"
+          title={content.faq_heading}
+          titleGold={content.faq_heading_gold}
           subtitle="Shipping, orders, ingredients and candle safety — answered."
         />
 
-        <div className="max-w-2xl mx-auto px-6 sm:px-12 py-12 sm:py-16 space-y-6">
+        <div className="max-w-2xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-12 sm:pb-16 space-y-6">
           {content.faqs.length > 0 && (
             <div className="bg-white rounded-2xl px-6 sm:px-8" style={{ border: "1px solid var(--color-border)" }}>
               <Accordion type="single" collapsible>

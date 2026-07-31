@@ -24,6 +24,7 @@
 
 import { test, expect, APIRequestContext, request as pwRequest, Page } from "@playwright/test";
 import { payStripeTestCard } from "./stripe-checkout";
+import { fillDeliveryAddress } from "./address-form";
 
 const API = process.env.E2E_API ?? "http://localhost:3001";
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
@@ -115,7 +116,7 @@ const DELIVERY = {
   fulfillment_type: "delivery",
   shipping_address: {
     full_name: "E2E Shopper", phone: "+353851234567", address_line1: "1 Test Street",
-    city: "Dublin", postal_code: "D01AB12", country: "Ireland",
+    city: "Dublin", state: "Dublin", postal_code: "D01 F5P2", country: "Ireland",
   },
 };
 
@@ -515,14 +516,8 @@ test.describe("Checkout UI", () => {
     await page.getByRole("button", { name: /add to cart/i }).first().click();
 
     await page.goto(`${BASE}/checkout`);
-    // Country is a <select> (drives the postal rules); pick Ireland first so the
-    // postal field validates as an Eircode.
-    await page.getByPlaceholder("Full name").fill("E2E Shopper");
-    await page.getByPlaceholder("Phone").fill("+353851234567");
-    await page.getByPlaceholder("Address line 1").fill("1 Test Street");
-    await page.locator("select").filter({ hasText: "Select country" }).selectOption("Ireland");
-    await page.getByPlaceholder("City").fill("Dublin");
-    await page.getByPlaceholder("Eircode").fill("D18 K7W2");
+    // Country first: it drives the county dropdown and the Eircode rules below it.
+    await fillDeliveryAddress(page, "E2E Shopper");
 
     // Apply the code in the order summary.
     await page.getByPlaceholder(/OG-/i).fill(code);

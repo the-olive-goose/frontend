@@ -73,7 +73,7 @@ const DELIVERY = {
   fulfillment_type: "delivery",
   shipping_address: {
     full_name: "E2E Shopper", phone: "+353851234567", address_line1: "1 Test Street",
-    city: "Dublin", postal_code: "D01AB12", country: "Ireland",
+    city: "Dublin", state: "Dublin", postal_code: "D01 F5P2", country: "Ireland",
   },
 };
 
@@ -138,16 +138,26 @@ async function signInPage(page: Page) {
   await page.reload();
 }
 
-/** Read the "Order total" the basket page renders, in cents. */
+/**
+ * Read the basket's "Estimated total", in cents. The basket deliberately excludes
+ * shipping — that only becomes known once the shopper picks delivery or pickup at
+ * checkout — so this is an items-after-savings figure.
+ */
 async function basketTotalCents(page: Page): Promise<number> {
   await page.goto(`${BASE}/basket`);
-  const row = page.locator("div").filter({ hasText: /^Order total€/ }).last();
+  const row = page.locator("div").filter({ hasText: /^Estimated total€/ }).last();
   await expect(row).toBeVisible({ timeout: 15_000 });
   const text = await row.innerText();
   const match = text.match(/€\s*([\d.]+)/);
-  expect(match, `could not read the basket order total from "${text}"`).toBeTruthy();
+  expect(match, `could not read the basket estimated total from "${text}"`).toBeTruthy();
   return cents(match![1]);
 }
+
+/** Shipping the checkout page adds for a delivery order, in cents. */
+const deliveryShippingCents = (subtotal: number) =>
+  subtotal >= Math.round(pickupSettings.free_shipping_threshold * 100)
+    ? 0
+    : Math.round(pickupSettings.flat_shipping_rate * 100);
 
 /** Read the total the checkout page renders on its pay button, in cents. */
 async function checkoutTotalCents(page: Page): Promise<number> {
@@ -163,7 +173,7 @@ async function checkoutTotalCents(page: Page): Promise<number> {
 /** Read the bundle savings the basket page renders ("Total savings"), in cents. */
 async function basketSavingsCents(page: Page): Promise<number> {
   await page.goto(`${BASE}/basket`);
-  await expect(page.getByText(/Order total/i).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/Estimated total/i).first()).toBeVisible({ timeout: 15_000 });
   const row = page.locator("div").filter({ hasText: /^Total savings−€/ }).last();
   if (!(await row.isVisible().catch(() => false))) return 0;
   const match = (await row.innerText()).match(/−€\s*([\d.]+)/);
@@ -234,7 +244,10 @@ test.describe("Displayed savings match the charge", () => {
     const shownCheckoutTotal = await checkoutTotalCents(page);
 
     expect(shownSaving, "basket must show the bundle saving").toBe(expectedSaving);
-    expect(shownCheckoutTotal, "basket and checkout must agree").toBe(shownBasketTotal);
+    // The basket quotes items-after-savings only; checkout is that plus whatever
+    // shipping the (default) delivery option costs.
+    expect(shownCheckoutTotal, "basket and checkout must agree on the items, and differ only by shipping")
+      .toBe(shownBasketTotal + deliveryShippingCents(subtotal));
 
     const charged = await chargedCents();
     expect(charged, "Stripe must charge exactly what checkout displayed").toBe(shownCheckoutTotal);

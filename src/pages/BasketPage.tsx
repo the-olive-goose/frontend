@@ -60,10 +60,10 @@ const BasketPage = () => {
     setClearing(false);
   };
 
-  const shipping = subtotalNum >= pickup.free_shipping_threshold ? 0 : (pickup.flat_shipping_rate ?? 4.99);
-  // Capped at the subtotal, matching the backend's own clamp — a bundle saving worth
-  // more than the basket must not display a total below the shipping still owed.
-  const grandTotal = `€${Math.max(0, subtotalNum - Math.min(bundleSavings, subtotalNum) + shipping).toFixed(2)}`;
+  // Shipping is deliberately NOT charged here: it depends on the fulfilment choice
+  // (delivery vs pickup) the shopper only makes on the checkout page, so the basket
+  // shows an items-only estimate and defers the shipping line to checkout.
+  const estimatedTotal = `€${Math.max(0, subtotalNum - Math.min(bundleSavings, subtotalNum)).toFixed(2)}`;
 
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
@@ -270,7 +270,7 @@ const BasketPage = () => {
                       with the {nudge.bundle.name} bundle — save €{nudge.savings.toFixed(2)}.
                     </p>
                     <button onClick={() => handleAddNudge(nudge)} disabled={addingNudge === nudge.bundle.id}
-                      className="shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
+                      className="og-tap justify-center shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
                       style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
                       {addingNudge === nudge.bundle.id ? "Adding…" : "Add & Save"}
                     </button>
@@ -309,15 +309,16 @@ const BasketPage = () => {
 
                 <div className="flex justify-between font-sans text-sm" style={{ color: "#0F1111" }}>
                   <span>Shipping</span>
-                  <span className="font-semibold" style={{ color: shipping === 0 ? "#007600" : undefined }}>
-                    {shipping === 0 ? "FREE" : `€${shipping.toFixed(2)}`}
-                  </span>
+                  <span style={{ color: "#555" }}>Calculated at checkout</span>
                 </div>
                 <div className="pt-2" style={{ borderTop: "1px solid #EEE" }}>
                   <div className="flex justify-between font-sans font-bold text-base" style={{ color: "#0F1111" }}>
-                    <span>Order total</span>
-                    <span>{grandTotal}</span>
+                    <span>Estimated total</span>
+                    <span>{estimatedTotal}</span>
                   </div>
+                  <p className="font-sans text-xs mt-1" style={{ color: "#555" }}>
+                    Shipping is added once you choose delivery or pickup at checkout.
+                  </p>
                 </div>
                 <motion.button
                   whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}

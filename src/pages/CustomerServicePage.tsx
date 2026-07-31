@@ -14,10 +14,10 @@ const CustomerServicePage = () => {
 
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
-      <div className="pt-[var(--nav-h,112px)]">
-        <PageHero eyebrow="We're Here to Help" title={content.heading} subtitle={content.intro} />
+      <div>
+        <PageHero eyebrow="We're Here to Help" title={content.heading} titleGold={content.heading_gold} subtitle={content.intro} />
 
-        <div className="max-w-2xl mx-auto px-6 sm:px-12 py-12 sm:py-16 space-y-6">
+        <div className="max-w-2xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-12 sm:pb-16 space-y-6">
           <div className="bg-white rounded-2xl p-6 sm:p-8 space-y-4" style={{ border: "1px solid var(--color-border)" }}>
             <div className="flex flex-wrap gap-6">
               <a href={`mailto:${content.contact_email}`}

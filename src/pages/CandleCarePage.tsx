@@ -4,7 +4,6 @@ import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
 import CandleCareSection from "@/components/sections/CandleCareSection";
 import FooterSection from "@/components/sections/FooterSection";
 import PageHero from "@/components/PageHero";
-import RichText from "@/lib/richtext";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { breadcrumbJsonLd } from "@/lib/seo";
 
@@ -32,11 +31,12 @@ const CandleCarePage = () => {
 
   return (
     <div className="w-full">
-      {/* top padding = announcement bar (38px) + nav (~56px) */}
-      <div className="pt-[var(--nav-h,112px)]">
+      {/* PageHero owns the nav offset — don't re-add pt-[var(--nav-h)] here. */}
+      <div>
         <PageHero
           eyebrow={content.candleCare.label}
-          title={<><RichText text={content.candleCare.headline_part1} />{" "}<span style={{ color: "var(--color-gold)" }}><RichText text={content.candleCare.headline_part2} /></span></>}
+          title={content.candleCare.headline_part1}
+          titleGold={content.candleCare.headline_part2}
           subtitle={content.candleCare.hero_subtitle ?? DEFAULT_CONTENT.candleCare.hero_subtitle}
         />
 

@@ -61,6 +61,11 @@ export const ROUTE_META: Record<string, RouteMeta> = {
     description:
       "Meet the maker behind The Olive Goose — an independent Irish candle company hand-pouring café-inspired soy candles in small batches in Dublin.",
   },
+  "/our-story": {
+    title: "Behind the Pour | The Olive Goose",
+    description:
+      "A behind-the-scenes look at the founder’s everyday life, the pours, the studio, and the craft behind each Olive Goose candle.",
+  },
   "/candle-care": {
     title: "Candle Care Guide: Burn Times, Wick Trimming | The Olive Goose",
     description:

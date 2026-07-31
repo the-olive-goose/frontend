@@ -33,10 +33,10 @@ const LegalPageLayout = ({ eyebrow, data }: Props) => {
 
   return (
   <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
-    <div className="pt-[var(--nav-h,112px)]">
-      <PageHero eyebrow={eyebrow} title={data.heading} subtitle={fill(data.intro)} />
+    <div>
+      <PageHero eyebrow={eyebrow} title={data.heading} titleGold={data.heading_gold} subtitle={fill(data.intro)} />
 
-      <div className="max-w-3xl mx-auto px-6 sm:px-12 py-12 sm:py-16">
+      <div className="max-w-3xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-12 sm:pb-16">
         <div className="bg-white rounded-2xl p-6 sm:p-8 space-y-6" style={{ border: "1px solid var(--color-border)" }}>
           {data.sections.map(section => (
             <div key={section.title}>

@@ -52,8 +52,8 @@ test.describe("Payment integrity", () => {
       data: {
         fulfillment_type: "delivery",
         shipping_address: {
-          full_name: "E2E", address_line1: "1 Test St", city: "Dublin",
-          postal_code: "D01AB12", country: "Ireland", phone: "+353850000000",
+          full_name: "E2E Shopper", address_line1: "1 Test Street", city: "Dublin",
+          state: "Dublin", postal_code: "D01 F5P2", country: "Ireland", phone: "+353850000000",
         },
       },
     });

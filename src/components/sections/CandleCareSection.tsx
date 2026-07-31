@@ -9,7 +9,17 @@ interface Props { data: CandleCareContent }
 const CandleCareSection = ({ data }: Props) => {
   const cards = data.cards ?? [];
   return (
-  <section id="care" className="py-24 lg:py-32" style={{ background: "var(--bg-page)" }}>
+  <section
+    id="care"
+    style={{
+      background: "var(--bg-page)",
+      // Top gap is the shared hero→body rhythm (index.css). It used to be
+      // py-24/py-32, which left this page with a ~128px void the other nav
+      // pages didn't have.
+      paddingTop: "var(--page-body-pt)",
+      paddingBottom: "clamp(3rem,6vw,5rem)",
+    }}
+  >
     <div className="max-w-7xl mx-auto px-6">
       {/* Cards */}
       <div className="grid sm:grid-cols-3 gap-6">

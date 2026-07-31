@@ -12,6 +12,7 @@
 
 import { test, expect, Page } from "@playwright/test";
 import { payStripeTestCard } from "./stripe-checkout";
+import { fillDeliveryAddress } from "./address-form";
 
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
 const API = process.env.E2E_API ?? "http://localhost:3001";
@@ -130,14 +131,9 @@ test.describe("Purchase journey", () => {
     await page.getByRole("button", { name: /proceed to checkout/i }).click();
     await expect(page).toHaveURL(/\/checkout/);
 
-    // Fill the delivery address. Country is a <select> (it drives the postal-code
-    // rules), so pick Ireland first — that makes the postal field an Eircode.
-    await page.getByPlaceholder("Full name").fill("E2E Shopper");
-    await page.getByPlaceholder("Phone").fill("+353851234567");
-    await page.getByPlaceholder("Address line 1").fill("1 Test Street");
-    await page.locator("select").filter({ hasText: "Select country" }).selectOption("Ireland");
-    await page.getByPlaceholder("City").fill("Dublin");
-    await page.getByPlaceholder("Eircode").fill("D18 K7W2");
+    // Every field is labelled, so address them by label rather than placeholder.
+    // Country first: it drives the county dropdown and the Eircode rules below it.
+    await fillDeliveryAddress(page, "E2E Shopper");
 
     // Place order → redirected to Stripe's hosted checkout. This is the
     // security-critical milestone owned by OUR code: a valid, server-priced
@@ -218,6 +214,41 @@ test.describe("Account & tracking", () => {
     // attribute — so assert the input's current value, don't match text/attrs).
     await expect(page.getByRole("heading", { name: /your account/i })).toBeVisible({ timeout: 10_000 });
     await expect(page.locator("input:disabled")).toHaveValue(SHOPPER_EMAIL, { timeout: 10_000 });
+  });
+
+  test("account page refuses a name that can't go on a parcel", async ({ page }) => {
+    await signIn(page);
+    await page.goto(`${BASE}/account`);
+    const name = page.getByLabel("Full name", { exact: true });
+    await expect(name).toBeVisible({ timeout: 10_000 });
+    const original = (await name.inputValue()) || "E2E Shopper";
+
+    // The junk that used to save silently and then prefill a parcel label.
+    await name.fill("4444");
+    await page.getByRole("button", { name: /save changes/i }).click();
+    await expect(page.getByText(/enter your real name/i).first()).toBeVisible();
+
+    // Blocked in the UI *and* at the API — the endpoint is not a back door.
+    const rejected = await page.request.put(`${API}/api/user/me`, { data: { full_name: "4444" } });
+    expect(rejected.status()).toBe(400);
+
+    // A real name saves, and saves tidied.
+    await name.fill(`  ${original}  `);
+    await page.getByRole("button", { name: /save changes/i }).click();
+    await expect(page.getByText("Saved ✓")).toBeVisible({ timeout: 10_000 });
+    const me = await page.request.get(`${API}/api/user/me`);
+    expect((await me.json()).full_name).toBe(original);
+  });
+
+  test("addresses are not writable through the profile endpoint", async ({ page }) => {
+    await signIn(page);
+    // The users-row address columns mirror the default address book entry, so a
+    // direct write here would be unvalidated *and* clobbered on the next sync.
+    const res = await page.request.put(`${API}/api/user/me`, {
+      data: { address_line1: "4444", city: "d", country: "Ireland" },
+    });
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toMatch(/address book/i);
   });
 
   test("sign out ends the session", async ({ page }) => {

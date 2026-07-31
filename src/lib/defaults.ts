@@ -17,12 +17,15 @@ export interface Bundle {
 
 export interface DealsContent {
   page_title: string;
+  /** Tail of the banner headline shown in gold — see src/lib/pageTitle.ts. */
+  page_title_gold: string;
   page_subtitle: string;
   bundles: Bundle[];
 }
 
 export const DEFAULT_DEALS: DealsContent = {
-  page_title: "Today's Deals",
+  page_title: "Today's",
+  page_title_gold: "Deals",
   page_subtitle: "Bundle & Save — handpicked combos at a special price",
   bundles: [],
 };
@@ -150,6 +153,13 @@ export interface BrandStoryContent {
   image_url: string;
   cta_text: string;
   cta_href: string;
+  /**
+   * Banner headline for the /about page, which this section also feeds. Kept
+   * apart from `headline` because that one titles the home-page story block —
+   * the two say different things and live on different backgrounds.
+   */
+  page_title: string;
+  page_title_gold: string;
 }
 
 export interface ProductsContent {
@@ -179,6 +189,16 @@ export interface ProductPageContent {
   circle: ProductCircleContent;
 }
 
+/**
+ * The /shop banner. Only the headline lives here — the eyebrow and the per-
+ * category subtitle come from the shop categories themselves. The headline is
+ * used for the "All Candles" view; a category or search view titles itself.
+ */
+export interface ShopPageContent {
+  page_title: string;
+  page_title_gold: string;
+}
+
 export interface CandleCareContent {
   label: string;
   headline_part1: string;
@@ -195,7 +215,18 @@ export interface VideosContent {
   /** Phrases in the scrolling strip above the reels. Empty hides the strip. */
   ticker: string[];
   items: VideoItem[];
+  /**
+   * Whether the studio reel section shows on the home page. Optional and ON by
+   * default: content saved before this toggle existed has no `enabled` key, and
+   * a missing key must not read as "off" — that would silently pull a live
+   * section off the storefront the moment this ships. Only an explicit `false`
+   * hides it, which is what {@link isVideosEnabled} encodes.
+   */
+  enabled?: boolean;
 }
+
+/** Read the videos toggle. Absent means on — see {@link VideosContent.enabled}. */
+export const isVideosEnabled = (data: Pick<VideosContent, "enabled">) => data.enabled !== false;
 
 export interface TestimonialsContent {
   label: string;
@@ -228,6 +259,81 @@ export interface WelcomeClubContent {
   cta_href: string;
 }
 
+/**
+ * The "Meet the maker" block on /about.
+ *
+ * It started life as a straight mirror of the home page's Welcome Club section,
+ * which meant the About page could never say anything the home page didn't. The
+ * mirror is still the default (`use_home_content`), so nothing changes for a
+ * store that never opens this editor — but switching it off lets the About page
+ * carry its own photo and words.
+ *
+ * The label, the two buttons and the maker photo's alt text always belong to
+ * this page: they exist nowhere in the Welcome Club section, and the buttons
+ * point at things (the block itself, the Our Story page) that only exist here.
+ */
+export interface AboutFounderContent {
+  /** true → photo/headline/name line/bio come from Home Page → Welcome Club. */
+  use_home_content: boolean;
+  /** Small uppercase label above the block, e.g. "Meet the maker". */
+  label: string;
+  headline: string;
+  photo_url: string;
+  name_line: string;
+  bio: string;
+  /** Button under the bio — opens the photo diary page. Blank hides it. */
+  cta_text: string;
+  cta_href: string;
+  /**
+   * The button beside the story block's own CTA further up the page, which
+   * scrolls down to this block. Blank hides it.
+   */
+  jump_cta_text: string;
+}
+
+export interface OurStoryPhoto {
+  id: string;
+  image_url: string;
+  caption: string;
+}
+
+/** The photo diary at /our-story that the maker block's button opens. */
+export interface OurStoryPageContent {
+  label: string;
+  page_title: string;
+  page_title_gold: string;
+  page_subtitle: string;
+  /** Blank lines separate paragraphs, as everywhere else. */
+  intro: string;
+  intro_tag_primary: string;
+  intro_tag_secondary: string;
+  intro_headline: string;
+  intro_headline_gold: string;
+  intro_hint: string;
+  candle_label: string;
+  candle_image_url: string;
+  candle_wrapped_title: string;
+  candle_wrapped_action: string;
+  candle_wrapped_note: string;
+  candle_ready_title: string;
+  candle_ready_action: string;
+  candle_ready_note: string;
+  candle_lit_title: string;
+  candle_lit_action: string;
+  candle_lit_note: string;
+  celebration_message: string;
+  diary_label: string;
+  diary_headline: string;
+  diary_hint: string;
+  diary_empty_message: string;
+  photos: OurStoryPhoto[];
+  closing_label: string;
+  closing_headline: string;
+  closing_body: string;
+  cta_text: string;
+  cta_href: string;
+}
+
 export interface FooterContent {
   brand_name: string;
   tagline: string;
@@ -244,6 +350,8 @@ export interface ReturnPolicySection {
 
 export interface ReturnPolicyContent {
   heading: string;
+  /** Tail of the banner headline shown in gold — see src/lib/pageTitle.ts. */
+  heading_gold: string;
   intro: string;
   sections: ReturnPolicySection[];
   contact_email: string;
@@ -269,10 +377,15 @@ export interface FaqItem {
 
 export interface CustomerServiceContent {
   heading: string;
+  /** Tail of the banner headline shown in gold — see src/lib/pageTitle.ts. */
+  heading_gold: string;
   intro: string;
   contact_email: string;
   contact_phone: string;
   faqs: FaqItem[];
+  /** The /faq page banner. Its Q&As are `faqs` below, so its copy lives here too. */
+  faq_heading: string;
+  faq_heading_gold: string;
 }
 
 export interface PickupSettingsContent {
@@ -311,8 +424,12 @@ export interface SiteContent {
   momentPill: MomentPillContent;
   welcomeClub: WelcomeClubContent;
   brandStory: BrandStoryContent;
+  aboutPage: AboutPageContent;
+  aboutFounder: AboutFounderContent;
+  ourStoryPage: OurStoryPageContent;
   products: ProductsContent;
   productPage: ProductPageContent;
+  shopPage: ShopPageContent;
   candleCare: CandleCareContent;
   videos: VideosContent;
   testimonials: TestimonialsContent;
@@ -389,10 +506,67 @@ export const DEFAULT_CONTENT: SiteContent = {
   brandStory: {
     label: "OUR STORY",
     headline: "Born from a love of slow living",
+    page_title: "From Café Moments to",
+    page_title_gold: "Candle Glow",
     body: "The Olive Goose began in a small Dublin kitchen, with a pot of soy wax, a shelf of fragrance oils, and an obsession with creating the perfect scent. Each candle is hand-poured in small batches in Ireland, using sustainably sourced soy wax and fragrances chosen for their ability to calm, energise, or ground the senses.\n\nWe believe your home should feel like a sanctuary — and that the right scent can transform any space.",
     image_url: "",
     cta_text: "Learn More",
-    cta_href: "#",
+    cta_href: "#values",
+  },
+
+  aboutPage: {
+    page_title: "Our Story",
+    page_title_gold: "About",
+    page_subtitle: "Handcrafted with intention. Poured with love. Made for moments that matter.",
+  },
+
+  aboutFounder: {
+    use_home_content: true,
+    label: "Meet the maker",
+    headline: "Welcome to the Olive Goose Club!",
+    photo_url: "",
+    name_line: "Hi, I'm Meghna — the person behind The Olive Goose.",
+    bio: "I create café-inspired pieces designed to bring warmth and calm into everyday life.",
+    cta_text: "Our Story",
+    cta_href: "/our-story",
+    jump_cta_text: "Meet the Founder",
+  },
+
+  ourStoryPage: {
+    label: "Behind the pour",
+    page_title: "A Day in the",
+    page_title_gold: "Studio",
+    page_subtitle: "The pours, the spills and the small wins behind every Olive Goose candle.",
+    intro:
+      "The Olive Goose is a one-person studio in Dublin. Every candle starts as a block of soy wax on the kitchen counter and ends up wrapped by hand, and these are the bits in between.",
+    intro_tag_primary: "photo dump ✦",
+    intro_tag_secondary: "made in dublin",
+    intro_headline: "Little studio moments,",
+    intro_headline_gold: "big main-character energy.",
+    intro_hint: "Tap the candle, then take a wander ↓",
+    candle_label: "The cosy little experiment",
+    candle_image_url: "https://i.ibb.co/fz8G0NTb/44a9703e-bfab-4d84-a8d2-41ca7ff4df87.jpg",
+    candle_wrapped_title: "A tiny parcel, just for you",
+    candle_wrapped_action: "Unbox the candle",
+    candle_wrapped_note: "Tap the parcel to peel it open",
+    candle_ready_title: "Okay, now make it cosy",
+    candle_ready_action: "Light the candle",
+    candle_ready_note: "One little tap and we’re glowing",
+    candle_lit_title: "The studio is officially glowing",
+    candle_lit_action: "Blow out the candle",
+    candle_lit_note: "Make a wish — the photo diary is next",
+    celebration_message: "Pop! The photo diary is unlocked.",
+    diary_label: "The daily photo diary",
+    diary_headline: "Proof we were here ✷",
+    diary_hint: "Tap a snapshot to go full-screen",
+    diary_empty_message: "The next studio snapshots are loading soon.",
+    photos: [],
+    closing_label: "From my hands to yours",
+    closing_headline: "Made by hand, one batch at a time",
+    closing_body:
+      "Every candle you order is poured, cured, trimmed and packed by the same pair of hands you've just been looking at.",
+    cta_text: "Shop the candles",
+    cta_href: "/shop",
   },
 
   products: {
@@ -442,6 +616,11 @@ export const DEFAULT_CONTENT: SiteContent = {
     },
   },
 
+  shopPage: {
+    page_title: "All",
+    page_title_gold: "Candles",
+  },
+
   candleCare: {
     label: "CANDLE CARE",
     headline_part1: "Love it long.",
@@ -470,6 +649,7 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   videos: {
+    enabled: true,
     label: "IN THE STUDIO",
     headline: "Watch how it's made",
     subtext: "From pour to packaging — a glimpse into our craft",
@@ -571,7 +751,8 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   returnPolicy: {
-    heading: "Delivery & Returns",
+    heading: "Delivery &",
+    heading_gold: "Returns",
     intro: "Not the perfect scent? No worries — we want you to love what you burn. Here's how shipping and returns work at The Olive Goose.",
     sections: [
       {
@@ -604,10 +785,13 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   customerService: {
-    heading: "Contact Us",
+    heading: "Contact",
+    heading_gold: "Us",
     intro: "Questions about an order, a candle, or anything else? We're happy to help.",
     contact_email: "hello@theolivegoose.com",
     contact_phone: "",
+    faq_heading: "Frequently Asked",
+    faq_heading_gold: "Questions",
     faqs: [
       {
         question: "How long does shipping take?",
@@ -663,7 +847,8 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   privacyPolicy: {
-    heading: "Privacy Policy",
+    heading: "Privacy",
+    heading_gold: "Policy",
     intro: "Your privacy matters to us. Here's what we collect, why, and how you're in control of it.",
     sections: [
       {
@@ -683,7 +868,8 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   termsOfService: {
-    heading: "Terms of Service",
+    heading: "Terms of",
+    heading_gold: "Service",
     intro: "The basics of using our site and ordering from The Olive Goose.",
     sections: [
       {
@@ -703,7 +889,8 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   shippingPolicy: {
-    heading: "Shipping Policy",
+    heading: "Shipping",
+    heading_gold: "Policy",
     intro: "How we get your candles from our studio to your door.",
     sections: [
       {

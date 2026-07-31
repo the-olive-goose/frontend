@@ -11,6 +11,7 @@ import { formatPrice } from "@/lib/cart";
 import { productPath } from "@/lib/products";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { SITE_URL, breadcrumbJsonLd } from "@/lib/seo";
+import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
 import AddToCartButton from "@/components/ui/AddToCartButton";
 import RichText, { stripRichText } from "@/lib/richtext";
@@ -222,29 +223,24 @@ const DealsPage = () => {
   return (
     <div className="min-h-screen" style={{ background: "var(--color-cream-section)" }}>
 
-      <div className="pt-[var(--nav-h,112px)]">
-        {/* Hero */}
-        <div style={{ background: "var(--color-forest-dark)", padding: "clamp(40px,6vw,72px) 0" }}>
-          <div className="max-w-5xl mx-auto px-6 text-center">
-            <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              className="font-display text-xs tracking-[0.2em] uppercase mb-3"
-              style={{ color: "var(--color-gold)" }}>
-              🕯️ limited time offers 🕯️
-            </motion.p>
-            <motion.h1 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}
-              style={{ fontFamily: "'Fredoka',sans-serif", fontWeight: 600, fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--color-cream-text)", lineHeight: 1.05, marginBottom: 12 }}>
-              <RichText text={deals.page_title} />
-            </motion.h1>
-            <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.18 }}
-              className="font-sans text-base leading-relaxed max-w-xl mx-auto"
-              style={{ color: "rgba(245,239,230,0.7)" }}>
-              <RichText text={deals.page_subtitle} />
-            </motion.p>
-          </div>
-        </div>
+      <div>
+        {/* Hero — shared band: owns the nav offset + page rhythm */}
+        <PageHero
+          eyebrow="Limited Time Offers"
+          title={deals.page_title}
+          titleGold={deals.page_title_gold}
+          subtitle={deals.page_subtitle}
+        />
 
         {/* Bundles */}
-        <div className="max-w-5xl mx-auto" style={{ padding: "clamp(32px,5vw,72px) clamp(12px,4vw,32px)" }}>
+        <div
+          className="max-w-5xl mx-auto"
+          style={{
+            paddingTop: "var(--page-body-pt)",
+            paddingBottom: "clamp(32px,5vw,72px)",
+            paddingInline: "clamp(12px,4vw,32px)",
+          }}
+        >
           {activeBundles.length === 0 ? (
             <div className="text-center py-20">
               <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "2rem", color: "var(--color-forest-dark)", opacity: 0.4 }}>No deals right now</p>

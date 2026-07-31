@@ -5,6 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import FooterSection from "@/components/sections/FooterSection";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { formatPrice } from "@/lib/cart";
+import { formatAddressBlock, formatPhoneDisplay } from "@/lib/addressValidation";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
 
@@ -179,6 +180,20 @@ const OrderTrackingPage = () => {
                 )}
               </div>
 
+              {/* The full address as it went to the courier — the customer's chance
+                  to spot a wrong flat number before the parcel is out the door. */}
+              {!isPickup && addr?.address_line1 && (
+                <div className="bg-white rounded-xl p-5" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                  <p className="font-sans text-sm font-semibold mb-1" style={{ color: "#0F1111" }}>Delivery address</p>
+                  {formatAddressBlock(addr).map((line, i) => (
+                    <p key={`${line}-${i}`} className="font-sans text-sm" style={{ color: "#555" }}>{line}</p>
+                  ))}
+                  {addr.phone && (
+                    <p className="font-sans text-xs mt-1" style={{ color: "#555" }}>{formatPhoneDisplay(addr.phone)}</p>
+                  )}
+                </div>
+              )}
+
               {isPickup && addr && (
                 <div className="bg-white rounded-xl p-5" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                   <p className="font-sans text-sm font-semibold mb-1" style={{ color: "#0F1111" }}>Pickup location</p>
@@ -187,7 +202,7 @@ const OrderTrackingPage = () => {
                   </p>
                   {addr.hours && <p className="font-sans text-xs mt-1" style={{ color: "#007185" }}>{addr.hours}</p>}
                   {addr.contact_phone && (
-                    <p className="font-sans text-xs mt-1" style={{ color: "#555" }}>Contact: {addr.contact_name} · {addr.contact_phone}</p>
+                    <p className="font-sans text-xs mt-1" style={{ color: "#555" }}>Contact: {addr.contact_name} · {formatPhoneDisplay(addr.contact_phone)}</p>
                   )}
                 </div>
               )}

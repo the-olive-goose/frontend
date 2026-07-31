@@ -20,6 +20,7 @@ import CheckoutPage from "./pages/CheckoutPage.tsx";
 import CheckoutSuccessPage from "./pages/CheckoutSuccessPage.tsx";
 import DealsPage from "./pages/DealsPage.tsx";
 import AboutPage from "./pages/AboutPage.tsx";
+import FounderDiaryPage from "./pages/FounderDiaryPage.tsx";
 import AuthCallback from "./pages/AuthCallback.tsx";
 import AccountPage from "./pages/AccountPage.tsx";
 import SecurityPage from "./pages/SecurityPage.tsx";
@@ -64,6 +65,7 @@ const App = () => (
                 <Route path="/checkout/success" element={<CheckoutSuccessPage />} />
                 <Route path="/deals" element={<DealsPage />} />
                 <Route path="/about" element={<AboutPage />} />
+                <Route path="/our-story" element={<FounderDiaryPage />} />
                 <Route path="/candle-care" element={<CandleCarePage />} />
                 <Route path="/account" element={<AccountPage />} />
                 <Route path="/account/security" element={<SecurityPage />} />

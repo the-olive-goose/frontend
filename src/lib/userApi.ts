@@ -37,15 +37,13 @@ export interface AppUser {
   country?: string;
 }
 
+// Contact details only. The address columns on AppUser mirror the default
+// address book entry and are maintained server-side, so they are edited through
+// the address endpoints (createAddress/updateAddress/setDefaultAddress) — PUT
+// /api/user/me rejects them rather than taking an unvalidated write.
 export interface ProfileUpdate {
   full_name?: string;
   phone?: string;
-  address_line1?: string;
-  address_line2?: string;
-  city?: string;
-  state?: string;
-  postal_code?: string;
-  country?: string;
 }
 
 // Step 1 of signup: validate + email a verification code. Returns dev_otp only

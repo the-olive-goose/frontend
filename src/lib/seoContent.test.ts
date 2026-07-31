@@ -106,6 +106,22 @@ describe("previewMeta", () => {
     });
   });
 
+  it("derives the founder diary page from the our story section", () => {
+    const content = {
+      ...DEFAULT_CONTENT,
+      ourStoryPage: {
+        ...DEFAULT_CONTENT.ourStoryPage,
+        page_title: "A Day in the",
+        page_title_gold: "Studio",
+        page_subtitle: "A behind-the-scenes look at the candles.",
+      },
+    };
+    expect(previewMeta("/our-story", content, SITE_NAME)).toMatchObject({
+      title: `A Day in the Studio | ${SITE_NAME}`,
+      description: "A behind-the-scenes look at the candles.",
+    });
+  });
+
   it("returns the built-in entry for a route with no source", () => {
     expect(previewMeta("/faq", DEFAULT_CONTENT, SITE_NAME)).toEqual(ROUTE_META["/faq"]);
   });

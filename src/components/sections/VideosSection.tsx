@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { VideosContent, VideoItem, toEmbedUrl, isEmbedUrl, isDirectVideo } from "@/lib/defaults";
+import { VideosContent, VideoItem, toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled } from "@/lib/defaults";
 import RichText, { stripRichText } from "@/lib/richtext";
 import useIsMobile from "@/hooks/useIsMobile";
 import useSwipe from "@/hooks/useSwipe";
@@ -467,7 +467,9 @@ const VideosSection = ({ data }: Props) => {
   // Reading a reel in the lightbox should leave the rail parked on it.
   useEffect(() => { if (open !== null) scrollToCard(open); }, [open, scrollToCard]);
 
-  if (!items.length) return null;
+  // Switched off in admin, or nothing to show. The toggle lives here rather than
+  // at the call site so every consumer of the section obeys it.
+  if (!isVideosEnabled(data) || !items.length) return null;
 
   return (
     <section id="journal" style={{ background: "var(--bg-videos)", overflow: "hidden" }} className="py-16 sm:py-20">

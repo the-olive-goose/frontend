@@ -78,10 +78,10 @@ const ReturnPolicyPage = () => {
 
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
-      <div className="pt-[var(--nav-h,112px)]">
-        <PageHero eyebrow="Shipping & Returns" title={policy.heading} subtitle={policy.intro} />
+      <div>
+        <PageHero eyebrow="Shipping & Returns" title={policy.heading} titleGold={policy.heading_gold} subtitle={policy.intro} />
 
-        <div className="max-w-3xl mx-auto px-6 sm:px-12 py-12 sm:py-16 space-y-6">
+        <div className="max-w-3xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-12 sm:pb-16 space-y-6">
           {user && <PageSubNav items={ORDERS_NAV} />}
 
           {/* Policy content — CMS managed */}
