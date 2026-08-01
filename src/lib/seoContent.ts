@@ -74,9 +74,12 @@ export const META_SOURCES: Record<string, MetaSource> = {
     title: joinPageTitle(c.page_title, c.page_title_gold),
     description: c.page_subtitle,
   })),
-  "/about": defineSource("Our Story", "Home Page → Brand Story", "brandStory", DEFAULT_CONTENT.brandStory, (c) => ({
+  // The banner is what the page announces itself as, so the search title should
+  // match it. It used to come from Brand Story's own pair of title fields, which
+  // meant the tab said one thing and the page said another.
+  "/about": defineSource("Our Story", "About Page → Banner & Values", "aboutPage", DEFAULT_CONTENT.aboutPage, (c) => ({
     title: joinPageTitle(c.page_title, c.page_title_gold),
-    description: c.body,
+    description: c.page_subtitle,
   })),
   "/our-story": defineSource("Founder Diary", "About Page → Founder Diary", "ourStoryPage", DEFAULT_CONTENT.ourStoryPage, (c) => ({
     title: joinPageTitle(c.page_title, c.page_title_gold),

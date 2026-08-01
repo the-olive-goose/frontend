@@ -10,6 +10,7 @@ import AnalyticsTracker from "@/components/AnalyticsTracker";
 import AuthModal from "@/components/AuthModal";
 import CookieConsent from "@/components/CookieConsent";
 import Layout from "@/components/Layout";
+import ScrollToTop from "@/components/ScrollToTop";
 import SeoManager from "@/components/SeoManager";
 import Index from "./pages/Index.tsx";
 import CandleCarePage from "./pages/CandleCarePage.tsx";
@@ -50,6 +51,7 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
+        <ScrollToTop />
         <SeoManager />
         <AnalyticsTracker />
         <AuthProvider>

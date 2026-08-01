@@ -57,7 +57,7 @@ describe("shipped page headlines", () => {
     ["shop", DEFAULT_CONTENT.shopPage.page_title, DEFAULT_CONTENT.shopPage.page_title_gold],
     ["candle care", DEFAULT_CONTENT.candleCare.headline_part1, DEFAULT_CONTENT.candleCare.headline_part2],
     ["deals", DEFAULT_DEALS.page_title, DEFAULT_DEALS.page_title_gold],
-    ["about", DEFAULT_CONTENT.brandStory.page_title, DEFAULT_CONTENT.brandStory.page_title_gold],
+    ["about", DEFAULT_CONTENT.aboutPage.page_title, DEFAULT_CONTENT.aboutPage.page_title_gold],
     ["returns", DEFAULT_CONTENT.returnPolicy.heading, DEFAULT_CONTENT.returnPolicy.heading_gold],
     ["faq", DEFAULT_CONTENT.customerService.faq_heading, DEFAULT_CONTENT.customerService.faq_heading_gold],
     ["customer service", DEFAULT_CONTENT.customerService.heading, DEFAULT_CONTENT.customerService.heading_gold],

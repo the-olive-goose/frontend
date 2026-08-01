@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { submitFeedback, uploadImage } from "@/lib/api";
+import { submitFeedback, uploadFeedbackPhoto, resolveUploadUrl } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 
@@ -17,14 +17,18 @@ const Star = ({ filled, onClick }: { filled: boolean; onClick: () => void }) => 
   </button>
 );
 
+const MAX_MESSAGE = 2000;   // must match FEEDBACK_MAX_LEN on the server
+const MAX_PHOTO_MB = 5;     // must match the server's feedback-photo upload cap
+
 const FeedbackModal = ({ open, onClose }: Props) => {
   const { user } = useAuth();
   useBodyScrollLock(open);
   const [rating,    setRating]    = useState(5);
-  const [name,      setName]      = useState(user?.full_name?.trim() || user?.email?.split("@")[0] || "");
-  const [email,     setEmail]     = useState(user?.email ?? "");
+  const [name,      setName]      = useState("");
+  const [email,     setEmail]     = useState("");
   const [message,   setMessage]   = useState("");
   const [photoUrl,  setPhotoUrl]  = useState("");
+  const [website,   setWebsite]   = useState("");   // honeypot — humans never see it
   const [uploading, setUploading] = useState(false);
   const [submitting,setSubmitting]= useState(false);
   const [done,      setDone]      = useState(false);
@@ -32,10 +36,20 @@ const FeedbackModal = ({ open, onClose }: Props) => {
   const fileRef  = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
 
+  // The modal is mounted for the whole page life, so seeding name/email from
+  // `user` in useState only ever caught the value present on first render —
+  // anyone who signed in afterwards got an empty form. Re-seed on each open,
+  // without clobbering edits the shopper has already made.
+  useEffect(() => {
+    if (!open || !user) return;
+    setName(n => n || user.full_name?.trim() || user.email?.split("@")[0] || "");
+    setEmail(e => e || user.email || "");
+  }, [open, user]);
+
   useEffect(() => {
     if (!open) {
       setTimeout(() => {
-        setRating(5); setMessage(""); setPhotoUrl("");
+        setRating(5); setMessage(""); setPhotoUrl(""); setWebsite("");
         setDone(false); setError(""); setUploading(false);
       }, 300);
     }
@@ -43,21 +57,32 @@ const FeedbackModal = ({ open, onClose }: Props) => {
 
   const handlePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
-    setUploading(true);
-    try { setPhotoUrl(await uploadImage(file)); }
-    catch { setError("Photo upload failed — you can still submit without it."); }
-    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ""; }
+    if (fileRef.current) fileRef.current.value = "";
+    if (!file.type.startsWith("image/")) { setError("Please choose an image file."); return; }
+    if (file.size > MAX_PHOTO_MB * 1024 * 1024) {
+      setError(`That photo is over ${MAX_PHOTO_MB}MB — please pick a smaller one.`); return;
+    }
+    setUploading(true); setError("");
+    try { setPhotoUrl(await uploadFeedbackPhoto(file)); }
+    catch (err) {
+      setError(err instanceof Error ? err.message : "Photo upload failed — you can still submit without it.");
+    }
+    finally { setUploading(false); }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault(); setError("");
-    if (!message.trim()) { setError("Please write your feedback."); return; }
+    const text = message.trim();
+    if (!text) { setError("Please write your feedback."); return; }
+    if (text.length > MAX_MESSAGE) { setError(`Please keep your feedback under ${MAX_MESSAGE} characters.`); return; }
     setSubmitting(true);
     try {
-      await submitFeedback({ name: name.trim(), email: email.trim(), rating, message: message.trim(), photo_url: photoUrl });
+      await submitFeedback({ name: name.trim(), email: email.trim(), rating, message: text, photo_url: photoUrl, website });
       setDone(true);
-    } catch {
-      setError("Something went wrong. Please try again.");
+    } catch (err) {
+      // Show what the server actually said (rate limit, duplicate, bad email) —
+      // a generic message here hid real, actionable failures.
+      setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally { setSubmitting(false); }
   };
 
@@ -126,17 +151,23 @@ const FeedbackModal = ({ open, onClose }: Props) => {
                     </div>
                   </div>
 
+                  {/* Honeypot — hidden from humans and from assistive tech, but
+                      filled in by form-spraying bots, which the server drops. */}
+                  <input type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true"
+                    value={website} onChange={e => setWebsite(e.target.value)}
+                    style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }} />
+
                   {/* Name + Email */}
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block font-sans text-xs font-medium mb-1" style={{ color: "#3b1a0a" }}>Name</label>
-                      <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name"
+                      <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name" maxLength={100}
                         className="w-full px-3 py-2.5 font-sans text-sm rounded-lg outline-none"
                         style={{ background: "#fff", border: "1px solid rgba(107,53,32,0.25)", color: "#111" }} />
                     </div>
                     <div>
                       <label className="block font-sans text-xs font-medium mb-1" style={{ color: "#3b1a0a" }}>Email <span style={{ color: "rgba(30,20,10,0.4)" }}>(optional)</span></label>
-                      <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com"
+                      <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" maxLength={254}
                         className="w-full px-3 py-2.5 font-sans text-sm rounded-lg outline-none"
                         style={{ background: "#fff", border: "1px solid rgba(107,53,32,0.25)", color: "#111" }} />
                     </div>
@@ -147,8 +178,12 @@ const FeedbackModal = ({ open, onClose }: Props) => {
                     <label className="block font-sans text-xs font-medium mb-1" style={{ color: "#3b1a0a" }}>Your feedback <span style={{ color: "#c0572a" }}>*</span></label>
                     <textarea value={message} onChange={e => setMessage(e.target.value)}
                       placeholder="Tell us what you loved about your candle…"
+                      maxLength={MAX_MESSAGE}
                       rows={4} className="w-full px-3 py-2.5 font-sans text-sm rounded-lg outline-none resize-none"
                       style={{ background: "#fff", border: "1px solid rgba(107,53,32,0.25)", color: "#111" }} />
+                    <p className="text-right font-sans" style={{ fontSize: "0.68rem", color: "rgba(30,20,10,0.45)", marginTop: 2 }}>
+                      {message.length} / {MAX_MESSAGE}
+                    </p>
                   </div>
 
                   {/* Photo upload */}
@@ -169,7 +204,7 @@ const FeedbackModal = ({ open, onClose }: Props) => {
                       </button>
                       {photoUrl && (
                         <div className="flex items-center gap-2">
-                          <img src={photoUrl} alt="preview" className="w-12 h-12 rounded-lg object-cover" />
+                          <img src={resolveUploadUrl(photoUrl)} alt="preview" className="w-12 h-12 rounded-lg object-cover" />
                           <button type="button" onClick={() => setPhotoUrl("")} className="text-xs text-red-500 hover:underline">Remove</button>
                         </div>
                       )}

@@ -5,6 +5,8 @@ import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
 import FooterSection from "@/components/sections/FooterSection";
 import PageHero from "@/components/PageHero";
+import InteractiveCandle from "@/components/InteractiveCandle";
+import { DiaryReel, DiaryReelViewer } from "@/components/DiaryReel";
 import RichText from "@/lib/richtext";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { breadcrumbJsonLd } from "@/lib/seo";
@@ -14,6 +16,7 @@ const FounderDiaryPage = () => {
   const [candleStage, setCandleStage] = useState<"wrapped" | "ready" | "lit" | "blown">("wrapped");
   const [openPhoto, setOpenPhoto] = useState<number | null>(null);
   const [celebrating, setCelebrating] = useState(false);
+  const [smoking, setSmoking] = useState(false);
   const diaryRef = useRef<HTMLElement>(null);
 
   useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["About", "/about"], ["Founder Diary", "/our-story"]]));
@@ -44,6 +47,17 @@ const FounderDiaryPage = () => {
     blown: { title: page.diary_headline, action: "", note: "" },
   }[candleStage];
   const isDiaryRevealed = candleStage === "blown";
+  const clampPct = (value: number, fallback: number) => Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : fallback;
+  const wick = {
+    x: clampPct(page.candle_wick_x, DEFAULT_CONTENT.ourStoryPage.candle_wick_x),
+    y: clampPct(page.candle_wick_y, DEFAULT_CONTENT.ourStoryPage.candle_wick_y),
+  };
+
+  useEffect(() => {
+    if (!smoking) return;
+    const timer = window.setTimeout(() => setSmoking(false), 2400);
+    return () => window.clearTimeout(timer);
+  }, [smoking]);
 
   useEffect(() => {
     if (!isDiaryRevealed) return;
@@ -59,7 +73,8 @@ const FounderDiaryPage = () => {
   }, [isDiaryRevealed]);
 
   const advanceCandle = () => {
-    setCandleStage((stage) => stage === "wrapped" ? "ready" : stage === "ready" ? "lit" : stage === "lit" ? "blown" : "ready");
+    if (candleStage === "lit") setSmoking(true);
+    setCandleStage(candleStage === "wrapped" ? "ready" : candleStage === "ready" ? "lit" : candleStage === "lit" ? "blown" : "ready");
   };
 
   return (
@@ -114,18 +129,8 @@ const FounderDiaryPage = () => {
                     <span className="absolute left-1/2 top-0 h-full w-5 -translate-x-1/2 opacity-50" style={{ background: "#c8834b" }} />
                   </motion.div>
                 ) : (
-                  <motion.div key="candle" initial={{ opacity: 0, y: 25, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} className="absolute inset-x-7 bottom-2 flex flex-col items-center">
-                    {candleStage === "lit" && (
-                      <motion.div animate={{ scaleY: [1, 1.2, 0.9, 1], x: [0, 2, -1, 0] }} transition={{ repeat: Infinity, duration: 1.35 }} className="mb-[-4px] h-16 w-9 rounded-[70%_30%_65%_35%] rounded-bl-[65%]" style={{ background: "linear-gradient(#fff3bd 0%, #f8bd49 47%, #e56c24 100%)", boxShadow: "0 0 42px 17px rgba(255,187,61,0.52)" }} />
-                    )}
-                    <div className="relative h-[174px] w-[158px] overflow-hidden rounded-[1.4rem] border-[5px] border-[#fff5dc] shadow-2xl" style={{ background: "#ebd2a2", boxShadow: candleStage === "lit" ? "0 18px 42px rgba(255,190,83,0.38)" : "0 18px 36px rgba(0,0,0,0.28)" }}>
-                      {page.candle_image_url ? (
-                        <img src={page.candle_image_url} alt="The Olive Goose iced latte candle" className="h-full w-full object-cover object-center" />
-                      ) : (
-                        <div className="grid h-full place-items-center text-4xl">☕</div>
-                      )}
-                      <div className="pointer-events-none absolute inset-0" style={{ background: "linear-gradient(145deg, rgba(255,255,255,0.2), transparent 38%, rgba(52,28,11,0.18))" }} />
-                    </div>
+                  <motion.div key="candle" initial={{ opacity: 0, y: 25, scale: 0.92 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.55, ease: "easeOut" }} className="absolute inset-0 flex items-end justify-center pb-3">
+                    <InteractiveCandle imageUrl={page.candle_image_url} stage={candleStage} wickX={wick.x} wickY={wick.y} smoking={smoking} />
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -142,41 +147,18 @@ const FounderDiaryPage = () => {
 
       {isDiaryRevealed && <motion.div ref={diaryRef} initial={{ opacity: 0, y: 36 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.65, ease: "easeOut" }} style={{ scrollMarginTop: "calc(var(--nav-h) + 24px)" }}>
       <section className="max-w-6xl mx-auto px-6 sm:px-12 pb-16 sm:pb-24">
-        <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            {page.diary_label && <p className="font-display text-xs uppercase tracking-[0.2em]" style={{ color: "var(--color-sage-light)" }}><RichText text={page.diary_label} /></p>}
-            <h2 className="mt-2 font-display text-3xl font-semibold sm:text-4xl" style={{ color: "var(--color-forest-dark)" }}><RichText text={page.diary_headline} /></h2>
-          </div>
-          {diaryPhotos.length > 0 && page.diary_hint && <p className="font-sans text-sm" style={{ color: "rgba(30,41,24,0.65)" }}><RichText text={page.diary_hint} /></p>}
+        <div className="mb-7 text-center">
+          {page.diary_label && <p className="font-display text-xs uppercase tracking-[0.2em]" style={{ color: "var(--color-sage-light)" }}><RichText text={page.diary_label} /></p>}
+          <h2 className="mt-2 font-display text-3xl font-semibold sm:text-4xl" style={{ color: "var(--color-forest-dark)" }}><RichText text={page.diary_headline} /></h2>
         </div>
 
         {diaryPhotos.length > 0 ? (
-          <div className="grid auto-rows-[220px] gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {diaryPhotos.map((photo, index) => {
-              const featured = index % 5 === 0;
-              return (
-                <motion.button
-                  key={photo.id || index}
-                  type="button"
-                  initial={{ opacity: 0, y: 28, rotate: index % 2 ? 1.5 : -1.5 }}
-                  whileInView={{ opacity: 1, y: 0, rotate: 0 }}
-                  viewport={{ once: true, amount: 0.2 }}
-                  transition={{ duration: 0.45, delay: Math.min(index * 0.06, 0.3) }}
-                  whileHover={{ y: -7, rotate: index % 2 ? -1 : 1, scale: 1.015 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => setOpenPhoto(index)}
-                  className={`group relative overflow-hidden rounded-[1.65rem] border text-left shadow-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-amber-400 ${featured ? "sm:col-span-2 sm:row-span-2" : ""}`}
-                  style={{ borderColor: "rgba(30,41,24,0.12)", background: "var(--color-sage-pale)" }}
-                >
-                  <img src={photo.image_url} alt={photo.caption || "Founder diary photo"} className="h-full w-full object-cover transition duration-700 group-hover:scale-110" loading="lazy" decoding="async" />
-                  <div className="absolute inset-x-0 bottom-0 translate-y-full bg-gradient-to-t from-black/75 via-black/30 to-transparent p-5 pt-16 transition duration-300 group-hover:translate-y-0">
-                    <p className="font-display text-sm leading-snug" style={{ color: "#fff8ea" }}><RichText text={photo.caption || "A little studio moment"} /></p>
-                  </div>
-                  <span className="absolute right-3 top-3 rounded-full px-2.5 py-1 font-display text-[10px] tracking-[0.14em] opacity-0 transition group-hover:opacity-100" style={{ color: "#25402d", background: "#fff8ea" }}>peek ↗</span>
-                </motion.button>
-              );
-            })}
-          </div>
+          <DiaryReel
+            photos={diaryPhotos}
+            handle={content.footer.brand_name}
+            hint={page.diary_hint}
+            onExpand={setOpenPhoto}
+          />
         ) : (
           <div className="rounded-[1.65rem] border border-dashed p-10 text-center" style={{ borderColor: "rgba(30,41,24,0.25)", background: "rgba(226,235,214,0.45)" }}>
             <div className="text-4xl">📷</div>
@@ -197,13 +179,12 @@ const FounderDiaryPage = () => {
 
       <AnimatePresence>
         {openPhoto !== null && diaryPhotos[openPhoto] && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4 sm:p-8" role="dialog" aria-modal="true" aria-label="Photo diary image" onClick={() => setOpenPhoto(null)}>
-            <motion.figure initial={{ opacity: 0, scale: 0.92, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }} className="relative max-h-full max-w-5xl overflow-hidden rounded-[1.5rem] bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
-              <img src={diaryPhotos[openPhoto].image_url} alt={diaryPhotos[openPhoto].caption || "Founder diary photo"} className="max-h-[75vh] w-full object-contain" />
-              <figcaption className="px-5 py-4 pr-14 font-sans text-sm" style={{ color: "var(--color-forest-dark)" }}><RichText text={diaryPhotos[openPhoto].caption || "A little studio moment"} /></figcaption>
-              <button type="button" onClick={() => setOpenPhoto(null)} className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full font-display text-lg" style={{ color: "var(--color-forest-dark)", background: "rgba(255,255,255,0.88)" }} aria-label="Close photo">×</button>
-            </motion.figure>
-          </motion.div>
+          <DiaryReelViewer
+            photos={diaryPhotos}
+            handle={content.footer.brand_name}
+            index={openPhoto}
+            onClose={() => setOpenPhoto(null)}
+          />
         )}
       </AnimatePresence>
 

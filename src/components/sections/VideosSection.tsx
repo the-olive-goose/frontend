@@ -14,8 +14,9 @@ const isInstagramUrl = (url: string) =>
 /**
  * Rail playback: muted, looping, chrome-free — a moving poster.
  * Lightbox playback: sound on, controls on, the visitor is in charge.
+ * (Also used by the founder-diary reel, which faces the same two modes.)
  */
-const tuneEmbed = (embed: string, mode: "rail" | "lightbox"): string => {
+export const tuneEmbed = (embed: string, mode: "rail" | "lightbox"): string => {
   const join = embed.includes("?") ? "&" : "?";
   if (embed.includes("youtube.com/embed/")) {
     const id = embed.split("/embed/")[1]?.split("?")[0];

@@ -57,10 +57,12 @@ const PaymentBadge = ({ label, children }: { label: string; children: ReactEleme
 // Mirrors the methods enabled in the Stripe Dashboard (Settings → Payment methods),
 // which are what Checkout actually offers now that the backend uses dynamic payment
 // methods. Card brands (Visa/Mastercard/Amex) stand in for "Cards"; the rest are the
-// wallets + BNPL toggled on. Samsung Pay is intentionally omitted — it's South-Korea
-// only and never surfaces for EU shoppers, so showing it here would mislead.
+// wallets toggled on (Amazon Pay, Apple Pay, Google Pay, Link, Revolut Pay).
+// Fixed columns instead of flex-wrap: 8 badges wrap into a ragged last row at some
+// widths, so the rows are pinned to even counts — 2×4 on phones, a single row of 8
+// from sm up (8×46px + gaps ≈ 424px, comfortable at 640px).
 const PaymentIcons = () => (
-  <div className="flex flex-wrap items-center justify-center gap-2">
+  <div className="mx-auto grid w-fit grid-cols-4 items-center justify-items-center gap-2 sm:grid-cols-8">
     {/* Visa */}
     <PaymentBadge label="Visa">
       <svg viewBox="0 0 46 30" width="46" height="30">
@@ -123,13 +125,6 @@ const PaymentIcons = () => (
       <svg viewBox="0 0 46 30" width="46" height="30">
         <rect width="46" height="30" rx="4" fill="#33DDB3"/>
         <text x="23" y="20" textAnchor="middle" fill="#011E0F" fontSize="11" fontWeight="700" fontFamily="Arial">link</text>
-      </svg>
-    </PaymentBadge>
-    {/* Klarna */}
-    <PaymentBadge label="Klarna">
-      <svg viewBox="0 0 46 30" width="46" height="30">
-        <rect width="46" height="30" rx="4" fill="#FFB3C7"/>
-        <text x="23" y="20" textAnchor="middle" fill="#0A0A0A" fontSize="9" fontWeight="700" fontFamily="Arial">Klarna</text>
       </svg>
     </PaymentBadge>
   </div>

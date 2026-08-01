@@ -102,6 +102,14 @@ const uploadImage = multer({
   fileFilter: makeUploadFilter('image/', IMAGE_EXTS, 'image'),
 });
 
+// Review photos arrive from anonymous visitors, so they get a much smaller cap
+// than the admin uploader (which is trusted and used for hero/product art).
+const uploadFeedbackPhoto = multer({
+  storage: makeUploadStorage('review'),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: makeUploadFilter('image/', IMAGE_EXTS, 'image'),
+});
+
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -139,7 +147,7 @@ app.use(cors({
     cb(err);
   },
   credentials: true, // required so the browser sends/accepts the session cookie cross-port in dev
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
@@ -400,6 +408,26 @@ const publicWriteLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many submissions. Please try again later.' },
 });
+// Feedback gets its own budget rather than sharing the newsletter's: a shopper
+// who just subscribed should still be able to leave a review, and a review flood
+// should not silently eat the signup allowance. Deliberately tighter than the
+// shared public-write budget — nobody legitimately writes five reviews an hour.
+const feedbackLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.FEEDBACK_RATE_LIMIT_MAX) || 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many reviews submitted. Please try again in a little while.' },
+});
+// Photo uploads are the most expensive public write (disk + bandwidth), so they
+// get the tightest budget of all — one review carries at most one photo.
+const feedbackPhotoLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.FEEDBACK_PHOTO_RATE_LIMIT_MAX) || 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many photo uploads. Please try again in a little while.' },
+});
 // Trying discount codes is a guessing game: welcome codes are 8 random characters
 // and effectively unguessable, but an admin can mint a short memorable one
 // ("SPRING20"), and the global 400/5min budget is plenty of room to enumerate
@@ -582,6 +610,25 @@ const genTrackingNumber = () =>
 // from request bodies — coerce to a bounded string so a non-string value can't
 // crash a route (e.g. `{}.trim()`) and a giant string can't bloat storage/email.
 const safeText = (v, max = 2000) => typeof v === 'string' ? v.trim().slice(0, max) : '';
+
+// Public free text is rendered back in the admin panel and (once promoted) on
+// the storefront. React escapes markup for us, but zero-width and bidi control
+// characters survive escaping and are the standard trick for hiding text or
+// flipping how a name reads — strip them, keeping newlines and tabs.
+const stripControlChars = (s) =>
+  String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '');
+
+const FEEDBACK_MAX_LEN = 2000;
+
+// A stored photo URL is later loaded by the admin's browser, so accepting any
+// https:// link would let a submitter beacon the admin's IP/user-agent (or point
+// at something they can swap out later). Only paths this server itself issued.
+const isOwnUploadPath = (url) => /^\/uploads\/[A-Za-z0-9._-]+$/.test(url);
+
+// Truncated HMAC — enough to compare two submissions from the same source,
+// not enough to be a useful record of who visited.
+const hashIp = (ip) =>
+  crypto.createHmac('sha256', JWT_SECRET).update(String(ip ?? '')).digest('hex').slice(0, 32);
 
 // Unexpected 5xx errors must never echo raw driver/library messages to the
 // client in production (SQL constraint names, file paths, Stripe internals are
@@ -1404,6 +1451,51 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
   const token = jwt.sign({ email: admin.email, tokenVersion: admin.token_version }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token });
+});
+
+// ── PUT /api/auth/admin/password — change password while signed in ─────────────
+// Until now the only way to change an admin password was the emailed reset link,
+// which is useless if the mailbox is gone and means the hash in the environment
+// silently drifts out of date. Requires the current password (a stolen admin
+// token alone must not be enough to lock the real owner out) and returns a fresh
+// JWT, because bumping token_version invalidates the caller's own token.
+app.put('/api/auth/admin/password', authLimiter, requireAuth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body ?? {};
+  if (!currentPassword || !newPassword)
+    return res.status(400).json({ error: 'Both your current and new password are required.' });
+
+  const pwError = validatePassword(newPassword);
+  if (pwError) return res.status(400).json({ error: pwError });
+  if (currentPassword === newPassword)
+    return res.status(400).json({ error: 'Your new password must be different from the current one.' });
+
+  try {
+    const { rows } = await pool.query('SELECT * FROM admins WHERE email = $1', [req.user.email]);
+    const admin = rows[0];
+    // Compare against a dummy hash when the row is missing so this can't be used
+    // to probe which admin emails exist, same as the login route.
+    const valid = await bcrypt.compare(currentPassword, admin ? admin.password_hash : DUMMY_BCRYPT_HASH);
+    if (!admin || !valid) return res.status(401).json({ error: 'Your current password is not correct.' });
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    const updated = await pool.query(
+      `UPDATE admins SET password_hash = $1, token_version = token_version + 1, updated_at = NOW()
+       WHERE email = $2 RETURNING email, token_version`,
+      [passwordHash, admin.email]
+    );
+    // Any reset link already in an inbox must stop working the moment the
+    // password changes by another route.
+    await pool.query(
+      `UPDATE admin_password_resets SET used_at = NOW() WHERE admin_email = $1 AND used_at IS NULL`,
+      [admin.email]
+    );
+
+    const token = jwt.sign(
+      { email: updated.rows[0].email, tokenVersion: updated.rows[0].token_version },
+      JWT_SECRET, { expiresIn: '7d' }
+    );
+    res.json({ token, message: 'Password updated. Other signed-in sessions have been logged out.' });
+  } catch (err) { sendServerError(res, err); }
 });
 
 // ── Admin password reset (forgot) ───────────────────────────────────────────────
@@ -3932,28 +4024,63 @@ app.get('/api/admin/users', requireAuth, async (_req, res) => {
   } catch (err) { sendServerError(res, err); }
 });
 
+// ── POST /api/feedback/photo (public) ─────────────────────────────────────────
+// The review form used to post to the admin-only /api/upload/image, so every
+// photo a real (non-admin) shopper attached failed with a 401. This is the
+// public counterpart: same allowlisted extensions and randomised filenames, but
+// a 5MB cap and its own rate-limit budget.
+app.post('/api/feedback/photo', feedbackPhotoLimiter, (req, res) => {
+  uploadFeedbackPhoto.single('image')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
+    if (!req.file) return res.status(400).json({ error: 'No file received' });
+    res.json({ path: `/uploads/${req.file.filename}` });
+  });
+});
+
 // ── POST /api/feedback (public) ───────────────────────────────────────────────
-app.post('/api/feedback', publicWriteLimiter, async (req, res) => {
+app.post('/api/feedback', feedbackLimiter, async (req, res) => {
   // Every field here is unauthenticated public input — bound lengths, force the
   // rating into the DB's valid range (a bad value would otherwise 500 on the
-  // CHECK constraint), and only accept http(s)/relative photo URLs so nothing
-  // like javascript: can be stored and later rendered as a link.
-  const name    = safeText(req.body.name, 100);
-  const email   = safeText(req.body.email, 254);
-  const message = safeText(req.body.message, 2000);
+  // CHECK constraint), and only accept photo paths we ourselves issued so a
+  // stored URL can never point the admin's browser at a third-party host.
+
+  // Honeypot: a field hidden from humans by CSS that scripted spam fills in
+  // anyway. Answer 201 rather than an error so the bot has no signal to tune
+  // against, but write nothing.
+  if (safeText(req.body.website, 100)) return res.status(201).json({ ok: true });
+
+  const name    = stripControlChars(safeText(req.body.name, 100));
+  const email   = safeText(req.body.email, 254).toLowerCase();
+  const message = stripControlChars(safeText(req.body.message, FEEDBACK_MAX_LEN + 1));
   const photoUrl = safeText(req.body.photo_url, 500);
   const rating  = Number(req.body.rating ?? 5);
   if (!message) return res.status(400).json({ error: 'Feedback message is required' });
+  if (message.length > FEEDBACK_MAX_LEN)
+    return res.status(400).json({ error: `Please keep your feedback under ${FEEDBACK_MAX_LEN} characters.` });
   if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'Please enter a valid email address.' });
   if (!Number.isInteger(rating) || rating < 1 || rating > 5)
     return res.status(400).json({ error: 'Rating must be a whole number between 1 and 5.' });
-  if (photoUrl && !/^(https?:\/\/|\/)/i.test(photoUrl))
-    return res.status(400).json({ error: 'Photo URL must be a valid link.' });
+  if (photoUrl && !isOwnUploadPath(photoUrl))
+    return res.status(400).json({ error: 'Photo must be one uploaded through this form.' });
+
+  // IPs are only ever stored hashed: enough to spot one source flooding reviews
+  // or to de-dupe a double-tapped submit button, without keeping the address.
+  const ipHash = hashIp(req.ip);
   try {
+    // Rate limits cap volume; this catches the same review arriving twice from a
+    // double click or a retry, which would otherwise pass every other check.
+    const dupe = await pool.query(
+      `SELECT 1 FROM feedback
+       WHERE message = $1 AND (ip_hash = $2 OR (email <> '' AND email = $3))
+         AND created_at > NOW() - INTERVAL '1 hour' LIMIT 1`,
+      [message, ipHash, email]
+    );
+    if (dupe.rowCount) return res.status(409).json({ error: 'Looks like you already sent us this one — thank you!' });
+
     const { rows } = await pool.query(
-      `INSERT INTO feedback (name, email, rating, message, photo_url)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [name, email, rating, message, photoUrl]
+      `INSERT INTO feedback (name, email, rating, message, photo_url, ip_hash)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [name, email, rating, message, photoUrl, ipHash]
     );
     res.status(201).json(rows[0]);
   } catch (err) { sendServerError(res, err); }
@@ -3962,10 +4089,27 @@ app.post('/api/feedback', publicWriteLimiter, async (req, res) => {
 // ── GET /api/admin/feedback (admin only) ──────────────────────────────────────
 app.get('/api/admin/feedback', requireAuth, async (_req, res) => {
   try {
+    // ip_hash stays server-side — the admin UI has no use for it.
     const { rows } = await pool.query(
-      `SELECT * FROM feedback ORDER BY created_at DESC`
+      `SELECT id, name, email, rating, message, photo_url, published, created_at
+       FROM feedback ORDER BY created_at DESC`
     );
     res.json(rows);
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── PATCH /api/admin/feedback/:id (admin only) ────────────────────────────────
+// Marks a review as published so the Testimonials editor can show at a glance
+// which submissions have already been promoted onto the homepage.
+app.patch('/api/admin/feedback/:id', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE feedback SET published = $1 WHERE id = $2
+       RETURNING id, name, email, rating, message, photo_url, published, created_at`,
+      [req.body.published === true, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Feedback not found' });
+    res.json(rows[0]);
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -4077,7 +4221,9 @@ app.delete('/api/shop/candles/:id', requireAuth, async (req, res) => {
 app.post('/api/upload/video', requireAuth, upload.single('video'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   const url = `${BACKEND_URL}/uploads/${req.file.filename}`;
-  res.json({ url });
+  // `path` matches the image endpoint: the frontend prepends its own API_URL,
+  // so the file is fetched through the same origin/proxy as every other asset.
+  res.json({ url, path: `/uploads/${req.file.filename}` });
 });
 
 // ── POST /api/upload/image (admin only) ───────────────────────────────────────
@@ -4230,6 +4376,12 @@ async function initDb() {
       photo_url  TEXT        DEFAULT '',
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    -- published: promoted onto the homepage Testimonials section from Admin.
+    -- ip_hash: HMAC of the submitter's IP, used only to de-dupe repeat sends.
+    ALTER TABLE feedback ADD COLUMN IF NOT EXISTS published BOOL DEFAULT false;
+    ALTER TABLE feedback ADD COLUMN IF NOT EXISTS ip_hash TEXT DEFAULT '';
+    CREATE INDEX IF NOT EXISTS feedback_created_at_idx ON feedback (created_at DESC);
 
     CREATE TABLE IF NOT EXISTS shop_candles (
       id            UUID  DEFAULT gen_random_uuid() PRIMARY KEY,

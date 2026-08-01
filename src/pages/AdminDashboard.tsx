@@ -5,6 +5,7 @@ import {
   getContent,
   saveContent,
   uploadImage,
+  uploadVideo,
   getSubscribers,
   deleteSubscriber,
   getAdminDiscountCodes,
@@ -14,6 +15,9 @@ import {
   getAdminUsers,
   getAdminFeedback,
   deleteAdminFeedback,
+  changeAdminPassword,
+  setFeedbackPublished,
+  resolveUploadUrl,
   getShopCategories,
   saveShopCategory,
   deleteShopCategory,
@@ -56,6 +60,8 @@ import {
   DEFAULT_CONTENT,
   DEFAULT_DEALS,
   DEFAULT_PRODUCT_CARD_THEME,
+  diaryMediaKind,
+  toEmbedUrl,
   type ProductCardTheme,
   type SiteContent,
   type Product,
@@ -68,6 +74,7 @@ import {
   type WelcomeClubContent,
   type BrandStoryContent,
   type AboutPageContent,
+  type AboutValue,
   type AboutFounderContent,
   type OurStoryPageContent,
   type ProductsContent,
@@ -111,74 +118,244 @@ const AboutPageEditor = ({
   onChange: (d: AboutPageContent) => void;
   onSave: () => void;
   saving: boolean;
-}) => (
-  <div className="space-y-6">
-    <SectionHeading title="About" desc="The hero banner copy for the About page, including the page title shown in the shared page hero." />
-    <div className="grid grid-cols-2 gap-4">
-      <Field label="Page Title (plain)" hint={`e.g. "Our Story"`}>
-        <RichInput value={data.page_title} onChange={(e) => onChange({ ...data, page_title: e.target.value })} />
-      </Field>
-      <Field label="Page Title (gold)" hint={`e.g. "About" — shown in gold after the plain part`}>
-        <RichInput value={data.page_title_gold} onChange={(e) => onChange({ ...data, page_title_gold: e.target.value })} />
-      </Field>
-    </div>
-    <Field label="Page Subtitle" hint="Shown underneath the hero title on the About page">
-      <RichTextarea rows={2} value={data.page_subtitle} onChange={(e) => onChange({ ...data, page_subtitle: e.target.value })} />
-    </Field>
-    <SaveButton onClick={onSave} saving={saving} />
-  </div>
-);
+}) => {
+  const values = data.values ?? DEFAULT_CONTENT.aboutPage.values;
+  const setValue = (i: number, patch: Partial<AboutValue>) => {
+    const next = [...values];
+    next[i] = { ...next[i], ...patch };
+    onChange({ ...data, values: next });
+  };
 
+  return (
+    <div className="space-y-6">
+      <SectionHeading
+        title="About — Banner & Values"
+        desc="Everything the About page owns outright: the banner at the top and the 'What we believe in' cards under the story. The story block itself is Home Page → Brand Story, and the founder block is About Page → Meet the Maker."
+      />
+
+      <Field label="Banner Eyebrow" hint={`The small gold line between the two candles — e.g. "Our Story"`}>
+        <RichInput value={data.hero_eyebrow ?? DEFAULT_CONTENT.aboutPage.hero_eyebrow} onChange={(e) => onChange({ ...data, hero_eyebrow: e.target.value })} />
+      </Field>
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="Page Title (plain)" hint={`e.g. "Our Story"`}>
+          <RichInput value={data.page_title} onChange={(e) => onChange({ ...data, page_title: e.target.value })} />
+        </Field>
+        <Field label="Page Title (gold)" hint={`e.g. "About" — shown in gold after the plain part`}>
+          <RichInput value={data.page_title_gold} onChange={(e) => onChange({ ...data, page_title_gold: e.target.value })} />
+        </Field>
+      </div>
+      <Field label="Page Subtitle" hint="Shown underneath the hero title on the About page">
+        <RichTextarea rows={2} value={data.page_subtitle} onChange={(e) => onChange({ ...data, page_subtitle: e.target.value })} />
+      </Field>
+
+      <div className="space-y-4 pt-2 border-t border-border">
+        <Field label="Values Heading" hint={`Sits above the cards — e.g. "What we believe in"`}>
+          <RichInput
+            value={data.values_heading ?? DEFAULT_CONTENT.aboutPage.values_heading}
+            onChange={(e) => onChange({ ...data, values_heading: e.target.value })}
+          />
+        </Field>
+
+        <label className="block text-sm font-sans font-medium text-foreground">
+          Value Cards
+          <span className="block text-xs font-normal text-muted-foreground mt-0.5">
+            The green strip under the story. Remove every card to hide the strip entirely.
+          </span>
+        </label>
+        {values.map((v, i) => (
+          <Card key={i}>
+            <div className="flex items-center justify-between">
+              <span className="font-sans text-sm font-medium text-foreground">Card {i + 1}</span>
+              <RemoveButton onClick={() => onChange({ ...data, values: values.filter((_, j) => j !== i) })} />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Icon" hint="An emoji, e.g. 🌿">
+                <Input value={v.icon} onChange={(e) => setValue(i, { icon: e.target.value })} />
+              </Field>
+              <div className="col-span-2">
+                <Field label="Title">
+                  <RichInput value={v.title} onChange={(e) => setValue(i, { title: e.target.value })} />
+                </Field>
+              </div>
+            </div>
+            <Field label="Description">
+              <RichTextarea rows={3} value={v.body} onChange={(e) => setValue(i, { body: e.target.value })} />
+            </Field>
+          </Card>
+        ))}
+        <AddButton
+          label="Add value card"
+          onClick={() => onChange({ ...data, values: [...values, { icon: "🌿", title: "", body: "" }] })}
+        />
+      </div>
+
+      <SaveButton onClick={onSave} saving={saving} />
+    </div>
+  );
+};
+
+/**
+ * The founder block on /about.
+ *
+ * The one thing this editor has to make obvious is *which* fields are live,
+ * because the block can take its photo and words from the home page's Welcome
+ * Club section instead of its own. The old version showed all of them all of
+ * the time, so a mirrored store had four editable boxes that changed nothing on
+ * the site — the mirrored fields are now hidden behind the choice that governs
+ * them, with a shortcut to the section that actually owns them.
+ */
 const AboutFounderEditor = ({
   data,
   onChange,
   onSave,
   saving,
+  home,
+  onEditWelcomeClub,
 }: {
   data: AboutFounderContent;
   onChange: (d: AboutFounderContent) => void;
   onSave: () => void;
   saving: boolean;
-}) => (
-  <div className="space-y-6">
-    <SectionHeading title="Meet the Maker" desc="Controls the founder block on the About page, including whether it mirrors the home-page welcome section or uses its own content." />
-    <label className="flex items-center gap-2 text-sm text-foreground">
-      <input
-        type="checkbox"
-        checked={data.use_home_content !== false}
-        onChange={(e) => onChange({ ...data, use_home_content: e.target.checked })}
+  /** The Welcome Club copy, so the mirror can be previewed without leaving. */
+  home: WelcomeClubContent;
+  onEditWelcomeClub: () => void;
+}) => {
+  // Absent means mirror — matches resolveAboutFounder, which decides what the
+  // page actually renders.
+  const mirrored = data.use_home_content !== false;
+  const choice = (on: boolean) => onChange({ ...data, use_home_content: on });
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading
+        title="Meet the Maker"
+        desc="The founder block near the bottom of the About page — the round photo, the greeting and the button through to the Founder Diary."
       />
-      Use the Home Page Welcome section for this block
-    </label>
-    <Field label="Section Label" hint="Small uppercase label above the block">
-      <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
-    </Field>
-    <Field label="Headline" hint={data.use_home_content === false ? "Shown in the founder block when using your own content" : "Shown when using the Home Page Welcome content"}>
-      <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
-    </Field>
-    <Field label="Founder Photo URL" hint="Circular profile photo — paste a direct image URL">
-      <Input placeholder="https://…" value={data.photo_url} onChange={(e) => onChange({ ...data, photo_url: e.target.value })} />
-    </Field>
-    <Field label="Name Line">
-      <RichInput value={data.name_line} onChange={(e) => onChange({ ...data, name_line: e.target.value })} />
-    </Field>
-    <Field label="Bio">
-      <RichTextarea rows={3} value={data.bio} onChange={(e) => onChange({ ...data, bio: e.target.value })} />
-    </Field>
-    <div className="grid grid-cols-2 gap-4">
-      <Field label="Story Button Text">
-        <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
-      </Field>
-      <Field label="Story Button Link">
-        <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
-      </Field>
+
+      <div className="space-y-3">
+        <label className="block text-sm font-sans font-medium text-foreground">
+          Where the photo and words come from
+        </label>
+
+        <button
+          type="button"
+          onClick={() => choice(true)}
+          className={`w-full text-left rounded-xl border p-4 transition-colors ${
+            mirrored ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"
+          }`}
+        >
+          <span className="flex items-start gap-3">
+            <input type="radio" checked={mirrored} readOnly className="mt-1 pointer-events-none" />
+            <span>
+              <span className="block font-sans text-sm font-medium text-foreground">
+                Same as the Home Page Welcome Club
+              </span>
+              <span className="block font-sans text-xs text-muted-foreground mt-1">
+                Nothing to write here — the photo, headline, name line and bio are pulled from
+                Home Page → Welcome Club, so both pages always say the same thing. Edit them there
+                and the About page follows.
+              </span>
+            </span>
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => choice(false)}
+          className={`w-full text-left rounded-xl border p-4 transition-colors ${
+            !mirrored ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"
+          }`}
+        >
+          <span className="flex items-start gap-3">
+            <input type="radio" checked={!mirrored} readOnly className="mt-1 pointer-events-none" />
+            <span>
+              <span className="block font-sans text-sm font-medium text-foreground">
+                Write it just for the About page
+              </span>
+              <span className="block font-sans text-xs text-muted-foreground mt-1">
+                Unlocks its own photo, headline, name line and bio below. The home page keeps its
+                Welcome Club copy untouched.
+              </span>
+            </span>
+          </span>
+        </button>
+      </div>
+
+      {mirrored ? (
+        // A read-only look at what the About page will show, so nobody has to
+        // switch tabs just to find out what is being mirrored.
+        <div className="rounded-xl border border-border bg-muted/40 p-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-sans text-sm font-medium text-foreground">
+              Currently showing on /about
+            </span>
+            <button
+              type="button"
+              onClick={onEditWelcomeClub}
+              className="px-3 py-1.5 rounded-lg border border-border font-sans text-xs text-foreground hover:border-primary hover:text-primary transition-colors whitespace-nowrap"
+            >
+              Edit in Welcome Club →
+            </button>
+          </div>
+          <dl className="space-y-2 font-sans text-xs">
+            {[
+              ["Headline", home.headline],
+              ["Name line", home.name_line],
+              ["Bio", home.bio],
+              ["Photo", home.photo_url || "— none set —"],
+            ].map(([label, value]) => (
+              <div key={label} className="grid grid-cols-[6rem_1fr] gap-2">
+                <dt className="text-muted-foreground">{label}</dt>
+                <dd className="text-foreground break-words">{value || "— empty —"}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ) : (
+        <div className="space-y-4 rounded-xl border border-border p-5">
+          <p className="font-sans text-xs text-muted-foreground">
+            These four show on the About page only.
+          </p>
+          <Field label="Headline">
+            <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
+          </Field>
+          <Field label="Founder Photo URL" hint="Circular profile photo — paste a direct image URL">
+            <Input placeholder="https://…" value={data.photo_url} onChange={(e) => onChange({ ...data, photo_url: e.target.value })} />
+          </Field>
+          <Field label="Name Line">
+            <RichInput value={data.name_line} onChange={(e) => onChange({ ...data, name_line: e.target.value })} />
+          </Field>
+          <Field label="Bio">
+            <RichTextarea rows={3} value={data.bio} onChange={(e) => onChange({ ...data, bio: e.target.value })} />
+          </Field>
+        </div>
+      )}
+
+      <div className="space-y-4 pt-2 border-t border-border">
+        <p className="font-sans text-xs text-muted-foreground">
+          The label and buttons belong to the About page either way — the Welcome Club section has
+          no label, and its button points at an anchor that only exists on the home page.
+        </p>
+        <Field label="Section Label" hint={`Small uppercase label above the block — e.g. "Meet the maker"`}>
+          <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
+        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Diary Button Text" hint="Blank hides the button">
+            <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+          </Field>
+          <Field label="Diary Button Link" hint={`Usually "/our-story" — the Founder Diary page`}>
+            <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+          </Field>
+        </div>
+        <Field label="Jump Button Text" hint="Sits beside the story CTA higher up the page and scrolls down to this block. Blank hides it.">
+          <Input value={data.jump_cta_text} onChange={(e) => onChange({ ...data, jump_cta_text: e.target.value })} />
+        </Field>
+      </div>
+
+      <SaveButton onClick={onSave} saving={saving} />
     </div>
-    <Field label="Jump Button Text" hint="The button that scrolls to the founder block from the About page intro">
-      <Input value={data.jump_cta_text} onChange={(e) => onChange({ ...data, jump_cta_text: e.target.value })} />
-    </Field>
-    <SaveButton onClick={onSave} saving={saving} />
-  </div>
-);
+  );
+};
 
 const OurStoryPageEditor = ({
   data,
@@ -251,6 +428,22 @@ const OurStoryPageEditor = ({
         onError={onError}
         onChange={(candle_image_url) => onChange({ ...data, candle_image_url })}
       />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Wick position — across (%)" hint="Where the flame burns on the artwork. 0 = left edge, 100 = right edge.">
+          <Input
+            type="number" min={0} max={100} step={0.5}
+            value={data.candle_wick_x}
+            onChange={(e) => onChange({ ...data, candle_wick_x: Number(e.target.value) || 0 })}
+          />
+        </Field>
+        <Field label="Wick position — down (%)" hint="0 = top of the photo, 100 = bottom. Aim where the wick meets the wax.">
+          <Input
+            type="number" min={0} max={100} step={0.5}
+            value={data.candle_wick_y}
+            onChange={(e) => onChange({ ...data, candle_wick_y: Number(e.target.value) || 0 })}
+          />
+        </Field>
+      </div>
       {([
         ["wrapped", "Unboxing"],
         ["ready", "Ready to light"],
@@ -285,7 +478,7 @@ const OurStoryPageEditor = ({
           <RichInput value={data.diary_headline} onChange={(e) => onChange({ ...data, diary_headline: e.target.value })} />
         </Field>
       </div>
-      <Field label="Diary Interaction Hint">
+      <Field label="Diary Interaction Hint" hint="Floats over the first photo of the reel and fades once the visitor scrolls">
         <RichInput value={data.diary_hint} onChange={(e) => onChange({ ...data, diary_hint: e.target.value })} />
       </Field>
       <Field label="Empty Diary Message">
@@ -305,7 +498,7 @@ const OurStoryPageEditor = ({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="font-display text-base text-foreground">Daily Photo Diary</h3>
-          <p className="mt-1 text-xs font-sans text-muted-foreground">These images become the interactive photo wall on the Our Story page. Visitors can open each one full-screen.</p>
+          <p className="mt-1 text-xs font-sans text-muted-foreground">These photos and videos become the scrollable reel on the Our Story page — one a screenful, in this order, captions shown over each one. Videos play muted in the reel and with sound full screen.</p>
         </div>
         <button
           type="button"
@@ -315,24 +508,33 @@ const OurStoryPageEditor = ({
           })}
           className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 font-sans text-xs font-medium text-primary transition-colors hover:bg-primary/20"
         >
-          + Add photo
+          + Add photo or video
         </button>
       </div>
       {data.photos.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center font-sans text-sm text-muted-foreground">No diary photos yet — add a photo URL to start the wall.</p>
+        <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center font-sans text-sm text-muted-foreground">No diary entries yet — add a photo or video URL to start the reel.</p>
       ) : (
         <div className="space-y-3">
           {data.photos.map((photo, index) => (
             <div key={photo.id || index} className="grid gap-3 rounded-lg border border-border bg-background p-3 sm:grid-cols-[112px_1fr_auto] sm:items-center">
               <div className="aspect-[4/3] overflow-hidden rounded-md bg-muted">
-                {photo.image_url ? <img src={photo.image_url} alt="Diary preview" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-xl">📷</div>}
+                {!photo.image_url ? (
+                  <div className="grid h-full place-items-center text-xl">📷</div>
+                ) : diaryMediaKind(photo.image_url) === "image" ? (
+                  <img src={photo.image_url} alt="Diary preview" className="h-full w-full object-cover" />
+                ) : diaryMediaKind(photo.image_url) === "video" ? (
+                  <video src={toEmbedUrl(photo.image_url)} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+                ) : (
+                  <div className="grid h-full place-items-center text-xl" title="Video link — previews on the site">🎬</div>
+                )}
               </div>
               <div className="space-y-2">
                 <SeoImageField
-                  label={`Diary photo ${index + 1}`}
-                  hint="Paste a direct image URL or upload a studio snapshot."
+                  label={`Diary entry ${index + 1}`}
+                  hint="Paste an image or video URL (YouTube, Vimeo, Instagram or a direct .mp4), or upload a file. Pasted links are safest — uploaded files can be lost when the site redeploys."
                   value={photo.image_url}
                   previewClass="hidden"
+                  allowVideo
                   onError={onError}
                   onChange={(image_url) => {
                     const photos = [...data.photos];
@@ -745,15 +947,10 @@ const BrandStoryEditor = ({
   saving: boolean;
 }) => (
   <div className="space-y-6">
-    <SectionHeading title="Brand Story" desc="The 'Our Story' two-column section, plus the banner headline on the About page it feeds." />
-    <div className="grid grid-cols-2 gap-4">
-      <Field label="About Page Title (plain)" hint={`Banner on /about — e.g. "From Café Moments to"`}>
-        <RichInput value={data.page_title} onChange={(e) => onChange({ ...data, page_title: e.target.value })} />
-      </Field>
-      <Field label="About Page Title (gold)" hint={`e.g. "Candle Glow" — shown in gold after the plain part`}>
-        <RichInput value={data.page_title_gold} onChange={(e) => onChange({ ...data, page_title_gold: e.target.value })} />
-      </Field>
-    </div>
+    <SectionHeading
+      title="Story Block"
+      desc="The photo-and-text section directly under the About page banner, and the two buttons below it."
+    />
     <Field label="Section Label" hint="Small uppercase label above the headline">
       <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
     </Field>
@@ -1112,6 +1309,12 @@ const WelcomeClubEditor = ({
       <RichTextarea rows={3} value={data.bio} onChange={(e) => onChange({ ...data, bio: e.target.value })} />
     </Field>
     <div className="grid grid-cols-2 gap-4">
+      <Field label="Diary Button Text" hint={`Shown first — e.g. "Founder's Diary". Leave blank to hide.`}>
+        <Input value={data.diary_cta_text} onChange={(e) => onChange({ ...data, diary_cta_text: e.target.value })} />
+      </Field>
+      <Field label="Diary Button Link" hint="e.g. /our-story">
+        <Input value={data.diary_cta_href} onChange={(e) => onChange({ ...data, diary_cta_href: e.target.value })} />
+      </Field>
       <Field label="Button Text">
         <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
       </Field>
@@ -1361,6 +1564,110 @@ const VideosEditor = ({
   );
 };
 
+// Reviews left through the homepage "Share Your Experience" form. They land in
+// the feedback table rather than in the testimonials content blob, so this panel
+// sits inside the Testimonials editor and lets one click promote a submission
+// into the carousel above (still needing Save, like every other edit here).
+const TestimonialSubmissions = ({
+  onPromote,
+  existingQuotes,
+}: {
+  onPromote: (f: FeedbackRecord) => void;
+  existingQuotes: string[];
+}) => {
+  const [items, setItems]     = useState<FeedbackRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+  const [minRating, setMinRating] = useState(4);
+  const { toast } = useToast();
+
+  const load = useCallback(() => {
+    setLoading(true);
+    getAdminFeedback()
+      .then(f => { setItems(f); setLoading(false); })
+      .catch(() => { setItems([]); setLoading(false); });
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const promote = async (f: FeedbackRecord) => {
+    onPromote(f);
+    try {
+      await setFeedbackPublished(f.id, true);
+      setItems(prev => prev.map(x => (x.id === f.id ? { ...x, published: true } : x)));
+    } catch {
+      // The testimonial was still added to the list above — only the "added"
+      // badge failed to stick, so say so rather than implying nothing happened.
+      toast({ title: "Added to the list below — couldn't flag it as used", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Added to testimonials", description: "Hit Save to publish it on the homepage." });
+  };
+
+  const visible = items.filter(f => (showAll ? true : !f.published) && f.rating >= minRating);
+  const pending = items.filter(f => !f.published).length;
+
+  return (
+    <div className="space-y-4 rounded-xl border border-border bg-muted/30 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-sans text-sm font-semibold text-foreground">Customer submissions</h3>
+          <p className="font-sans text-xs text-muted-foreground">
+            Reviews sent from the homepage “Share Your Experience” form. Promote the good ones into the carousel above.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={minRating} onChange={e => setMinRating(Number(e.target.value))}
+            className="px-2 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs">
+            {[5, 4, 3, 2, 1].map(n => <option key={n} value={n}>{n}★ and up</option>)}
+          </select>
+          <button type="button" onClick={() => setShowAll(v => !v)}
+            className="px-2 py-1.5 rounded-lg border border-border bg-card font-sans text-xs text-foreground">
+            {showAll ? "Hide used" : "Show all"}
+          </button>
+          <button type="button" onClick={load}
+            className="px-2 py-1.5 rounded-lg border border-border bg-card font-sans text-xs text-foreground">
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {loading && <p className="font-sans text-sm text-muted-foreground">Loading submissions…</p>}
+      {!loading && items.length === 0 && (
+        <p className="font-sans text-sm text-muted-foreground">
+          No submissions yet. They appear here (and under Customer Feedback) as soon as someone uses the form.
+        </p>
+      )}
+      {!loading && items.length > 0 && visible.length === 0 && (
+        <p className="font-sans text-sm text-muted-foreground">
+          Nothing left to review at {minRating}★ and up{showAll ? "" : ` — ${pending} pending overall`}.
+        </p>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        {visible.map(f => {
+          const alreadyInList = existingQuotes.includes(f.message.trim());
+          return (
+            <div key={f.id} className="rounded-lg border border-border bg-card p-4 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-sans text-sm font-semibold text-foreground">{f.name || "Anonymous"}</span>
+                <span className="text-amber-500 text-sm tracking-tighter">{"★".repeat(f.rating)}{"☆".repeat(5 - f.rating)}</span>
+                {f.published && <span className="font-sans text-[10px] uppercase tracking-wide rounded-full px-2 py-0.5 bg-primary/10 text-primary">Used</span>}
+                <span className="font-sans text-xs text-muted-foreground ml-auto">{new Date(f.created_at).toLocaleDateString()}</span>
+              </div>
+              <p className="font-sans text-sm text-foreground leading-relaxed">{f.message}</p>
+              {f.photo_url && <img src={resolveUploadUrl(f.photo_url)} alt="" className="h-16 rounded-lg object-cover" />}
+              <button type="button" onClick={() => promote(f)} disabled={alreadyInList}
+                className="px-3 py-1.5 rounded-lg font-sans text-xs font-medium bg-primary text-primary-foreground disabled:opacity-50">
+                {alreadyInList ? "Already in testimonials" : "Add to testimonials ↑"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 const TestimonialsEditor = ({
   data,
   onChange,
@@ -1380,6 +1687,26 @@ const TestimonialsEditor = ({
     <Field label="Section Headline">
       <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
     </Field>
+
+    <TestimonialSubmissions
+      existingQuotes={data.items.map((t) => t.quote.trim())}
+      onPromote={(f) =>
+        onChange({
+          ...data,
+          items: [
+            ...data.items,
+            {
+              id: `fb-${f.id}`,
+              quote: f.message.trim(),
+              author: (f.name || "Anonymous").trim(),
+              location: "Verified Customer",
+              rating: f.rating,
+              avatarUrl: f.photo_url ? resolveUploadUrl(f.photo_url) : undefined,
+            },
+          ],
+        })
+      }
+    />
 
     <div className="space-y-4">
       <label className="block text-sm font-sans font-medium text-foreground">Testimonials</label>
@@ -2981,6 +3308,7 @@ const SeoImageField = ({
   onChange,
   previewClass,
   onError,
+  allowVideo = false,
 }: {
   label: string;
   hint: string;
@@ -2988,6 +3316,9 @@ const SeoImageField = ({
   onChange: (url: string) => void;
   previewClass: string;
   onError: (message: string) => void;
+  /** Diary entries take videos through the same field — the file's own type
+      picks the upload endpoint, and the preview follows the URL's kind. */
+  allowVideo?: boolean;
 }) => {
   const [uploading, setUploading] = useState(false);
 
@@ -2995,7 +3326,7 @@ const SeoImageField = ({
     if (!file) return;
     setUploading(true);
     try {
-      onChange(await uploadImage(file));
+      onChange(await (allowVideo && file.type.startsWith("video/") ? uploadVideo(file) : uploadImage(file)));
     } catch (err) {
       onError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -3003,12 +3334,20 @@ const SeoImageField = ({
     }
   };
 
+  const kind = allowVideo ? diaryMediaKind(value) : "image";
+
   return (
     <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-4">
       <p className="font-sans text-sm font-semibold text-foreground">{label}</p>
       <div className="flex items-start gap-4">
         {value ? (
-          <img src={value} alt={`${label} preview`} className={`shrink-0 border border-border bg-card object-contain ${previewClass}`} />
+          kind === "image" ? (
+            <img src={value} alt={`${label} preview`} className={`shrink-0 border border-border bg-card object-contain ${previewClass}`} />
+          ) : kind === "video" ? (
+            <video src={toEmbedUrl(value)} className={`shrink-0 border border-border bg-card object-contain ${previewClass}`} muted playsInline preload="metadata" />
+          ) : (
+            <div className={`shrink-0 border border-border bg-card grid place-items-center text-xl ${previewClass}`} title="Video link — previews on the site">🎬</div>
+          )
         ) : (
           <div className={`shrink-0 border border-dashed border-border grid place-items-center text-muted-foreground font-sans text-[10px] ${previewClass}`}>
             none
@@ -3019,7 +3358,7 @@ const SeoImageField = ({
           <div className="flex items-center gap-3">
             <label className="font-sans text-xs px-3 py-1.5 rounded-lg border border-border cursor-pointer hover:bg-muted transition-colors">
               {uploading ? "Uploading…" : "Upload file"}
-              <input type="file" accept="image/*" className="hidden" disabled={uploading}
+              <input type="file" accept={allowVideo ? "image/*,video/*" : "image/*"} className="hidden" disabled={uploading}
                 onChange={(e) => { void pick(e.target.files?.[0]); e.target.value = ""; }} />
             </label>
             {value && (
@@ -3365,6 +3704,78 @@ const ResolvedDecisionsPanel = () => {
           </div>
         )
       )}
+    </div>
+  );
+};
+
+// ── Account / password panel ──────────────────────────────────────────────────
+// The only previous way to change an admin password was the emailed reset link,
+// which is no help if that mailbox is gone — and it let the hash in the deploy
+// environment drift out of date without anyone noticing.
+const AccountPanel = () => {
+  const [current, setCurrent] = useState("");
+  const [next, setNext]       = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [saving, setSaving]   = useState(false);
+  const [error, setError]     = useState("");
+  const [done, setDone]       = useState("");
+  const { toast } = useToast();
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(""); setDone("");
+    if (next !== confirm) { setError("The two new passwords don't match."); return; }
+    if (next.length < 8 || !/[a-zA-Z]/.test(next) || !/[0-9]/.test(next)) {
+      setError("New password must be at least 8 characters and include a letter and a number.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const msg = await changeAdminPassword(current, next);
+      setCurrent(""); setNext(""); setConfirm("");
+      setDone(msg);
+      toast({ title: "Password updated" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change your password.");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading
+        title="Admin Account"
+        desc="Change the password for the admin account you are signed in as."
+      />
+      <form onSubmit={submit} className="max-w-md space-y-4 rounded-xl border border-border bg-card p-5">
+        <Field label="Current password">
+          <Input type="password" autoComplete="current-password" value={current}
+            onChange={(e) => setCurrent(e.target.value)} />
+        </Field>
+        <Field label="New password" hint="At least 8 characters, with a letter and a number.">
+          <Input type="password" autoComplete="new-password" value={next}
+            onChange={(e) => setNext(e.target.value)} />
+        </Field>
+        <Field label="Confirm new password">
+          <Input type="password" autoComplete="new-password" value={confirm}
+            onChange={(e) => setConfirm(e.target.value)} />
+        </Field>
+
+        {error && (
+          <p className="font-sans text-sm rounded-lg px-3 py-2 bg-destructive/10 text-destructive">{error}</p>
+        )}
+        {done && (
+          <p className="font-sans text-sm rounded-lg px-3 py-2 bg-primary/10 text-primary">{done}</p>
+        )}
+
+        <button type="submit" disabled={saving || !current || !next || !confirm}
+          className="px-4 py-2 rounded-lg font-sans text-sm font-medium bg-primary text-primary-foreground disabled:opacity-50">
+          {saving ? "Updating…" : "Change password"}
+        </button>
+        <p className="font-sans text-xs text-muted-foreground">
+          You stay signed in here; every other signed-in session is logged out, and any
+          unused reset link sent to your inbox stops working.
+        </p>
+      </form>
     </div>
   );
 };
@@ -3904,7 +4315,7 @@ const FeedbackPanel = () => {
 
   return (
     <div className="space-y-6">
-      <SectionHeading title="Customer Feedback" desc="Reviews and feedback submitted by customers on the homepage." />
+      <SectionHeading title="Customer Feedback" desc="Every review submitted through the homepage “Share Your Experience” form. To put one on the homepage, use Testimonials → Customer submissions." />
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[220px]">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">⌕</span>
@@ -3930,9 +4341,10 @@ const FeedbackPanel = () => {
                   <span className="font-sans text-sm font-semibold text-foreground">{f.name || "Anonymous"}</span>
                   {f.email && <span className="font-sans text-xs text-muted-foreground">{f.email}</span>}
                   <span className="text-amber-500 text-sm tracking-tighter">{stars(f.rating)}</span>
+                  {f.published && <span className="font-sans text-[10px] uppercase tracking-wide rounded-full px-2 py-0.5 bg-primary/10 text-primary">On homepage</span>}
                 </div>
                 <p className="font-sans text-sm text-foreground leading-relaxed">{f.message}</p>
-                {f.photo_url && <img src={f.photo_url} alt="Customer photo" className="mt-2 h-24 rounded-lg object-cover" />}
+                {f.photo_url && <img src={resolveUploadUrl(f.photo_url)} alt="Customer photo" className="mt-2 h-24 rounded-lg object-cover" />}
                 <p className="font-sans text-xs text-muted-foreground">{new Date(f.created_at).toLocaleString()}</p>
               </div>
               <button onClick={() => handleDelete(f.id)} className="text-destructive hover:text-destructive/80 text-xs font-sans shrink-0">Delete</button>
@@ -4565,6 +4977,7 @@ type TabId =
   | "giftCards"
   | "customerService"
   | "pickupSettings"
+  | "account"
   | "privacyPolicy"
   | "termsOfService"
   | "shippingPolicy"
@@ -4594,15 +5007,26 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "hero",            label: "Hero Banner",      icon: "🖼️" },
       { id: "momentPill",      label: "Moment Pill",      icon: "💊" },
       { id: "welcomeClub",     label: "Welcome Club",     icon: "🫶" },
-      { id: "aboutPage",       label: "About",            icon: "🕯️" },
-      { id: "aboutFounder",    label: "Meet the Maker",   icon: "🌿" },
-      { id: "ourStoryPage",    label: "Founder Diary",    icon: "📷" },
       { id: "products",        label: "Products",         icon: "◈" },
       { id: "candleCare",      label: "Candle Care",      icon: "♨" },
       { id: "videos",          label: "Videos",           icon: "▶" },
       { id: "testimonials",    label: "Testimonials",     icon: "❝" },
       { id: "newsletter",      label: "Newsletter",       icon: "✉" },
       { id: "footer",          label: "Footer",           icon: "⊘" },
+    ],
+  },
+  {
+    // The About page's own group. These three used to sit under "Home Page",
+    // which is what made the founder block feel like a home-page setting that
+    // somehow showed up on /about.
+    id: "about",
+    label: "About Page",
+    icon: "🕯️",
+    items: [
+      { id: "aboutPage",    label: "Banner & Values", icon: "🖼" },
+      { id: "brandStory",   label: "Story Block",     icon: "📖" },
+      { id: "aboutFounder", label: "Meet the Maker",  icon: "🌿" },
+      { id: "ourStoryPage", label: "Founder Diary",   icon: "📷" },
     ],
   },
   {
@@ -4651,6 +5075,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "seo", label: "SEO", icon: "🔍" },
       { id: "subscribers", label: "Subscribers & Signup Popup", icon: "◉" },
       { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
+      { id: "account", label: "Admin Account", icon: "🔑" },
     ],
   },
 ];
@@ -4879,7 +5304,7 @@ const AdminDashboard = () => {
             {activeTab === "navbar"       && <NavbarEditor       data={content.navbar}       onChange={update("navbar")}       onSave={() => handleSave("navbar")}       saving={saving} />}
             {activeTab === "hero"         && <HeroEditor         data={content.hero}         onChange={update("hero")}         onSave={() => handleSave("hero")}       saving={saving} />}
             {activeTab === "aboutPage"    && <AboutPageEditor    data={content.aboutPage}    onChange={update("aboutPage")}    onSave={() => handleSave("aboutPage")}    saving={saving} />}
-            {activeTab === "aboutFounder" && <AboutFounderEditor data={content.aboutFounder} onChange={update("aboutFounder")} onSave={() => handleSave("aboutFounder")} saving={saving} />}
+            {activeTab === "aboutFounder" && <AboutFounderEditor data={content.aboutFounder} onChange={update("aboutFounder")} onSave={() => handleSave("aboutFounder")} saving={saving} home={content.welcomeClub} onEditWelcomeClub={() => selectTab("welcomeClub")} />}
             {activeTab === "ourStoryPage" && <OurStoryPageEditor data={content.ourStoryPage} onChange={update("ourStoryPage")} onSave={() => handleSave("ourStoryPage")} saving={saving} onError={handleError} />}
             {activeTab === "brandStory"   && <BrandStoryEditor   data={content.brandStory}   onChange={update("brandStory")}   onSave={() => handleSave("brandStory")}   saving={saving} />}
             {activeTab === "products"     && <ProductsEditor     data={content.products}     onChange={update("products")}     onSave={() => handleSave("products")}     saving={saving} />}
@@ -4894,6 +5319,7 @@ const AdminDashboard = () => {
             {activeTab === "giftCards"       && <GiftCardsEditor       data={content.giftCards}       onChange={update("giftCards")}       onSave={() => handleSave("giftCards")}       saving={saving} />}
             {activeTab === "customerService" && <CustomerServiceEditor data={content.customerService} onChange={update("customerService")} onSave={() => handleSave("customerService")} saving={saving} />}
             {activeTab === "pickupSettings"  && <PickupSettingsEditor  data={content.pickupSettings}  onChange={update("pickupSettings")}  onSave={() => handleSave("pickupSettings")}  saving={saving} />}
+            {activeTab === "account"      && <AccountPanel />}
             {activeTab === "privacyPolicy"   && <LegalPageEditor title="Privacy Policy"   desc="Content shown on the Privacy Policy page."   data={content.privacyPolicy}  onChange={update("privacyPolicy")}  onSave={() => handleSave("privacyPolicy")}  saving={saving} />}
             {activeTab === "termsOfService"  && <LegalPageEditor title="Terms of Service" desc="Content shown on the Terms of Service page." data={content.termsOfService} onChange={update("termsOfService")} onSave={() => handleSave("termsOfService")} saving={saving} />}
             {activeTab === "shippingPolicy"  && <LegalPageEditor title="Shipping Policy"  desc="Content shown on the Shipping Policy page."  data={content.shippingPolicy} onChange={update("shippingPolicy")} onSave={() => handleSave("shippingPolicy")} saving={saving} />}

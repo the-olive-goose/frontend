@@ -88,6 +88,26 @@ export const confirmAdminPasswordReset = async (token: string, newPassword: stri
   }
 };
 
+// Change the signed-in admin's own password. The server bumps token_version,
+// which invalidates the token this call was made with — so it hands back a fresh
+// one that we swap in immediately, otherwise the very next request would 401 and
+// bounce the admin to the login screen straight after a successful change.
+export const changeAdminPassword = async (
+  currentPassword: string,
+  newPassword: string,
+): Promise<string> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/auth/admin/password`, {
+    method: 'PUT',
+    headers: authHeaders(true),
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
+  const { token, message } = body as { token: string; message: string };
+  localStorage.setItem('admin_token', token);
+  return message;
+};
+
 export const isLoggedIn = (): boolean => !!getToken();
 
 // ── Generic content API ────────────────────────────────────────────────────────
@@ -136,6 +156,27 @@ export const uploadImage = async (file: File): Promise<string> => {
   const json = await res.json();
   // Backend returns a relative path; prepend API_URL so the image always loads
   // from the same origin as the API (localhost in dev, Railway in production).
+  return `${API_URL}${json.path}`;
+};
+
+// Same shape as uploadImage, but videos run to 200MB, so the timeout gets
+// headroom to match — a phone clip over hotel wifi is minutes, not seconds.
+export const uploadVideo = async (file: File): Promise<string> => {
+  const form = new FormData();
+  form.append('video', file);
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/upload/video`, {
+    method: 'POST',
+    headers,
+    body: form,
+  }, 300_000));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Upload failed');
+  }
+  const json = await res.json();
   return `${API_URL}${json.path}`;
 };
 
@@ -344,6 +385,7 @@ export interface FeedbackRecord {
   rating: number;
   message: string;
   photo_url: string;
+  published: boolean;
   created_at: string;
 }
 
@@ -352,10 +394,47 @@ export const getAdminUsers = async (): Promise<AppUserRecord[]> => {
   return res.json();
 };
 
-export const submitFeedback = async (data: { name: string; email: string; rating: number; message: string; photo_url: string }): Promise<void> => {
-  await fetchWithTimeout(`${API_URL}/api/feedback`, {
+export const submitFeedback = async (data: {
+  name: string; email: string; rating: number; message: string; photo_url: string; website?: string;
+}): Promise<void> => {
+  // This used to ignore the response entirely, so a rejected review (rate limit,
+  // validation, server error) still showed the shopper a "Thank you!" and the
+  // feedback was simply lost. Surface the server's own message instead.
+  const res = await fetchWithTimeout(`${API_URL}/api/feedback`, {
     method: 'POST', headers: authHeaders(), body: JSON.stringify(data),
   });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Could not send your feedback. Please try again.');
+  }
+};
+
+// Public counterpart of uploadImage — the review form is used by shoppers, who
+// have no admin token and were silently 401ing against the admin uploader.
+export const uploadFeedbackPhoto = async (file: File): Promise<string> => {
+  const form = new FormData();
+  form.append('image', file);
+  const res = await fetchWithTimeout(`${API_URL}/api/feedback/photo`, { method: 'POST', body: form }, 30_000);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Upload failed');
+  }
+  // Returns the bare `/uploads/…` path, not an absolute URL: that is what the
+  // server accepts back on submit (it only stores paths it issued itself).
+  const json = await res.json();
+  return String(json.path ?? '');
+};
+
+// Stored photo values are relative paths for review photos but full URLs for
+// older admin-uploaded ones — resolve either to something an <img> can load.
+export const resolveUploadUrl = (value: string): string =>
+  !value ? '' : /^https?:\/\//i.test(value) ? value : `${API_URL}${value}`;
+
+export const setFeedbackPublished = async (id: string, published: boolean): Promise<FeedbackRecord> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/feedback/${id}`, {
+    method: 'PATCH', headers: authHeaders(true), body: JSON.stringify({ published }),
+  }));
+  return res.json();
 };
 
 export const getAdminFeedback = async (): Promise<FeedbackRecord[]> => {

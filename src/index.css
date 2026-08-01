@@ -662,6 +662,284 @@
     color: var(--color-gold);
   }
 
+  /* ── Founder diary reel (/our-story) ──────────────────────────
+     One photo a screenful, snapped, thumbed upwards — the diary is read the
+     way a phone reads photo diaries. Scrolling is the browser's own, so
+     momentum and rubber-banding at the ends come free. The same rail serves
+     the inline stage and the full-screen viewer; only the frame changes. */
+  .og-diary-stage,
+  .og-diary-full-stage {
+    position: relative;
+    margin: 0 auto;
+    overflow: hidden;
+    background: #0d130f;
+  }
+
+  .og-diary-stage {
+    width: min(100%, 420px);
+    height: min(78dvh, 720px);
+    border-radius: 30px;
+    box-shadow:
+      0 26px 60px -22px rgba(29, 43, 27, 0.6),
+      0 0 0 1px rgba(29, 43, 27, 0.1);
+  }
+
+  /* On a phone the stage takes the column it is given and the photo sets the
+     rest. On anything wider it stays phone-shaped even in a short window —
+     a square "reel" on a laptop reads as a photo frame, not a reel. */
+  @media (min-width: 640px) {
+    .og-diary-stage { width: min(100%, 420px, calc(min(78dvh, 720px) * 0.5625)); }
+  }
+
+  .og-diary-rail {
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scroll-snap-type: y mandatory;
+    -webkit-overflow-scrolling: touch;
+    outline: none;
+  }
+
+  /* Full screen owns the gesture. The inline stage deliberately does NOT
+     contain its overscroll: reaching the last photo hands the scroll back to
+     the page, so nobody is stuck inside the diary on the way to the footer. */
+  .og-diary-rail-full { overscroll-behavior-y: contain; }
+
+  .og-diary-slide {
+    position: relative;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    scroll-snap-align: start;
+    /* One photo per flick — a hard swipe shouldn't skip three of them. */
+    scroll-snap-stop: always;
+  }
+
+  /* Portrait, square and landscape shots share one frame without anyone losing
+     their head: the photo is contained, and a blown-up blur of itself fills
+     whatever is left over. */
+  .og-diary-blur {
+    position: absolute;
+    inset: -8%;
+    width: 116%;
+    height: 116%;
+    object-fit: cover;
+    filter: blur(30px) saturate(1.3) brightness(0.6);
+  }
+
+  .og-diary-photo {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  /* A video entry borrows the photo's frame; an embed fills it edge to edge.
+     In the rail a shield sits over the iframe so a thumb-flick scrolls the
+     diary instead of vanishing into the player — the tap it swallows bubbles
+     up and opens the viewer, where the player gets its controls back. */
+  .og-diary-embed {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #000;
+  }
+  .og-diary-shield {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+  }
+  .og-diary-embed-wait {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 2.2rem;
+    color: rgba(245, 239, 230, 0.35);
+  }
+  /* In the viewer a video's own control bar owns the bottom edge; the caption
+     steps out of its way rather than sitting on the scrubber. (Doubled class
+     so it outweighs .og-diary-caption's own `bottom` further down.) */
+  .og-diary-caption.og-diary-caption-raised { bottom: 88px; }
+
+  .og-diary-veil {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(to top, rgba(8, 12, 8, 0.86) 0%, rgba(8, 12, 8, 0.3) 26%, rgba(8, 12, 8, 0) 48%),
+      linear-gradient(to bottom, rgba(8, 12, 8, 0.5) 0%, rgba(8, 12, 8, 0) 22%);
+  }
+
+  .og-diary-caption {
+    position: absolute;
+    left: 18px;
+    right: 64px;
+    bottom: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .og-diary-handle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: rgba(245, 239, 230, 0.82);
+  }
+
+  .og-diary-avatar {
+    display: grid;
+    place-items: center;
+    width: 27px;
+    height: 27px;
+    border-radius: 50%;
+    background: var(--color-gold-soft);
+    font-size: 0.8rem;
+  }
+
+  .og-diary-text {
+    font-family: var(--font-display);
+    font-size: 1.02rem;
+    line-height: 1.32;
+    color: var(--color-cream-text);
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  }
+
+  .og-diary-count {
+    position: absolute;
+    top: 18px;
+    left: 18px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    font-family: var(--font-sans);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--color-cream-text);
+    background: rgba(8, 12, 8, 0.45);
+    backdrop-filter: blur(4px);
+  }
+
+  .og-diary-expand,
+  .og-diary-close,
+  .og-diary-step {
+    position: absolute;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 1rem;
+    color: var(--color-cream-text);
+    background: rgba(8, 12, 8, 0.45);
+    border: 1px solid rgba(245, 239, 230, 0.24);
+    backdrop-filter: blur(4px);
+    cursor: pointer;
+    z-index: 3;
+  }
+  .og-diary-expand { top: 12px; right: 12px; }
+  .og-diary-close  { top: max(14px, env(safe-area-inset-top, 0px)); right: 14px; z-index: 5; }
+
+  /* Pointer equivalent of the swipe — a mouse has no thumb to flick with. */
+  .og-diary-step { right: 11px; display: none; }
+  .og-diary-step-up   { top: 76px; }
+  .og-diary-step-down { bottom: 76px; }
+  .og-diary-step:disabled { opacity: 0.25; pointer-events: none; }
+  @media (hover: hover) {
+    .og-diary-step { display: grid; }
+  }
+  /* The viewer hands embeds their player back, so a touch there can't scroll
+     the rail — the step buttons stay on screen as the guaranteed way through. */
+  .og-diary-full .og-diary-step { display: grid; }
+
+  /* Proportional thumb rather than one tick per photo: reads the same at six
+     photos as at sixty. */
+  .og-diary-track {
+    position: absolute;
+    right: 17px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 4px;
+    height: min(38%, 170px);
+    border-radius: 999px;
+    background: rgba(245, 239, 230, 0.22);
+    overflow: hidden;
+  }
+  .og-diary-thumb {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    min-height: 14px;
+    border-radius: 999px;
+    background: var(--color-gold);
+    transition: top 0.3s ease, height 0.3s ease;
+  }
+
+  /* Two elements, because the wrapper's transform belongs to the fade-in and
+     the pill's to the bob — one element can only hold one transform. */
+  /* Dead centre, clear of everything: the caption runs to three lines on a
+     narrow stage and the step buttons hug the right edge, so any corner this
+     could take would be somebody else's. */
+  .og-diary-hint {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .og-diary-hint-pill {
+    max-width: calc(100% - 96px);
+    padding: 7px 15px;
+    border-radius: 999px;
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-align: center;
+    color: var(--color-forest-dark);
+    background: rgba(245, 239, 230, 0.93);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+    animation: og-diary-nudge 2.4s ease-in-out infinite;
+  }
+
+  /* ── Full-screen viewer ──
+     A phone gets the whole screen. Anything wider keeps the reel a phone-shaped
+     column in the middle, because a 9:16 photo stretched over a desktop is just
+     a small photo between two big letterboxes. */
+  .og-diary-full {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #05080a;
+  }
+
+  .og-diary-full-stage {
+    width: 100%;
+    height: 100%;
+  }
+
+  @media (min-width: 768px) {
+    .og-diary-full-stage {
+      width: min(430px, calc((100dvh - 48px) * 0.5625));
+      height: calc(100dvh - 48px);
+      border-radius: 26px;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+    }
+  }
+
   /* ── Glow helpers ─────────────────────────────────────────── */
   .text-glow        { text-shadow: 0 0 40px hsl(35 80% 55% / 0.3); }
   .bg-glow          { box-shadow: var(--shadow-glow); }
@@ -691,6 +969,12 @@
   0%   { box-shadow: 0 0 0 0 rgba(245, 239, 230, 0.5); }
   70%  { box-shadow: 0 0 0 12px rgba(245, 239, 230, 0); }
   100% { box-shadow: 0 0 0 0 rgba(245, 239, 230, 0); }
+}
+
+/* The diary's "keep going" nudge — a thumb-flick's worth of movement, no more. */
+@keyframes og-diary-nudge {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-5px); }
 }
 
 @keyframes og-marquee-scroll {

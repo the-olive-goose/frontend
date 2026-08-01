@@ -5,7 +5,7 @@
 // (https://youtube.com/shorts/ID?si=…) sat live on the home page showing
 // nothing. These cases pin the shapes the field claims to accept.
 import { describe, it, expect } from "vitest";
-import { toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled, DEFAULT_CONTENT } from "./defaults";
+import { toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled, diaryMediaKind, DEFAULT_CONTENT } from "./defaults";
 
 /** What the rail does with a URL: iframe, <video>, or the empty placeholder. */
 const renderAs = (raw: string) => {
@@ -101,6 +101,39 @@ describe("videos section toggle", () => {
   it("ships on by default in DEFAULT_CONTENT", () => {
     expect(DEFAULT_CONTENT.videos.enabled).toBe(true);
     expect(isVideosEnabled(DEFAULT_CONTENT.videos)).toBe(true);
+  });
+});
+
+// The founder diary takes photos and videos through one URL field, so this
+// classifier decides what each slide renders. Unlike the home reel, the
+// fallback is "image" rather than a placeholder: the field's common case is a
+// photo, and an unrecognised URL was pasted as one.
+describe("diaryMediaKind — the diary's photo/video split", () => {
+  it.each([
+    ["empty", ""],
+    ["a plain photo", "https://cdn.example.com/studio/pour.jpg"],
+    ["an uploaded image", "/uploads/image-123-abc.webp"],
+    ["an extension-less Cloudinary image", "https://res.cloudinary.com/demo/image/upload/f_auto,q_auto/v1/studio"],
+    ["a bare page URL", "https://example.com/our-photo"],
+  ])("reads %s as a photo", (_name, raw) => {
+    expect(diaryMediaKind(raw)).toBe("image");
+  });
+
+  it.each([
+    ["an uploaded video", "/uploads/video-123-abc.mp4"],
+    ["a direct file with a query string", "https://cdn.example.com/reels/pour.mp4?token=abc"],
+    ["an extension-less Cloudinary video", "https://res.cloudinary.com/demo/video/upload/f_auto,q_auto/v1/dog"],
+  ])("reads %s as a video file", (_name, raw) => {
+    expect(diaryMediaKind(raw)).toBe("video");
+  });
+
+  it.each([
+    ["a YouTube Short", "https://youtube.com/shorts/dQw4w9WgXcQ?si=mQNWnZJ4Qn48qtax"],
+    ["a youtu.be share link", "https://youtu.be/dQw4w9WgXcQ"],
+    ["a Vimeo link", "https://vimeo.com/76979871"],
+    ["an Instagram reel", "https://www.instagram.com/reel/DaAwNjpoSuB/"],
+  ])("reads %s as an embed", (_name, raw) => {
+    expect(diaryMediaKind(raw)).toBe("embed");
   });
 });
 

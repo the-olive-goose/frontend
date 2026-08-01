@@ -1,6 +1,30 @@
 import React from "react";
+import { Link } from "react-router-dom";
 import { WelcomeClubContent } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
+
+const pillBase = "inline-flex items-center justify-center font-sans text-sm font-medium transition-all";
+const pillLayout: React.CSSProperties = {
+  borderRadius: "var(--radius-pill)",
+  letterSpacing: "var(--tracking-cta)",
+  padding: "12px 40px",
+};
+
+// Both buttons in this block are the same solid-white pill. They used to differ:
+// the story button was a transparent outline that filled white on hover, so the
+// pair read as primary + secondary when they are really two equal ways into the
+// same story, and the hover repainted the whole button — a flash against the dark
+// section rather than a nudge. Shared here so the two cannot drift apart again.
+const pillSolid: React.CSSProperties = {
+  ...pillLayout,
+  background: "var(--color-white)",
+  border: "1.5px solid var(--color-white)",
+  color: "var(--color-forest-dark)",
+};
+
+// Fade-and-lift, not a colour swap: the fill already carries the button, so hover
+// only has to acknowledge the pointer.
+const pillHover = "hover:opacity-90 hover:-translate-y-0.5";
 
 interface Props { data: WelcomeClubContent }
 
@@ -77,19 +101,28 @@ const WelcomeSection = ({ data }: Props) => (
           <RichText text={data.bio} />
         </p>
 
-        <a
-          href={data.cta_href || "#"}
-          className="mt-2 inline-flex items-center justify-center font-sans text-sm font-medium transition-all hover:bg-white"
-          style={{
-            borderRadius: "var(--radius-pill)",
-            border: "1.5px solid var(--color-white)",
-            color: "var(--color-white)",
-            letterSpacing: "var(--tracking-cta)",
-            padding: "12px 40px",
-          }}
-        >
-          {data.cta_text}
-        </a>
+        {/* Two buttons, one row — they wrap rather than shrink on narrow phones
+            so neither label is ever clipped. The diary button is an in-app
+            route, so it goes through Link and skips the full page reload. */}
+        <div className="mt-2 flex flex-wrap items-center justify-center md:justify-start gap-3">
+          {data.diary_cta_text && (
+            <Link
+              to={data.diary_cta_href || "/our-story"}
+              className={`${pillBase} ${pillHover}`}
+              style={pillSolid}
+            >
+              <RichText text={data.diary_cta_text} />
+            </Link>
+          )}
+
+          <a
+            href={data.cta_href || "#"}
+            className={`${pillBase} ${pillHover}`}
+            style={pillSolid}
+          >
+            {data.cta_text}
+          </a>
+        </div>
       </div>
     </div>
   </section>

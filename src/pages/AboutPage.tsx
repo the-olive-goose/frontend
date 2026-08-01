@@ -58,6 +58,9 @@ const AboutPage = () => {
   const story = content.brandStory;
   const aboutPageContent = content.aboutPage;
   const founder = resolveAboutFounder(content.aboutFounder, content.welcomeClub);
+  // Removing every card in the admin removes the strip, so the story block can
+  // run straight into the maker block.
+  const values = aboutPageContent.values ?? [];
 
   // The story CTA ("Learn More" by default) has no page to go to — it walks the
   // reader down to the values strip, which leaves the maker section peeking in
@@ -68,7 +71,9 @@ const AboutPage = () => {
     if (!href.startsWith("#")) return;
     e.preventDefault();
     const named = href.length > 1 ? document.querySelector(href) : null;
-    (named ?? valuesRef.current)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // With the strip emptied there is no values section to land on, so the CTA
+    // falls through to the maker block rather than doing nothing at all.
+    (named ?? valuesRef.current ?? founderRef.current)?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   // "Meet the Founder" sits beside that CTA and jumps straight past the values
@@ -86,7 +91,7 @@ const AboutPage = () => {
 
       {/* ── Hero ── (shared band: owns the nav offset + page rhythm) */}
       <PageHero
-        eyebrow="Our Story"
+        eyebrow={aboutPageContent.hero_eyebrow}
         title={aboutPageContent.page_title}
         titleGold={aboutPageContent.page_title_gold}
         subtitle={aboutPageContent.page_subtitle}
@@ -164,48 +169,56 @@ const AboutPage = () => {
       </section>
 
       {/* ── Values strip ── (scroll target for the story CTA; scroll-margin keeps
-           the heading clear of the fixed nav) */}
-      <section
-        id="values"
-        ref={valuesRef}
-        style={{ background: "var(--color-sage-mid)", scrollMarginTop: "var(--nav-h, 112px)" }}
-      >
-        <div className="max-w-6xl mx-auto px-6 sm:px-12 py-16 sm:py-20">
-          <motion.h2 {...fadeUp(0)}
-            className="font-serif text-2xl sm:text-3xl text-center mb-12"
-            style={{ color: "var(--color-forest-dark)" }}
-          >
-            What we believe in
-          </motion.h2>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-8">
-            {[
-              { icon: "🌿", title: "Sustainably Sourced",  body: "Every ingredient is chosen with the planet in mind — soy wax, cotton wicks, recycled packaging." },
-              { icon: "🤝", title: "Small Batch",          body: "We pour in small batches to guarantee quality, freshness and a personal touch in every candle." },
-              { icon: "💛", title: "Made with Intention",  body: "Each scent is designed around a feeling — because the right candle can transform any room." },
-            ].map((v, i) => (
-              <motion.div key={v.title} {...fadeUp(i * 0.1)}
-                className="text-center space-y-4 p-6 rounded-2xl"
-                style={{ background: "rgba(255,255,255,0.35)" }}
+           the heading clear of the fixed nav. Cards come from About → Page &
+           Values in the admin, and the strip disappears when they are all
+           removed.) */}
+      {values.length > 0 && (
+        <section
+          id="values"
+          ref={valuesRef}
+          style={{ background: "var(--color-sage-mid)", scrollMarginTop: "var(--nav-h, 112px)" }}
+        >
+          <div className="max-w-6xl mx-auto px-6 sm:px-12 py-16 sm:py-20">
+            {aboutPageContent.values_heading && (
+              <motion.h2 {...fadeUp(0)}
+                className="font-serif text-2xl sm:text-3xl text-center mb-12"
+                style={{ color: "var(--color-forest-dark)" }}
               >
-                <span style={{ fontSize: "2.2rem" }}>{v.icon}</span>
-                <h3 className="font-serif text-lg" style={{ color: "var(--color-forest-dark)" }}>{v.title}</h3>
-                <p className="font-sans text-sm leading-relaxed" style={{ color: "rgba(30,41,24,0.7)" }}>{v.body}</p>
-              </motion.div>
-            ))}
+                <RichText text={aboutPageContent.values_heading} />
+              </motion.h2>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-8">
+              {values.map((v, i) => (
+                <motion.div key={i} {...fadeUp(i * 0.1)}
+                  className="text-center space-y-4 p-6 rounded-2xl"
+                  style={{ background: "rgba(255,255,255,0.35)" }}
+                >
+                  <span style={{ fontSize: "2.2rem" }}>{v.icon}</span>
+                  <h3 className="font-serif text-lg" style={{ color: "var(--color-forest-dark)" }}>
+                    <RichText text={v.title} />
+                  </h3>
+                  <p className="font-sans text-sm leading-relaxed" style={{ color: "rgba(30,41,24,0.7)" }}>
+                    <RichText text={v.body} />
+                  </p>
+                </motion.div>
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* ── Meet the maker ── (scroll target for the "Meet the Founder" button;
            one centred column so the reading order — label, face, greeting, name,
            bio, button — is the same on a phone as on a desktop) */}
-      {founder.mirrored ? (
-        <section
-          id="meet-the-maker"
-          ref={founderRef}
-          className="max-w-3xl mx-auto px-6 sm:px-12 py-20 sm:py-28 text-center"
-          style={{ scrollMarginTop: "var(--nav-h, 112px)" }}
-        >
+      {/* The block renders the same either way — whether the words are mirrored
+          from the home page or this page's own is settled in resolveAboutFounder,
+          not here. */}
+      <section
+        id="meet-the-maker"
+        ref={founderRef}
+        className="max-w-3xl mx-auto px-6 sm:px-12 py-20 sm:py-28 text-center"
+        style={{ scrollMarginTop: "var(--nav-h, 112px)" }}
+      >
         <motion.p {...fadeUp(0)}
           className="font-display text-xs tracking-[0.2em] uppercase"
           style={{ color: "var(--color-sage-light)" }}
@@ -260,68 +273,6 @@ const AboutPage = () => {
           </motion.div>
         )}
       </section>
-      ) : (
-        <section
-          id="meet-the-maker"
-          ref={founderRef}
-          className="max-w-3xl mx-auto px-6 sm:px-12 py-20 sm:py-28 text-center"
-          style={{ scrollMarginTop: "var(--nav-h, 112px)" }}
-        >
-          <motion.p {...fadeUp(0)}
-            className="font-display text-xs tracking-[0.2em] uppercase"
-            style={{ color: "var(--color-sage-light)" }}
-          >
-            <RichText text={founder.label} />
-          </motion.p>
-
-          <motion.div {...fadeUp(0.06)} className="mt-8 mb-8 flex justify-center">
-            <div
-              className="rounded-full overflow-hidden"
-              style={{
-                width: "min(300px, 68vw)",
-                aspectRatio: "1/1",
-                background: "var(--color-sage-pale)",
-                border: "3px solid rgba(255,255,255,0.6)",
-              }}
-            >
-              {founder.photo_url ? (
-                <img src={founder.photo_url} alt="The founder of The Olive Goose" loading="lazy" decoding="async" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <span style={{ fontSize: "5rem", opacity: 0.35 }}>🌿</span>
-                </div>
-              )}
-            </div>
-          </motion.div>
-
-          <motion.h2 {...fadeUp(0.12)}
-            className="font-serif font-semibold"
-            style={{ fontSize: "clamp(1.8rem,3.5vw,2.8rem)", color: "var(--color-forest-dark)", lineHeight: 1.15 }}
-          >
-            <RichText text={founder.headline} />
-          </motion.h2>
-
-          <motion.p {...fadeUp(0.16)}
-            className="font-sans text-base font-medium mt-5"
-            style={{ color: "var(--color-forest-dark)" }}
-          >
-            <RichText text={founder.name_line} />
-          </motion.p>
-
-          <motion.p {...fadeUp(0.2)}
-            className="font-sans text-base leading-relaxed mt-4"
-            style={{ color: "rgba(30,41,24,0.72)" }}
-          >
-            <RichText text={founder.bio} />
-          </motion.p>
-
-          {founder.cta_text && (
-            <motion.div {...fadeUp(0.26)} className="mt-8">
-              <FounderCta href={founder.cta_href} text={founder.cta_text} />
-            </motion.div>
-          )}
-        </section>
-      )}
 
       <FooterSection data={content.footer} />
     </div>

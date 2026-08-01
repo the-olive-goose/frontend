@@ -146,6 +146,13 @@ export interface HeroContent {
   launch_date: string | null;
 }
 
+/**
+ * The photo-and-text story block on /about — the only page that renders it.
+ *
+ * It used to carry the About banner's headline too, which left two unrelated
+ * "About page title" fields in the admin; the banner now belongs entirely to
+ * {@link AboutPageContent}.
+ */
 export interface BrandStoryContent {
   label: string;
   headline: string;
@@ -153,13 +160,6 @@ export interface BrandStoryContent {
   image_url: string;
   cta_text: string;
   cta_href: string;
-  /**
-   * Banner headline for the /about page, which this section also feeds. Kept
-   * apart from `headline` because that one titles the home-page story block —
-   * the two say different things and live on different backgrounds.
-   */
-  page_title: string;
-  page_title_gold: string;
 }
 
 export interface ProductsContent {
@@ -250,6 +250,34 @@ export interface MomentPillContent {
   text3: string;
 }
 
+/** One card in the "What we believe in" strip on /about. */
+export interface AboutValue {
+  icon: string;
+  title: string;
+  body: string;
+}
+
+/**
+ * The parts of /about that belong to that page alone — the hero band and the
+ * values strip under the story.
+ *
+ * The story block above the strip and the maker block below it are shared with
+ * the home page (Brand Story and Welcome Club respectively), so they are edited
+ * in their own sections; everything the About page owns outright lives here.
+ */
+export interface AboutPageContent {
+  /** Small gold line above the banner headline, between the two candles. */
+  hero_eyebrow: string;
+  page_title: string;
+  /** Tail of the banner headline shown in gold — see src/lib/pageTitle.ts. */
+  page_title_gold: string;
+  page_subtitle: string;
+  /** Heading over the values strip. Blank hides the strip's heading. */
+  values_heading: string;
+  /** The strip's cards. An empty list hides the whole strip. */
+  values: AboutValue[];
+}
+
 export interface WelcomeClubContent {
   headline: string;
   photo_url: string;
@@ -257,6 +285,12 @@ export interface WelcomeClubContent {
   bio: string;
   cta_text: string;
   cta_href: string;
+  /**
+   * Button shown before the main CTA — opens the founder's photo diary page.
+   * Blank text hides it.
+   */
+  diary_cta_text: string;
+  diary_cta_href: string;
 }
 
 /**
@@ -293,6 +327,9 @@ export interface AboutFounderContent {
 
 export interface OurStoryPhoto {
   id: string;
+  /** A photo URL — or a video: a direct file (.mp4 …), a YouTube/Shorts,
+      Vimeo, Instagram or Cloudinary link. {@link diaryMediaKind} tells the
+      reel which one it's holding. */
   image_url: string;
   caption: string;
 }
@@ -312,6 +349,9 @@ export interface OurStoryPageContent {
   intro_hint: string;
   candle_label: string;
   candle_image_url: string;
+  /** Where the wick meets the wax in the candle artwork, as a % of the visible frame — the flame burns from there. */
+  candle_wick_x: number;
+  candle_wick_y: number;
   candle_wrapped_title: string;
   candle_wrapped_action: string;
   candle_wrapped_note: string;
@@ -501,13 +541,13 @@ export const DEFAULT_CONTENT: SiteContent = {
     bio: "I create café-inspired pieces designed to bring warmth and calm into everyday life.",
     cta_text: "Our Story",
     cta_href: "#story",
+    diary_cta_text: "Founder's Diary",
+    diary_cta_href: "/our-story",
   },
 
   brandStory: {
     label: "OUR STORY",
     headline: "Born from a love of slow living",
-    page_title: "From Café Moments to",
-    page_title_gold: "Candle Glow",
     body: "The Olive Goose began in a small Dublin kitchen, with a pot of soy wax, a shelf of fragrance oils, and an obsession with creating the perfect scent. Each candle is hand-poured in small batches in Ireland, using sustainably sourced soy wax and fragrances chosen for their ability to calm, energise, or ground the senses.\n\nWe believe your home should feel like a sanctuary — and that the right scent can transform any space.",
     image_url: "",
     cta_text: "Learn More",
@@ -515,9 +555,31 @@ export const DEFAULT_CONTENT: SiteContent = {
   },
 
   aboutPage: {
-    page_title: "Our Story",
-    page_title_gold: "About",
+    hero_eyebrow: "Our Story",
+    // These two also become the page's search-result title, so they read as one
+    // headline rather than the old "Our Story" + "About" pair, which rendered
+    // "Our Story About" under an eyebrow that already said "Our Story".
+    page_title: "From Café Moments to",
+    page_title_gold: "Candle Glow",
     page_subtitle: "Handcrafted with intention. Poured with love. Made for moments that matter.",
+    values_heading: "What we believe in",
+    values: [
+      {
+        icon: "🌿",
+        title: "Sustainably Sourced",
+        body: "Every ingredient is chosen with the planet in mind — soy wax, cotton wicks, recycled packaging.",
+      },
+      {
+        icon: "🤝",
+        title: "Small Batch",
+        body: "We pour in small batches to guarantee quality, freshness and a personal touch in every candle.",
+      },
+      {
+        icon: "💛",
+        title: "Made with Intention",
+        body: "Each scent is designed around a feeling — because the right candle can transform any room.",
+      },
+    ],
   },
 
   aboutFounder: {
@@ -527,7 +589,7 @@ export const DEFAULT_CONTENT: SiteContent = {
     photo_url: "",
     name_line: "Hi, I'm Meghna — the person behind The Olive Goose.",
     bio: "I create café-inspired pieces designed to bring warmth and calm into everyday life.",
-    cta_text: "Our Story",
+    cta_text: "Founder's Diary",
     cta_href: "/our-story",
     jump_cta_text: "Meet the Founder",
   },
@@ -546,6 +608,8 @@ export const DEFAULT_CONTENT: SiteContent = {
     intro_hint: "Tap the candle, then take a wander ↓",
     candle_label: "The cosy little experiment",
     candle_image_url: "https://i.ibb.co/fz8G0NTb/44a9703e-bfab-4d84-a8d2-41ca7ff4df87.jpg",
+    candle_wick_x: 51.2,
+    candle_wick_y: 28.1,
     candle_wrapped_title: "A tiny parcel, just for you",
     candle_wrapped_action: "Unbox the candle",
     candle_wrapped_note: "Tap the parcel to peel it open",
@@ -558,7 +622,7 @@ export const DEFAULT_CONTENT: SiteContent = {
     celebration_message: "Pop! The photo diary is unlocked.",
     diary_label: "The daily photo diary",
     diary_headline: "Proof we were here ✷",
-    diary_hint: "Tap a snapshot to go full-screen",
+    diary_hint: "Swipe up for the next one ✦ tap to go full-screen",
     diary_empty_message: "The next studio snapshots are loading soon.",
     photos: [],
     closing_label: "From my hands to yours",
@@ -971,3 +1035,22 @@ export const isEmbedUrl = (url: string) =>
 
 export const isDirectVideo = (url: string) =>
   /\.(mp4|webm|ogg|ogv|mov|m4v)([?#].*)?$/i.test(url);
+
+/**
+ * What a diary entry's media URL actually holds. The founder diary takes
+ * photos and videos through the same field, so the URL itself has to say
+ * which it is: anything {@link toEmbedUrl} resolves to a player iframe is an
+ * "embed", a video file (or a Cloudinary video delivery URL) is a "video",
+ * and everything else — the common case — is a photo. Defaulting to "image"
+ * rather than a placeholder matters: an unrecognised URL was pasted as a
+ * picture, and an <img> that fails to load is honest about that.
+ */
+export type DiaryMediaKind = "image" | "video" | "embed";
+
+export const diaryMediaKind = (url: string): DiaryMediaKind => {
+  const embed = toEmbedUrl(url);
+  if (!embed) return "image";
+  if (isEmbedUrl(embed)) return "embed";
+  if (isDirectVideo(embed)) return "video";
+  return "image";
+};
