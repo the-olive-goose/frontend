@@ -5,8 +5,13 @@ import RichText, { stripRichText } from "@/lib/richtext";
 import useIsMobile from "@/hooks/useIsMobile";
 import useSwipe from "@/hooks/useSwipe";
 import useBodyScrollLock from "@/hooks/useBodyScrollLock";
+import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 
-interface Props { data: VideosContent }
+interface Props {
+  data: VideosContent;
+  /** False while the reel content is still loading. */
+  ready?: boolean;
+}
 
 const isInstagramUrl = (url: string) =>
   url.includes("instagram.com/reel/") || url.includes("instagram.com/p/");
@@ -395,7 +400,7 @@ const ReelLightbox = ({
 };
 
 /* ── Section ───────────────────────────────────────────────────────────────── */
-const VideosSection = ({ data }: Props) => {
+const VideosSection = ({ data, ready = true }: Props) => {
   const items = data.items ?? [];
   const isMobile = useIsMobile();
 
@@ -467,6 +472,25 @@ const VideosSection = ({ data }: Props) => {
 
   // Reading a reel in the lightbox should leave the rail parked on it.
   useEffect(() => { if (open !== null) scrollToCard(open); }, [open, scrollToCard]);
+
+  // Reserve the rail's height until we know what (if anything) is in it.
+  if (!ready) {
+    return (
+      <section id="journal" style={{ background: "var(--bg-videos)", overflow: "hidden" }} className="py-16 sm:py-20">
+        <div className="max-w-6xl mx-auto px-6" style={{ color: "var(--text-primary)" }}>
+          <div className="text-center mb-6 flex flex-col items-center gap-3">
+            <SkelBlock height="26px" width="120px" radius="var(--radius-pill)" />
+            <SkelText width="min(380px,70vw)" style={{ fontSize: "var(--text-display-lg)" }} />
+          </div>
+          <div className="flex gap-4 justify-center">
+            {[0, 1, 2].map(i => (
+              <SkelBlock key={i} height="clamp(320px,44vw,420px)" width="clamp(180px,24vw,240px)" />
+            ))}
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   // Switched off in admin, or nothing to show. The toggle lives here rather than
   // at the call site so every consumer of the section obeys it.

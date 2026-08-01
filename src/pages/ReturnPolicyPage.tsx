@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { fetchOrders, submitReturn, fetchReturns, SessionExpiredError, type Order, type ReturnRequest } from "@/lib/userApi";
-import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, type ReturnPolicyContent } from "@/lib/defaults";
+import { DEFAULT_CONTENT } from "@/lib/defaults";
+import { useContent } from "@/hooks/useContent";
+import { SkelText } from "@/components/ui/ContentSkeleton";
 import PageSubNav, { ORDERS_NAV } from "@/components/PageSubNav";
 import PageHero from "@/components/PageHero";
 import RichText from "@/lib/richtext";
@@ -26,7 +27,7 @@ const formatDate = (iso: string) =>
 
 const ReturnPolicyPage = () => {
   const { user, loading: authLoading, openAuthModal, requireAuth } = useAuth();
-  const [policy, setPolicy] = useState<ReturnPolicyContent>(DEFAULT_CONTENT.returnPolicy);
+  const { data: policy, ready: policyReady } = useContent("returnPolicy", DEFAULT_CONTENT.returnPolicy);
   const [orders, setOrders] = useState<Order[]>([]);
   const [returns, setReturns] = useState<ReturnRequest[]>([]);
   const [selection, setSelection] = useState("");
@@ -34,10 +35,6 @@ const ReturnPolicyPage = () => {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [submitted, setSubmitted] = useState(false);
-
-  useEffect(() => {
-    getContent("returnPolicy", DEFAULT_CONTENT.returnPolicy).then(setPolicy);
-  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -79,22 +76,33 @@ const ReturnPolicyPage = () => {
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
       <div>
-        <PageHero eyebrow="Shipping & Returns" title={policy.heading} titleGold={policy.heading_gold} subtitle={policy.intro} />
+        <PageHero eyebrow="Shipping & Returns" title={policy.heading} titleGold={policy.heading_gold} subtitle={policy.intro} ready={policyReady} />
 
         <div className="max-w-3xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-12 sm:pb-16 space-y-6">
           {user && <PageSubNav items={ORDERS_NAV} />}
 
           {/* Policy content — CMS managed */}
           <div className="bg-white rounded-2xl p-6 sm:p-8 space-y-6" style={{ border: "1px solid var(--color-border)" }}>
-            {policy.sections.map(section => (
-              <div key={section.title}>
-                <h3 className="font-serif text-lg font-semibold mb-1" style={{ color: "var(--color-forest-dark)" }}><RichText text={section.title} /></h3>
-                <p className="font-sans text-sm leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}><RichText text={section.body} /></p>
-              </div>
-            ))}
-            <p className="font-sans text-xs" style={{ color: "rgba(30,41,24,0.6)" }}>
-              Questions? Email us at <a href={`mailto:${policy.contact_email}`} className="hover:underline font-semibold" style={{ color: "var(--color-forest-dark)" }}>{policy.contact_email}</a>
-            </p>
+            {policyReady ? (
+              <>
+                {policy.sections.map(section => (
+                  <div key={section.title}>
+                    <h3 className="font-serif text-lg font-semibold mb-1" style={{ color: "var(--color-forest-dark)" }}><RichText text={section.title} /></h3>
+                    <p className="font-sans text-sm leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}><RichText text={section.body} /></p>
+                  </div>
+                ))}
+                <p className="font-sans text-xs" style={{ color: "rgba(30,41,24,0.6)" }}>
+                  Questions? Email us at <a href={`mailto:${policy.contact_email}`} className="hover:underline font-semibold" style={{ color: "var(--color-forest-dark)" }}>{policy.contact_email}</a>
+                </p>
+              </>
+            ) : (
+              [0, 1, 2, 3].map(i => (
+                <div key={i} style={{ color: "var(--color-forest-dark)" }}>
+                  <div className="mb-2"><SkelText width="44%" style={{ fontSize: "1.125rem" }} /></div>
+                  <SkelText lines={3} lineHeight={1.6} style={{ fontSize: "0.875rem" }} />
+                </div>
+              ))
+            )}
           </div>
 
           {!authLoading && !user && (
@@ -172,7 +180,7 @@ const ReturnPolicyPage = () => {
           )}
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

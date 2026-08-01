@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import PageSubNav, { ACCOUNT_NAV } from "@/components/PageSubNav";
 import FooterSection from "@/components/sections/FooterSection";
-import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { fetchAddresses, type SavedAddress } from "@/lib/userApi";
 import {
   nameError, phoneError, tidy, normalizeAddress, validateDeliveryAddress,
@@ -212,7 +211,7 @@ const AccountPage = () => {
           )}
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

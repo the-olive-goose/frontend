@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, type CustomerServiceContent } from "@/lib/defaults";
+import { DEFAULT_CONTENT } from "@/lib/defaults";
+import { useContent } from "@/hooks/useContent";
+import { SkelText } from "@/components/ui/ContentSkeleton";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import PageHero from "@/components/PageHero";
 import RichText, { stripRichText } from "@/lib/richtext";
@@ -15,18 +15,14 @@ import { breadcrumbJsonLd } from "@/lib/seo";
  * admin panel updates both this page and its FAQPage structured data.
  */
 const FAQPage = () => {
-  const [content, setContent] = useState<CustomerServiceContent>(DEFAULT_CONTENT.customerService);
-
-  useEffect(() => {
-    getContent("customerService", DEFAULT_CONTENT.customerService).then(setContent);
-  }, []);
+  const { data: content, ready } = useContent("customerService", DEFAULT_CONTENT.customerService);
 
   useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["FAQs", "/faq"]]));
 
   // FAQPage structured data mirroring the visible Q&A accordion below.
   useJsonLd(
     "faq",
-    content.faqs.length === 0
+    !ready || content.faqs.length === 0
       ? null
       : {
           "@context": "https://schema.org",
@@ -47,10 +43,19 @@ const FAQPage = () => {
           title={content.faq_heading}
           titleGold={content.faq_heading_gold}
           subtitle="Shipping, orders, ingredients and candle safety — answered."
+          ready={ready}
         />
 
         <div className="max-w-2xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-12 sm:pb-16 space-y-6">
-          {content.faqs.length > 0 && (
+          {!ready && (
+            <div className="bg-white rounded-2xl px-6 sm:px-8 py-4 space-y-6" style={{ border: "1px solid var(--color-border)", color: "var(--color-forest-dark)" }}>
+              {[0, 1, 2, 3, 4].map(i => (
+                <SkelText key={i} width={i % 2 ? "78%" : "62%"} style={{ fontSize: "0.875rem" }} />
+              ))}
+            </div>
+          )}
+
+          {ready && content.faqs.length > 0 && (
             <div className="bg-white rounded-2xl px-6 sm:px-8" style={{ border: "1px solid var(--color-border)" }}>
               <Accordion type="single" collapsible>
                 {content.faqs.map((faq, i) => (
@@ -82,7 +87,7 @@ const FAQPage = () => {
           </div>
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

@@ -12,6 +12,7 @@
 // never ship a literal "{free_shipping}" to Google.
 
 import { getContent } from "@/lib/api";
+import { resetContentCache } from "@/lib/contentStore";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type SiteContent } from "@/lib/defaults";
 import { fillOfferTokens, resolveOfferValues, type OfferValues } from "@/lib/offerTokens";
 import { joinPageTitle } from "@/lib/pageTitle";
@@ -155,32 +156,23 @@ export function buildMeta(base: RouteMeta, raw: RawMeta, offer: OfferValues, sit
   };
 }
 
-// Content sections are fetched once per session: the copy behind a meta tag does
-// not change mid-visit, and every page that has a source is also fetching the
-// same section for itself.
-const sectionCache = new Map<string, Promise<unknown>>();
-let offerCache: Promise<OfferValues> | null = null;
-
+// Content sections are fetched once per session — that caching now lives in
+// lib/contentStore, shared with every component on the page, so a section the
+// meta tags need is the same fetch the page body already made.
 function loadSection(section: string, fallback: unknown): Promise<unknown> {
-  const cached = sectionCache.get(section);
-  if (cached) return cached;
-  const request = getContent(section, fallback);
-  sectionCache.set(section, request);
-  return request;
+  return getContent(section, fallback);
 }
 
 function loadOffer(): Promise<OfferValues> {
-  offerCache ??= Promise.all([
+  return Promise.all([
     getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings),
     getContent("subscribePopup", DEFAULT_CONTENT.subscribePopup),
   ]).then(([pickup, popup]) => resolveOfferValues(pickup, popup));
-  return offerCache;
 }
 
 /** Test seam — clears the per-session content cache. */
 export function resetSeoContentCache() {
-  sectionCache.clear();
-  offerCache = null;
+  resetContentCache();
 }
 
 /**

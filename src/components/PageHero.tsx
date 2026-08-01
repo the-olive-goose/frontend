@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { motion } from "framer-motion";
 import RichText from "@/lib/richtext";
 import { splitPageTitle } from "@/lib/pageTitle";
+import { SkelText } from "@/components/ui/ContentSkeleton";
 
 interface Props {
   eyebrow: string;
@@ -13,6 +14,13 @@ interface Props {
    */
   titleGold?: string;
   subtitle?: string;
+  /**
+   * False while the page's copy is still loading. The band then renders
+   * placeholder lines at the same size — the headline and subtitle here are
+   * admin-editable on every page that uses it, so painting the bundled text
+   * first would flash last month's wording.
+   */
+  ready?: boolean;
 }
 
 /**
@@ -34,7 +42,7 @@ interface Props {
  * band is always above the fold, so an in-view observer may never fire for it
  * and the copy would sit at opacity 0 forever.
  */
-const PageHero = ({ eyebrow, title, titleGold, subtitle }: Props) => {
+const PageHero = ({ eyebrow, title, titleGold, subtitle, ready = true }: Props) => {
   const parts = typeof title === "string" ? splitPageTitle(title, titleGold) : null;
 
   return (
@@ -58,7 +66,9 @@ const PageHero = ({ eyebrow, title, titleGold, subtitle }: Props) => {
       className="font-display font-semibold mb-4"
       style={{ fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--text-on-dark)", lineHeight: 1.05 }}
     >
-      {parts ? (
+      {!ready ? (
+        <SkelText width="min(520px,80vw)" lineHeight={1.05} center />
+      ) : parts ? (
         <>
           {parts.plain && <RichText text={parts.plain} />}
           {parts.plain && parts.gold && " "}
@@ -68,7 +78,11 @@ const PageHero = ({ eyebrow, title, titleGold, subtitle }: Props) => {
         </>
       ) : title}
     </motion.h1>
-    {subtitle && (
+    {!ready ? (
+      <p className="font-sans text-base max-w-xl mx-auto leading-relaxed" style={{ color: "var(--text-muted-on-dark)" }}>
+        <SkelText lines={2} width="min(480px,78vw)" lineHeight={1.6} center />
+      </p>
+    ) : subtitle ? (
       <motion.p
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.18 }}
         className="font-sans text-base max-w-xl mx-auto leading-relaxed"
@@ -76,7 +90,7 @@ const PageHero = ({ eyebrow, title, titleGold, subtitle }: Props) => {
       >
         <RichText text={subtitle} />
       </motion.p>
-    )}
+    ) : null}
   </div>
   );
 };

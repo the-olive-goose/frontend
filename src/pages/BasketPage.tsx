@@ -5,7 +5,8 @@ import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent, type Product, type PickupSettingsContent } from "@/lib/defaults";
+import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
+import { useContent } from "@/hooks/useContent";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
 import { computeBundleSavings } from "@/lib/bundleSavings";
 import { getBundleNudges } from "@/lib/bundleNudges";
@@ -24,13 +25,12 @@ const BasketPage = () => {
   const [clearing, setClearing] = useState(false);
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
-  const [pickup, setPickup] = useState<PickupSettingsContent>(DEFAULT_CONTENT.pickupSettings);
+  const { data: pickup, ready: pickupReady } = useContent("pickupSettings", DEFAULT_CONTENT.pickupSettings);
   const [addingNudge, setAddingNudge] = useState<string | null>(null);
 
   useEffect(() => {
     getContent<DealsContent>("deals", DEFAULT_DEALS).then(d => setBundles(d?.bundles ?? []));
     getContent("products", DEFAULT_CONTENT.products).then(d => setAllProducts(d?.items ?? []));
-    getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings).then(setPickup);
   }, []);
 
   // Per-unit, non-overlapping bundle allocation — same algorithm the backend
@@ -287,7 +287,7 @@ const BasketPage = () => {
             {user && items.length > 0 && (
               <div className="bg-white rounded-xl p-5 space-y-3"
                 style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-                <FreeShippingBar subtotal={subtotalNum} threshold={pickup.free_shipping_threshold} />
+                <FreeShippingBar subtotal={subtotalNum} threshold={pickup.free_shipping_threshold} ready={pickupReady} />
                 <div className="flex justify-between font-sans text-sm" style={{ color: "#0F1111" }}>
                   <span>Subtotal ({count} item{count !== 1 ? "s" : ""})</span>
                   <span className="font-semibold">{total}</span>
@@ -348,7 +348,7 @@ const BasketPage = () => {
         </div>
       </div>
 
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

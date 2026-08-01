@@ -4,7 +4,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { fetchOrders, type Order } from "@/lib/userApi";
 import PageSubNav, { ORDERS_NAV } from "@/components/PageSubNav";
 import FooterSection from "@/components/sections/FooterSection";
-import { DEFAULT_CONTENT } from "@/lib/defaults";
 
 const formatDate = (iso: string) =>
   new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
@@ -136,7 +135,7 @@ const TrackOrderPage = () => {
           )}
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import NavbarSection from "@/components/sections/NavbarSection";
-import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
-import { resolveOfferValues, type OfferValues } from "@/lib/offerTokens";
+import { useContent } from "@/hooks/useContent";
+import { resolveOfferValues } from "@/lib/offerTokens";
 
 /**
  * Persistent shell for all public pages. The navbar is mounted ONCE here and
@@ -11,27 +10,28 @@ import { resolveOfferValues, type OfferValues } from "@/lib/offerTokens";
  * never reload or flash, and the active-tab highlight slides as you navigate.
  */
 const Layout = () => {
-  const [navbar, setNavbar]             = useState(DEFAULT_CONTENT.navbar);
-  const [announcement, setAnnouncement] = useState(DEFAULT_CONTENT.announcementBar);
+  const navbar       = useContent("navbar", DEFAULT_CONTENT.navbar);
+  const announcement = useContent("announcementBar", DEFAULT_CONTENT.announcementBar);
   // Announcement copy quotes the free-shipping bar and the welcome discount via
   // tokens (see lib/offerTokens), so the bar needs the settings that own those
   // figures — otherwise it would have to hardcode them and could drift.
-  const [offer, setOffer] = useState<OfferValues>(
-    resolveOfferValues(DEFAULT_CONTENT.pickupSettings, DEFAULT_CONTENT.subscribePopup)
-  );
+  const pickup = useContent("pickupSettings", DEFAULT_CONTENT.pickupSettings);
+  const popup  = useContent("subscribePopup", DEFAULT_CONTENT.subscribePopup);
+  const offer  = resolveOfferValues(pickup.data, popup.data);
 
-  useEffect(() => {
-    getContent("navbar", DEFAULT_CONTENT.navbar).then(setNavbar);
-    getContent("announcementBar", DEFAULT_CONTENT.announcementBar).then(setAnnouncement);
-    Promise.all([
-      getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings),
-      getContent("subscribePopup", DEFAULT_CONTENT.subscribePopup),
-    ]).then(([pickup, popup]) => setOffer(resolveOfferValues(pickup, popup)));
-  }, []);
+  // The bar is only allowed to paint once its copy AND the figures that copy
+  // interpolates are both real — a message rendered against fallback settings
+  // would quote a threshold the shop doesn't actually offer.
+  const ready = navbar.ready && announcement.ready && pickup.ready && popup.ready;
 
   return (
     <>
-      <NavbarSection data={navbar} announcement={announcement} offer={offer} />
+      <NavbarSection
+        data={navbar.data}
+        announcement={announcement.data}
+        offer={offer}
+        ready={ready}
+      />
       <Outlet />
     </>
   );

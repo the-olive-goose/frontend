@@ -1,16 +1,8 @@
-import { useEffect, useState } from "react";
-import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, type LegalPageContent } from "@/lib/defaults";
+import { DEFAULT_CONTENT } from "@/lib/defaults";
 import LegalPageLayout from "@/components/LegalPageLayout";
 
-const PrivacyPolicyPage = () => {
-  const [content, setContent] = useState<LegalPageContent>(DEFAULT_CONTENT.privacyPolicy);
-
-  useEffect(() => {
-    getContent("privacyPolicy", DEFAULT_CONTENT.privacyPolicy).then(setContent);
-  }, []);
-
-  return <LegalPageLayout eyebrow="Privacy" data={content} />;
-};
+const PrivacyPolicyPage = () => (
+  <LegalPageLayout eyebrow="Privacy" section="privacyPolicy" fallback={DEFAULT_CONTENT.privacyPolicy} />
+);
 
 export default PrivacyPolicyPage;

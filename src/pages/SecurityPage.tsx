@@ -5,7 +5,6 @@ import PhoneInput from "@/components/PhoneInput";
 import { phoneError as validatePhone, splitPhone, composePhone } from "@/lib/addressValidation";
 import PageSubNav, { ACCOUNT_NAV } from "@/components/PageSubNav";
 import FooterSection from "@/components/sections/FooterSection";
-import { DEFAULT_CONTENT } from "@/lib/defaults";
 
 const inputStyle = { border: "1px solid #ccc", background: "#fff", color: "#111" } as const;
 
@@ -163,7 +162,7 @@ const SecurityPage = () => {
           )}
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

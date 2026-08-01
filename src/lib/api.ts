@@ -1,5 +1,6 @@
 import { fetchWithTimeout, RequestTimeoutError } from './fetchTimeout';
 import { API_URL } from './apiBase';
+import { readContent, readContentFresh, writeContent } from './contentStore';
 
 // ── Token helpers ──────────────────────────────────────────────────────────────
 const getToken = () => localStorage.getItem('admin_token');
@@ -111,21 +112,18 @@ export const changeAdminPassword = async (
 export const isLoggedIn = (): boolean => !!getToken();
 
 // ── Generic content API ────────────────────────────────────────────────────────
-// All site sections stored under /api/content/:section.
-// Falls back to `fallback` when the backend is unavailable.
+// All site sections stored under /api/content/:section, read through the session
+// cache in lib/contentStore so a section is fetched once per visit rather than
+// once per component mount. Falls back to `fallback` when the backend is
+// unavailable.
 
-export const getContent = async <T>(section: string, fallback: T): Promise<T> => {
-  try {
-    const res = await fetchWithTimeout(`${API_URL}/api/content/${section}`);
-    if (!res.ok) return fallback;
-    const data = await res.json();
-    if (!data) return fallback;
-    if (Array.isArray(fallback)) return data as T;
-    return { ...fallback, ...data } as T;
-  } catch {
-    return fallback;
-  }
-};
+export const getContent = <T>(section: string, fallback: T): Promise<T> =>
+  readContent(section, fallback);
+
+// Cache-bypassing read for the admin dashboard: the editor must always load what
+// is actually stored, never a value the storefront cached earlier in the session.
+export const getContentFresh = <T>(section: string, fallback: T): Promise<T> =>
+  readContentFresh(section, fallback);
 
 export const saveContent = async <T>(section: string, data: T): Promise<void> => {
   const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/content/${section}`, {
@@ -135,6 +133,9 @@ export const saveContent = async <T>(section: string, data: T): Promise<void> =>
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { error?: string }).error || 'Failed to save');
   }
+  // Keep the cache honest about what the server now holds — otherwise the rest of
+  // this session would keep serving the pre-save value.
+  writeContent(section, data);
 };
 
 export const uploadImage = async (file: File): Promise<string> => {
@@ -333,27 +334,38 @@ export interface ShopCategory {
   is_active: boolean;
 }
 
-export const getShopCategories = async (): Promise<ShopCategory[]> => {
-  try {
-    const res = await fetchWithTimeout(`${API_URL}/api/shop/categories`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch {
-    return [];
-  }
+// Shared for the whole visit, like the content sections: the navbar dropdown,
+// the scrapbook, the new-arrivals strip, the shop grid and the product page all
+// want the same list, and they were each fetching it separately on every page.
+let shopCategoriesRequest: Promise<ShopCategory[]> | null = null;
+
+export const getShopCategories = (options?: { fresh?: boolean }): Promise<ShopCategory[]> => {
+  // The admin edits categories, so it must never read a list cached earlier.
+  if (options?.fresh) shopCategoriesRequest = null;
+
+  shopCategoriesRequest ??= fetchWithTimeout(`${API_URL}/api/shop/categories`)
+    .then((res) => (res.ok ? res.json() : []))
+    .catch(() => [] as ShopCategory[]);
+
+  return shopCategoriesRequest;
 };
+
+/** Drops the cached category list — after an admin save, and in tests. */
+export const invalidateShopCategories = (): void => { shopCategoriesRequest = null; };
 
 export const saveShopCategory = async (cat: Partial<ShopCategory> & { id?: string }): Promise<ShopCategory> => {
   const method = cat.id ? 'PUT' : 'POST';
   const url = cat.id ? `${API_URL}/api/shop/categories/${cat.id}` : `${API_URL}/api/shop/categories`;
   const res = await checkStatus(await fetchWithTimeout(url, { method, headers: authHeaders(true), body: JSON.stringify(cat) }));
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as {error?:string}).error || 'Failed'); }
+  invalidateShopCategories();
   return res.json();
 };
 
 export const deleteShopCategory = async (id: string): Promise<void> => {
   const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/shop/categories/${id}`, { method: 'DELETE', headers: authHeaders(true) }));
   if (!res.ok) throw new Error('Failed to delete category');
+  invalidateShopCategories();
 };
 
 export const saveShopCandle = async (candle: Partial<ShopCandle> & { id?: string }): Promise<ShopCandle> => {

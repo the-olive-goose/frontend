@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
+import { DEFAULT_CONTENT } from "@/lib/defaults";
+import { useContent } from "@/hooks/useContent";
+import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 import FooterSection from "@/components/sections/FooterSection";
 import PageHero from "@/components/PageHero";
 import InteractiveCandle from "@/components/InteractiveCandle";
@@ -12,7 +13,10 @@ import { useJsonLd } from "@/hooks/useJsonLd";
 import { breadcrumbJsonLd } from "@/lib/seo";
 
 const FounderDiaryPage = () => {
-  const [content, setContent] = useState<SiteContent>(DEFAULT_CONTENT);
+  // Navbar / announcement / footer copy is owned elsewhere.
+  const { data: page, ready } = useContent("ourStoryPage", DEFAULT_CONTENT.ourStoryPage);
+  // Only for the @handle stamped on the diary reel.
+  const { data: footer } = useContent("footer", DEFAULT_CONTENT.footer);
   const [candleStage, setCandleStage] = useState<"wrapped" | "ready" | "lit" | "blown">("wrapped");
   const [openPhoto, setOpenPhoto] = useState<number | null>(null);
   const [celebrating, setCelebrating] = useState(false);
@@ -21,25 +25,7 @@ const FounderDiaryPage = () => {
 
   useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["About", "/about"], ["Founder Diary", "/our-story"]]));
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const [announcementBar, navbar, ourStoryPage, footer] = await Promise.all([
-          getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
-          getContent("navbar", DEFAULT_CONTENT.navbar),
-          getContent("ourStoryPage", DEFAULT_CONTENT.ourStoryPage),
-          getContent("footer", DEFAULT_CONTENT.footer),
-        ]);
-        setContent((prev) => ({ ...prev, announcementBar, navbar, ourStoryPage, footer }));
-      } catch {
-        /* fall back to defaults */
-      }
-    };
-    load();
-  }, []);
-
-  const page = content.ourStoryPage;
-  const diaryPhotos = page.photos.filter((photo) => photo.image_url);
+  const diaryPhotos = ready ? page.photos.filter((photo) => photo.image_url) : [];
   const candlePrompt = {
     wrapped: { title: page.candle_wrapped_title, action: page.candle_wrapped_action, note: page.candle_wrapped_note },
     ready: { title: page.candle_ready_title, action: page.candle_ready_action, note: page.candle_ready_note },
@@ -84,26 +70,36 @@ const FounderDiaryPage = () => {
         title={page.page_title}
         titleGold={page.page_title_gold}
         subtitle={page.page_subtitle}
+        ready={ready}
       />
 
       <section className="max-w-6xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-12 sm:pb-16">
         <div className="grid gap-8 lg:grid-cols-[1fr_0.95fr] lg:items-center">
           <div className="space-y-6">
             <div className="flex flex-wrap gap-2 font-display text-xs tracking-[0.14em] uppercase" style={{ color: "var(--color-forest-dark)" }}>
-              {page.intro_tag_primary && <span className="rounded-full px-3 py-1.5" style={{ background: "var(--color-sage-pale)" }}><RichText text={page.intro_tag_primary} /></span>}
-              {page.intro_tag_secondary && <span className="rounded-full px-3 py-1.5" style={{ background: "rgba(222,178,94,0.2)" }}><RichText text={page.intro_tag_secondary} /></span>}
+              {ready && page.intro_tag_primary && <span className="rounded-full px-3 py-1.5" style={{ background: "var(--color-sage-pale)" }}><RichText text={page.intro_tag_primary} /></span>}
+              {ready && page.intro_tag_secondary && <span className="rounded-full px-3 py-1.5" style={{ background: "rgba(222,178,94,0.2)" }}><RichText text={page.intro_tag_secondary} /></span>}
             </div>
             <h2 className="font-display font-semibold" style={{ fontSize: "clamp(2rem,4vw,3.5rem)", color: "var(--color-forest-dark)", lineHeight: 1.04 }}>
-              <RichText text={page.intro_headline} /> {page.intro_headline_gold && <span style={{ color: "var(--color-gold)" }}><RichText text={page.intro_headline_gold} /></span>}
+              {ready ? (
+                <>
+                  <RichText text={page.intro_headline} /> {page.intro_headline_gold && <span style={{ color: "var(--color-gold)" }}><RichText text={page.intro_headline_gold} /></span>}
+                </>
+              ) : <SkelText lines={2} width="90%" lineHeight={1.04} />}
             </h2>
             <div className="space-y-4">
-              {page.intro.split("\n\n").map((para, index) => (
+              {!ready && (
+                <p className="font-sans text-base leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}>
+                  <SkelText lines={5} lineHeight={1.6} />
+                </p>
+              )}
+              {ready && page.intro.split("\n\n").map((para, index) => (
                 <p key={index} className="font-sans text-base leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}>
                   <RichText text={para} />
                 </p>
               ))}
             </div>
-            {page.intro_hint && <p className="font-display text-sm" style={{ color: "var(--color-sage-light)" }}><RichText text={page.intro_hint} /></p>}
+            {ready && page.intro_hint && <p className="font-display text-sm" style={{ color: "var(--color-sage-light)" }}><RichText text={page.intro_hint} /></p>}
           </div>
 
           <motion.div
@@ -112,8 +108,10 @@ const FounderDiaryPage = () => {
             style={{ background: "linear-gradient(145deg, #35533c 0%, #213d2b 58%, #172d20 100%)", borderColor: "rgba(222,178,94,0.35)", boxShadow: candleStage === "lit" ? "0 24px 70px rgba(222,178,94,0.28)" : "0 20px 50px rgba(30,41,24,0.18)" }}
           >
             <div className="absolute -right-10 -top-12 h-44 w-44 rounded-full opacity-30 blur-2xl" style={{ background: "var(--color-gold)" }} />
-            {page.candle_label && <p className="relative font-display text-xs uppercase tracking-[0.2em]" style={{ color: "var(--color-gold)" }}><RichText text={page.candle_label} /></p>}
-            <p className="relative mt-2 max-w-[15rem] font-display text-2xl leading-tight" style={{ color: "var(--color-cream-text)" }}>{candlePrompt.title}</p>
+            {ready && page.candle_label && <p className="relative font-display text-xs uppercase tracking-[0.2em]" style={{ color: "var(--color-gold)" }}><RichText text={page.candle_label} /></p>}
+            <p className="relative mt-2 max-w-[15rem] font-display text-2xl leading-tight" style={{ color: "var(--color-cream-text)" }}>
+              {ready ? candlePrompt.title : <SkelText lines={2} lineHeight={1.2} />}
+            </p>
 
             <button
               type="button"
@@ -155,7 +153,7 @@ const FounderDiaryPage = () => {
         {diaryPhotos.length > 0 ? (
           <DiaryReel
             photos={diaryPhotos}
-            handle={content.footer.brand_name}
+            handle={footer.brand_name}
             hint={page.diary_hint}
             onExpand={setOpenPhoto}
           />
@@ -169,10 +167,10 @@ const FounderDiaryPage = () => {
 
       <section className="mx-auto max-w-4xl px-6 pb-20 text-center sm:pb-28">
         <div className="rounded-[2rem] px-6 py-10 sm:px-12" style={{ background: "var(--color-sage-pale)" }}>
-          {page.closing_label && <p className="font-display text-xs uppercase tracking-[0.2em]" style={{ color: "var(--color-sage-light)" }}><RichText text={page.closing_label} /></p>}
+          {ready && page.closing_label && <p className="font-display text-xs uppercase tracking-[0.2em]" style={{ color: "var(--color-sage-light)" }}><RichText text={page.closing_label} /></p>}
           <h2 className="mx-auto mt-3 max-w-2xl font-display text-3xl font-semibold sm:text-4xl" style={{ color: "var(--color-forest-dark)" }}><RichText text={page.closing_headline} /></h2>
           <p className="mx-auto mt-4 max-w-xl font-sans leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}><RichText text={page.closing_body} /></p>
-          {page.cta_text && <Link to={page.cta_href || "/shop"} className="mt-7 inline-flex items-center gap-2 rounded-full px-6 py-3 font-display text-sm font-semibold transition-all hover:-translate-y-0.5 hover:shadow-lg" style={{ color: "var(--color-cream-text)", background: "var(--color-forest-dark)" }}><RichText text={page.cta_text} /> <span aria-hidden="true">→</span></Link>}
+          {ready && page.cta_text && <Link to={page.cta_href || "/shop"} className="mt-7 inline-flex items-center gap-2 rounded-full px-6 py-3 font-display text-sm font-semibold transition-all hover:-translate-y-0.5 hover:shadow-lg" style={{ color: "var(--color-cream-text)", background: "var(--color-forest-dark)" }}><RichText text={page.cta_text} /> <span aria-hidden="true">→</span></Link>}
         </div>
       </section>
       </motion.div>}
@@ -181,7 +179,7 @@ const FounderDiaryPage = () => {
         {openPhoto !== null && diaryPhotos[openPhoto] && (
           <DiaryReelViewer
             photos={diaryPhotos}
-            handle={content.footer.brand_name}
+            handle={footer.brand_name}
             index={openPhoto}
             onClose={() => setOpenPhoto(null)}
           />
@@ -208,7 +206,7 @@ const FounderDiaryPage = () => {
         )}
       </AnimatePresence>
 
-      <FooterSection data={content.footer} />
+      <FooterSection />
     </div>
   );
 };

@@ -11,6 +11,7 @@ import {
   type ProductCardTheme,
 } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
+import { SkelBlock } from "@/components/ui/ContentSkeleton";
 import {
   CandleCard,
   PlaceholderCard,
@@ -26,6 +27,9 @@ const NewArrivalsSection = () => {
   const [candleOffset, setCandleOffset] = useState(0);
   const [show, setShow]             = useState(true);
   const [cardTheme, setCardTheme]   = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
+  // Which category is featured, and whether the strip runs at all, are both
+  // admin settings — so nothing here can be drawn until they arrive.
+  const [loaded, setLoaded]         = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -42,7 +46,7 @@ const NewArrivalsSection = () => {
       setCat(id ? (cats.find(c => c.id === id && c.is_active) ?? null) : null);
       setAllProducts(productsData?.items ?? []);
       if (theme) setCardTheme(theme);
-    });
+    }).finally(() => setLoaded(true));
   }, []);
 
   const isMobile  = useIsMobile(); // must be above any early return
@@ -69,6 +73,16 @@ const NewArrivalsSection = () => {
     onSwipeRight: () => setCandleOffset(o => Math.max(o - 1, 0)),
     enabled: products.length > perView,
   });
+
+  if (!loaded) {
+    return (
+      <section style={{ background:"var(--color-cream-section)", padding:"clamp(44px,7vw,84px) 0", color:"var(--text-primary)" }}>
+        <div style={{ maxWidth:"min(96vw,1240px)", margin:"0 auto", padding:"0 clamp(14px,3.5vw,44px)" }}>
+          <SkelBlock height="clamp(360px,48vw,520px)" radius="8px 22px 12px 18px / 18px 8px 22px 8px" />
+        </div>
+      </section>
+    );
+  }
 
   if (!show || !cat) return null;
   const isDark    = cat.bg_color.startsWith("#1") || cat.bg_color.startsWith("#17");

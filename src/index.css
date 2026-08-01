@@ -1069,6 +1069,32 @@
 .og-glow-pulse { animation: glow-pulse 4s ease-in-out infinite; }
 .og-logo-reveal { animation: logo-reveal 1.2s ease-out forwards; }
 
+/* ── Content skeletons ────────────────────────────────────────
+   Placeholders for admin-editable copy that has not arrived yet. They are
+   painted in `currentColor` rather than a fixed grey so one class works on every
+   surface the site has — dark ink on the cream page, cream on the forest hero,
+   forest on the sage navbar — without each call site picking a tint.
+
+   Sized in `em`, so a skeleton standing in for a heading inherits that heading's
+   font-size and occupies its box. That is the whole point: swapping a skeleton
+   for real text must not move anything. */
+.og-skel {
+  display: block;
+  background: currentColor;
+  border-radius: 0.35em;
+  opacity: 0.13;
+  animation: og-skel-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes og-skel-pulse {
+  0%, 100% { opacity: 0.10; }
+  50%      { opacity: 0.18; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .og-skel { animation: none; }
+}
+
 /* ── Gen-Z squiggle underline ────────────────────────────────── */
 .squiggle {
   text-decoration: underline wavy;

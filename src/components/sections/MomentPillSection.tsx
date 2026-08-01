@@ -1,8 +1,13 @@
 import React from "react";
 import { MomentPillContent } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
+import { SkelText } from "@/components/ui/ContentSkeleton";
 
-interface Props { data: MomentPillContent }
+interface Props {
+  data: MomentPillContent;
+  /** False while the pill copy is still loading. */
+  ready?: boolean;
+}
 
 // Bundle every image in src/assets/ at build time
 const assetMap = import.meta.glob(
@@ -45,7 +50,7 @@ const InlineImage = ({ src, alt }: { src: string; alt: string }) => {
 const ALT1 = "A lit Olive Goose candle at home";
 const ALT2 = "Calm, nature-inspired candlelight";
 
-const MomentPillSection = ({ data }: Props) => {
+const MomentPillSection = ({ data, ready = true }: Props) => {
   // Admin copy routinely arrives with a leading or trailing blank line (the
   // fields used to carry a literal "/n" line break). Untrimmed, that renders as
   // an empty row inside the pill and reads as a spacing bug rather than content.
@@ -87,15 +92,28 @@ const MomentPillSection = ({ data }: Props) => {
         {/* Two lines, each a flex row so a photo can never be orphaned onto a
             line of its own: line 1 is text1 + photo 1, line 2 runs
             text2 + photo 2 + text3 straight through. */}
-        <p className={rowClass} style={{ ...rowStyle, ...lineStyle }}>
-          <span><RichText text={line1} /></span>
-          <InlineImage src={data.image1_url} alt={ALT1} />
-        </p>
-        <p className={rowClass} style={{ ...rowStyle, ...lineStyle }}>
-          <span><RichText text={line2} /></span>
-          <InlineImage src={data.image2_url} alt={ALT2} />
-          {line3 && <span><RichText text={line3} /></span>}
-        </p>
+        {ready ? (
+          <>
+            <p className={rowClass} style={{ ...rowStyle, ...lineStyle }}>
+              <span><RichText text={line1} /></span>
+              <InlineImage src={data.image1_url} alt={ALT1} />
+            </p>
+            <p className={rowClass} style={{ ...rowStyle, ...lineStyle }}>
+              <span><RichText text={line2} /></span>
+              <InlineImage src={data.image2_url} alt={ALT2} />
+              {line3 && <span><RichText text={line3} /></span>}
+            </p>
+          </>
+        ) : (
+          <>
+            <p className={rowClass} style={{ ...rowStyle, ...lineStyle }}>
+              <SkelText width="min(300px,64vw)" lineHeight={1.5} />
+            </p>
+            <p className={rowClass} style={{ ...rowStyle, ...lineStyle }}>
+              <SkelText width="min(340px,72vw)" lineHeight={1.5} />
+            </p>
+          </>
+        )}
       </div>
     </section>
   );

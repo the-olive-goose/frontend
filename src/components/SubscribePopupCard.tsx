@@ -19,9 +19,11 @@ const fillDiscount = fillDiscountToken;
 
 interface Props {
   data: SubscribePopupContent;
+  /** False until the real popup settings load — see useContent. */
+  ready?: boolean;
 }
 
-const SubscribePopupCard = ({ data }: Props) => {
+const SubscribePopupCard = ({ data, ready = true }: Props) => {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "done">("idle");
@@ -35,6 +37,9 @@ const SubscribePopupCard = ({ data }: Props) => {
   useEffect(() => {
     if (open) return;
     const skip = (why: string) => console.info(`[subscribe-popup] not showing: ${why}`);
+    // The bundled default has the popup enabled, so scheduling it before the real
+    // settings arrive would pop a card the admin had switched off.
+    if (!ready) return;
     if (!data.enabled) return skip("disabled in admin settings");
     if (authLoading) return; // wait until we know whether this visitor is signed in
     if (user) return skip("visitor is signed in");
@@ -88,7 +93,7 @@ const SubscribePopupCard = ({ data }: Props) => {
       window.clearInterval(poll);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [data.enabled, data.delay_seconds, user, authLoading, open]);
+  }, [ready, data.enabled, data.delay_seconds, user, authLoading, open]);
 
   // Signed-in customers are already past the "give us your email" stage.
   if (user) return null;

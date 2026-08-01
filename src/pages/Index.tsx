@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, type SiteContent } from "@/lib/defaults";
-import logo from "@/assets/logo.jpg";
+import { DEFAULT_CONTENT } from "@/lib/defaults";
+import { useContent } from "@/hooks/useContent";
 import FeedbackModal      from "@/components/FeedbackModal";
 import SubscribePopupCard from "@/components/SubscribePopupCard";
 import HeroSection        from "@/components/sections/HeroSection";
@@ -16,63 +15,19 @@ import TestimonialsSection    from "@/components/sections/TestimonialsSection";
 import FooterSection          from "@/components/sections/FooterSection";
 
 const Index = () => {
-  const [content, setContent]       = useState<SiteContent>(DEFAULT_CONTENT);
-  const [loaded, setLoaded]         = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const [
-          announcementBar,
-          navbar,
-          hero,
-          momentPill,
-          welcomeClub,
-          products,
-          candleCare,
-          brandStory,
-          videos,
-          testimonials,
-          newsletter,
-          footer,
-          subscribePopup,
-        ] = await Promise.all([
-          getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
-          getContent("navbar",          DEFAULT_CONTENT.navbar),
-          getContent("hero",            DEFAULT_CONTENT.hero),
-          getContent("momentPill",      DEFAULT_CONTENT.momentPill),
-          getContent("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
-          getContent("products",        DEFAULT_CONTENT.products),
-          getContent("candleCare",      DEFAULT_CONTENT.candleCare),
-          getContent("brandStory",      DEFAULT_CONTENT.brandStory),
-          getContent("videos",          DEFAULT_CONTENT.videos),
-          getContent("testimonials",    DEFAULT_CONTENT.testimonials),
-          getContent("newsletter",      DEFAULT_CONTENT.newsletter),
-          getContent("footer",          DEFAULT_CONTENT.footer),
-          getContent("subscribePopup",  DEFAULT_CONTENT.subscribePopup),
-        ]);
-        setContent((prev) => ({
-          ...prev,
-          announcementBar, navbar, hero, momentPill, welcomeClub,
-          products, candleCare, brandStory, videos, testimonials, newsletter, footer, subscribePopup,
-        }));
-      } catch {
-        /* fall back to defaults */
-      } finally {
-        setLoaded(true);
-      }
-    };
-    load();
-  }, []);
-
-  if (!loaded) {
-    return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--bg-hero)" }}>
-        <img src={logo} alt="The Olive Goose" className="w-24 h-24 og-logo-reveal" width={512} height={512} />
-      </div>
-    );
-  }
+  // Each section reads what it needs and skeletons until that arrives. The page
+  // used to hide behind a full-screen logo splash while one Promise.all covered
+  // every section, which meant the slowest section held up the whole homepage.
+  // The navbar, announcement bar and footer own their own content elsewhere, so
+  // they are deliberately not fetched here.
+  const hero         = useContent("hero",           DEFAULT_CONTENT.hero);
+  const momentPill   = useContent("momentPill",     DEFAULT_CONTENT.momentPill);
+  const welcomeClub  = useContent("welcomeClub",    DEFAULT_CONTENT.welcomeClub);
+  const videos       = useContent("videos",         DEFAULT_CONTENT.videos);
+  const testimonials = useContent("testimonials",   DEFAULT_CONTENT.testimonials);
+  const subscribe    = useContent("subscribePopup", DEFAULT_CONTENT.subscribePopup);
 
   return (
     <div className="w-full">
@@ -81,7 +36,7 @@ const Index = () => {
 
       <div style={{ marginTop: 0, paddingTop: 0 }}>
         {/* 1. Hero — full-width image, flush from top of viewport behind navbar */}
-        <HeroSection data={content.hero} />
+        <HeroSection data={hero.data} ready={hero.ready} />
 
         {/* 2. "SMELLS LIKE YOUR CAFÉ ERA." — cream bg */}
         <SmellsLikeSection />
@@ -93,16 +48,16 @@ const Index = () => {
         <ScrapbookSection />
 
         {/* 4. "Live in the moment" pill — green bg */}
-        <MomentPillSection data={content.momentPill} />
+        <MomentPillSection data={momentPill.data} ready={momentPill.ready} />
 
         {/* 5. Welcome to the Olive Goose Club */}
-        <WelcomeSection data={content.welcomeClub} />
+        <WelcomeSection data={welcomeClub.data} ready={welcomeClub.ready} />
 
         {/* 6. Videos */}
-        <VideosSection data={content.videos} />
+        <VideosSection data={videos.data} ready={videos.ready} />
 
         {/* 7. Testimonials — cream bg, animated card stack */}
-        <TestimonialsSection data={content.testimonials} />
+        <TestimonialsSection data={testimonials.data} ready={testimonials.ready} />
 
         {/* 7b. Feedback trigger */}
         <section style={{ background: "var(--color-cream-section)", paddingBottom: "clamp(32px,5vw,60px)" }}>
@@ -124,13 +79,13 @@ const Index = () => {
         </section>
 
         {/* 8. Footer — white quick links + copyright */}
-        <FooterSection data={content.footer} />
+        <FooterSection />
 
         {/* Global feedback modal */}
         <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
 
         {/* First-visit subscribe playcard — bottom left, once per session */}
-        <SubscribePopupCard data={content.subscribePopup} />
+        <SubscribePopupCard data={subscribe.data} ready={subscribe.ready} />
       </div>
     </div>
   );

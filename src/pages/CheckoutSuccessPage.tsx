@@ -4,7 +4,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getCheckoutSession } from "@/lib/userApi";
 import FooterSection from "@/components/sections/FooterSection";
-import { DEFAULT_CONTENT } from "@/lib/defaults";
 
 // Stripe redirects here after a successful payment. The order isn't guaranteed
 // to exist the instant we land — the webhook (or this page's own poll, which
@@ -115,7 +114,7 @@ const CheckoutSuccessPage = () => {
           </div>
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

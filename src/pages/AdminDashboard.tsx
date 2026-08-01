@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, Fragment } from "react";
 import {
   isLoggedIn,
   logout,
-  getContent,
+  getContentFresh,
   saveContent,
   uploadImage,
   uploadVideo,
@@ -3911,7 +3911,7 @@ const DealsEditor = ({
   const { toast } = useToast();
 
   useEffect(() => {
-    getContent<DealsContent>("deals", DEFAULT_DEALS).then(d => { if (d) setDeals(d); });
+    getContentFresh<DealsContent>("deals", DEFAULT_DEALS).then(d => { if (d) setDeals(d); });
   }, []);
 
   const save = async () => {
@@ -4389,9 +4389,9 @@ const ShopEditor = ({
   useEffect(() => { setCats(initCats); }, [initCats]);
 
   useEffect(() => {
-    getContent<ScrapbookSettings>("scrapbookSettings", DEFAULT_SCRAPBOOK_SETTINGS)
+    getContentFresh<ScrapbookSettings>("scrapbookSettings", DEFAULT_SCRAPBOOK_SETTINGS)
       .then(s => { if (s) setScrapSettings(s); });
-    getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME)
+    getContentFresh<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME)
       .then(t => { if (t) setCardTheme({ ...DEFAULT_PRODUCT_CARD_THEME, ...t }); });
   }, []);
 
@@ -5106,41 +5106,42 @@ const AdminDashboard = () => {
   }, []);
 
   const loadData = useCallback(async () => {
-    // ── Content sections (getContent never throws — falls back to defaults) ──
+    // ── Content sections (getContentFresh bypasses the storefront cache: the
+    //    editor must always load what is actually stored) ──
     const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo] =
       await Promise.all([
-        getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
-        getContent("navbar",          DEFAULT_CONTENT.navbar),
-        getContent("hero",            DEFAULT_CONTENT.hero),
-        getContent("momentPill",      DEFAULT_CONTENT.momentPill),
-        getContent("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
-        getContent("brandStory",      DEFAULT_CONTENT.brandStory),
-        getContent("aboutPage",       DEFAULT_CONTENT.aboutPage),
-        getContent("aboutFounder",    DEFAULT_CONTENT.aboutFounder),
-        getContent("ourStoryPage",    DEFAULT_CONTENT.ourStoryPage),
-        getContent("products",        DEFAULT_CONTENT.products),
-        getContent("productPage",     DEFAULT_CONTENT.productPage),
-        getContent("shopPage",        DEFAULT_CONTENT.shopPage),
-        getContent("candleCare",      DEFAULT_CONTENT.candleCare),
-        getContent("videos",          DEFAULT_CONTENT.videos),
-        getContent("testimonials",    DEFAULT_CONTENT.testimonials),
-        getContent("newsletter",      DEFAULT_CONTENT.newsletter),
-        getContent("footer",          DEFAULT_CONTENT.footer),
-        getContent("returnPolicy",    DEFAULT_CONTENT.returnPolicy),
-        getContent("giftCards",       DEFAULT_CONTENT.giftCards),
-        getContent("customerService", DEFAULT_CONTENT.customerService),
-        getContent("pickupSettings",  DEFAULT_CONTENT.pickupSettings),
-        getContent("subscribePopup",  DEFAULT_CONTENT.subscribePopup),
-        getContent("privacyPolicy",   DEFAULT_CONTENT.privacyPolicy),
-        getContent("termsOfService",  DEFAULT_CONTENT.termsOfService),
-        getContent("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
-        getContent("seo",             DEFAULT_CONTENT.seo),
+        getContentFresh("announcementBar", DEFAULT_CONTENT.announcementBar),
+        getContentFresh("navbar",          DEFAULT_CONTENT.navbar),
+        getContentFresh("hero",            DEFAULT_CONTENT.hero),
+        getContentFresh("momentPill",      DEFAULT_CONTENT.momentPill),
+        getContentFresh("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
+        getContentFresh("brandStory",      DEFAULT_CONTENT.brandStory),
+        getContentFresh("aboutPage",       DEFAULT_CONTENT.aboutPage),
+        getContentFresh("aboutFounder",    DEFAULT_CONTENT.aboutFounder),
+        getContentFresh("ourStoryPage",    DEFAULT_CONTENT.ourStoryPage),
+        getContentFresh("products",        DEFAULT_CONTENT.products),
+        getContentFresh("productPage",     DEFAULT_CONTENT.productPage),
+        getContentFresh("shopPage",        DEFAULT_CONTENT.shopPage),
+        getContentFresh("candleCare",      DEFAULT_CONTENT.candleCare),
+        getContentFresh("videos",          DEFAULT_CONTENT.videos),
+        getContentFresh("testimonials",    DEFAULT_CONTENT.testimonials),
+        getContentFresh("newsletter",      DEFAULT_CONTENT.newsletter),
+        getContentFresh("footer",          DEFAULT_CONTENT.footer),
+        getContentFresh("returnPolicy",    DEFAULT_CONTENT.returnPolicy),
+        getContentFresh("giftCards",       DEFAULT_CONTENT.giftCards),
+        getContentFresh("customerService", DEFAULT_CONTENT.customerService),
+        getContentFresh("pickupSettings",  DEFAULT_CONTENT.pickupSettings),
+        getContentFresh("subscribePopup",  DEFAULT_CONTENT.subscribePopup),
+        getContentFresh("privacyPolicy",   DEFAULT_CONTENT.privacyPolicy),
+        getContentFresh("termsOfService",  DEFAULT_CONTENT.termsOfService),
+        getContentFresh("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
+        getContentFresh("seo",             DEFAULT_CONTENT.seo),
       ]);
     setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo });
 
     // ── Shop categories ───────────────────────────────────────────────────────
     try {
-      const cats = await getShopCategories();
+      const cats = await getShopCategories({ fresh: true });
       setShopCategories(cats);
     } catch { /* non-fatal */ }
 

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import useIsMobile from "@/hooks/useIsMobile";
 import useSwipe from "@/hooks/useSwipe";
-import { getShopCategories, getContent, type ShopCategory } from "@/lib/api";
+import { getShopCategories, type ShopCategory } from "@/lib/api";
 import {
   DEFAULT_CONTENT,
   DEFAULT_PRODUCT_CARD_THEME,
@@ -12,6 +12,8 @@ import {
 } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
 import ProductCard from "@/components/ui/ProductCard";
+import { SkelBlock } from "@/components/ui/ContentSkeleton";
+import { useContent } from "@/hooks/useContent";
 
 export interface ScrapbookSettings {
   flipDuration: number;
@@ -27,18 +29,6 @@ export const DEFAULT_SCRAPBOOK_SETTINGS: ScrapbookSettings = {
   showNewArrivals: true,
   showShopByCategory: true,
 };
-
-// ── Fallback categories (shown when DB is empty) ───────────────────────────────
-// Product data comes from the Products admin section; fallback uses placeholder cards.
-
-const FALLBACK_CATS: ShopCategory[] = [
-  { id: "f1", name: "Coffee Shop Chaos",   slug: "coffee-shop-chaos",   mood_description: "espresso shots & situationships",         tags: ["#chaotic","#caffeinated"],  bg_color: "#f5e4cb", page_bg_color: "#ede0c8", accent_color: "#6b3520", text_color: "#2c1508", stickers: [{ emoji:"☕", top:"5%", left:"5%", rotate:-12, size:2.2 },{ emoji:"✨", top:"6%", left:"88%", rotate:18, size:1.6 },{ emoji:"🎵", top:"88%", left:"4%", rotate:8, size:1.4 }], product_ids: [], display_order: 0, is_active: true },
-  { id: "f2", name: "Matcha Therapy",      slug: "matcha-therapy",      mood_description: "calm girl era · no thoughts, just vibes",  tags: ["#calm","#cleangirl"],       bg_color: "#e8f0df", page_bg_color: "#dde9d3", accent_color: "#2d5a27", text_color: "#1a3318", stickers: [{ emoji:"🍵", top:"5%", left:"5%", rotate:-9,  size:2.2 },{ emoji:"🌿", top:"6%", left:"87%", rotate:12, size:2.0 },{ emoji:"💚", top:"89%", left:"89%", rotate:-6, size:1.4 }], product_ids: [], display_order: 1, is_active: true },
-  { id: "f3", name: "Late Night Cravings", slug: "late-night-cravings", mood_description: "3am thoughts & dark academia",             tags: ["#darkacademia","#moody"],   bg_color: "#1e1b2e", page_bg_color: "#17152a", accent_color: "#9b8fcc", text_color: "#e8e4f0", stickers: [{ emoji:"🌙", top:"5%", left:"5%", rotate:-8,  size:2.2 },{ emoji:"✨", top:"5%", left:"88%", rotate:18, size:1.8 },{ emoji:"🕯️", top:"88%", left:"4%", rotate:6,  size:2.0 }], product_ids: [], display_order: 2, is_active: true },
-  { id: "f4", name: "Bakery Core",         slug: "bakery-core",         mood_description: "warm & soft · your nan's kitchen",         tags: ["#bakery","#cozy"],          bg_color: "#fdf0e3", page_bg_color: "#f5e5d0", accent_color: "#c0572a", text_color: "#3b1a0a", stickers: [{ emoji:"🧁", top:"5%", left:"88%", rotate:14, size:2.2 },{ emoji:"🍞", top:"4%", left:"5%",  rotate:-10, size:2.0 },{ emoji:"💛", top:"91%", left:"89%", rotate:-10, size:1.5 }], product_ids: [], display_order: 3, is_active: true },
-  { id: "f5", name: "Soft Girl Era",       slug: "soft-girl-era",       mood_description: "pink flags & soft launches",               tags: ["#softgirl","#coquette"],    bg_color: "#fde8ec", page_bg_color: "#f8d8df", accent_color: "#c0325a", text_color: "#3d0a18", stickers: [{ emoji:"🎀", top:"4%", left:"5%",  rotate:-8,  size:2.0 },{ emoji:"🌸", top:"5%", left:"88%", rotate:18, size:2.2 },{ emoji:"🦋", top:"90%", left:"89%", rotate:-15,size:1.8 }], product_ids: [], display_order: 4, is_active: true },
-  { id: "f6", name: "Sunday Reset",        slug: "sunday-reset",        mood_description: "clean girl era · no drama",                tags: ["#sundayreset","#healing"],  bg_color: "#eef7f1", page_bg_color: "#e2f0e8", accent_color: "#1d6b45", text_color: "#0d3322", stickers: [{ emoji:"🪴", top:"4%", left:"5%",  rotate:-7,  size:2.2 },{ emoji:"🌿", top:"5%", left:"88%", rotate:12, size:2.0 },{ emoji:"💚", top:"91%", left:"89%", rotate:-10, size:1.6 }], product_ids: [], display_order: 5, is_active: true },
-];
 
 // ── Candle card ────────────────────────────────────────────────────────────────
 // Thin wrapper over the shared <ProductCard>, in the compact density used inside
@@ -309,10 +299,18 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
 
 const ScrapbookSection = () => {
   const isMobile = useIsMobile();
-  const [categories, setCategories]   = useState<ShopCategory[]>(FALLBACK_CATS);
-  const [allProducts, setAllProducts] = useState<Product[]>([]);
-  const [settings, setSettings]       = useState<ScrapbookSettings>(DEFAULT_SCRAPBOOK_SETTINGS);
-  const [cardTheme, setCardTheme]     = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
+  // `null` = not loaded yet. This used to start as six invented categories
+  // ("Coffee Shop Chaos", "Matcha Therapy"…) with no products, so the book
+  // opened on placeholder tiles for made-up categories before the real ones
+  // arrived. An empty array now means genuinely no categories.
+  const [categories, setCategories]   = useState<ShopCategory[] | null>(null);
+  const products  = useContent("products", DEFAULT_CONTENT.products);
+  const settingsC = useContent("scrapbookSettings", DEFAULT_SCRAPBOOK_SETTINGS);
+  const themeC    = useContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME);
+  const allProducts = products.data?.items ?? [];
+  const settings    = settingsC.data;
+  const cardTheme   = themeC.data;
+  const ready = categories !== null && products.ready && settingsC.ready && themeC.ready;
 
   // page: 0=cover, 1..N=categories
   const [currentPage, setCurrentPage]   = useState(0);
@@ -326,17 +324,13 @@ const ScrapbookSection = () => {
   const [autoPlay, setAutoPlay] = useState(true);
   const flipLock = useRef(false);
 
-  const totalPages = categories.length + 1;
+  const cats = categories ?? [];
+  const totalPages = cats.length + 1;
 
-  // Fetch categories + products + scrapbook settings
   useEffect(() => {
-    getShopCategories().then(cats => { if (cats.length > 0) setCategories(cats); });
-    getContent<{ label: string; headline: string; subtext: string; items: Product[] }>("products", DEFAULT_CONTENT.products)
-      .then(data => setAllProducts(data?.items ?? []));
-    getContent<ScrapbookSettings>("scrapbookSettings", DEFAULT_SCRAPBOOK_SETTINGS)
-      .then(s => { if (s) setSettings(s); });
-    getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME)
-      .then(t => { if (t) setCardTheme(t); });
+    getShopCategories()
+      .then(setCategories)
+      .catch(() => setCategories([]));
   }, []);
 
   // Resolve product_ids → actual Product objects for a category
@@ -396,8 +390,8 @@ const ScrapbookSection = () => {
   }, [autoPlay, flipNext, settings.autoFlipInterval]);
 
   const renderPage = (pageIdx: number, live = false) => {
-    if (pageIdx === 0) return <CoverPage totalCategories={categories.length} onFlip={live ? manualNext : undefined} />;
-    const cat = categories[pageIdx - 1];
+    if (pageIdx === 0) return <CoverPage totalCategories={cats.length} onFlip={live ? manualNext : undefined} />;
+    const cat = cats[pageIdx - 1];
     if (!cat) return null;
     const products = resolveProducts(cat);
     const offset = live ? (candleOffsets[pageIdx] ?? 0) : 0;
@@ -412,6 +406,21 @@ const ScrapbookSection = () => {
       />
     );
   };
+
+  // The book keeps its footprint while the real categories are in flight, so the
+  // homepage doesn't shuffle when they land.
+  if (!ready) {
+    return (
+      <section
+        id="shop-by-category"
+        style={{ background:"var(--color-cream-section)", padding:"clamp(44px,7vw,84px) 0", color:"var(--text-primary)" }}
+      >
+        <div style={{ maxWidth:"min(96vw,1240px)", margin:"0 auto", padding:"0 clamp(14px,3.5vw,44px)" }}>
+          <SkelBlock height="clamp(400px,62vw,620px)" radius="clamp(8px,1.6vw,18px)" />
+        </div>
+      </section>
+    );
+  }
 
   if (!settings.showShopByCategory) return null;
 
@@ -487,7 +496,7 @@ const ScrapbookSection = () => {
         <div style={{ display:"flex", justifyContent:"center", alignItems:"center", marginTop:12 }}>
           {Array.from({ length:totalPages }).map((_, i) => (
             <button key={i} onClick={() => manualTo(i, i>currentPage ? 1 : -1)}
-              aria-label={i === 0 ? "Cover" : `Page ${i}: ${categories[i-1]?.name ?? ""}`}
+              aria-label={i === 0 ? "Cover" : `Page ${i}: ${cats[i-1]?.name ?? ""}`}
               aria-current={i===currentPage}
               style={{ border:"none", background:"none", cursor:"pointer", padding:"10px 3px", display:"flex", alignItems:"center" }}>
               {/* Width and colour are also set statically: `animate` alone
@@ -505,7 +514,7 @@ const ScrapbookSection = () => {
             style={{ textAlign:"center", fontFamily:"'Permanent Marker',cursive", fontSize:"clamp(0.58rem,0.9vw,0.72rem)", color:"rgba(30,41,24,0.4)", marginTop:8 }}>
             {currentPage === 0
               ? "cover · flip to start"
-              : `${categories[currentPage-1]?.name} · page ${currentPage} of ${categories.length}`}
+              : `${cats[currentPage-1]?.name} · page ${currentPage} of ${cats.length}`}
           </motion.p>
         </AnimatePresence>
       </div>

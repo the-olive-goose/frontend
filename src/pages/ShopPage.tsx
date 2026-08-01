@@ -13,6 +13,8 @@ import { productPath } from "@/lib/products";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import ProductCard from "@/components/ui/ProductCard";
+import { SkelProductCard } from "@/components/ui/ContentSkeleton";
+import { useContent } from "@/hooks/useContent";
 import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
 
@@ -25,24 +27,22 @@ const ShopPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [categories, setCategories]   = useState<ShopCategory[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
-  const [content, setContent]         = useState(DEFAULT_CONTENT);
   const [cardTheme, setCardTheme]     = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
   const [loading, setLoading]         = useState(true);
+  // The page's own heading copy. The navbar, announcement bar and footer used to
+  // be fetched here too, into state this page never rendered — Layout and
+  // FooterSection own those.
+  const shopPage = useContent("shopPage", DEFAULT_CONTENT.shopPage);
 
   const activeSlug   = searchParams.get("category") ?? "all";
   const searchTerm   = searchParams.get("search") ?? "";
 
   useEffect(() => {
     Promise.all([
-      getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
-      getContent("navbar",          DEFAULT_CONTENT.navbar),
-      getContent("footer",          DEFAULT_CONTENT.footer),
-      getContent("products",        DEFAULT_CONTENT.products),
-      getContent("shopPage",        DEFAULT_CONTENT.shopPage),
+      getContent("products", DEFAULT_CONTENT.products),
       getShopCategories(),
       getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME),
-    ]).then(([announcementBar, navbar, footer, products, shopPage, cats, theme]) => {
-      setContent(prev => ({ ...prev, announcementBar, navbar, footer, products, shopPage }));
+    ]).then(([products, cats, theme]) => {
       setAllProducts(products.items ?? []);
       setCategories(cats);
       if (theme) setCardTheme(theme);
@@ -150,11 +150,12 @@ const ShopPage = () => {
           category titles itself, so there is no gold half to apply. */}
       <PageHero
         eyebrow="The Collection"
-        title={searchTerm ? `"${searchTerm}"` : isAllView ? content.shopPage.page_title : (activeCat?.name ?? "Shop")}
-        titleGold={isAllView ? content.shopPage.page_title_gold : undefined}
+        title={searchTerm ? `"${searchTerm}"` : isAllView ? shopPage.data.page_title : (activeCat?.name ?? "Shop")}
+        titleGold={isAllView ? shopPage.data.page_title_gold : undefined}
         subtitle={activeSlug === "all"
           ? "Handpoured small-batch candles crafted for every mood, moment and era."
           : (activeCat?.mood_description ?? "")}
+        ready={searchTerm ? true : isAllView ? shopPage.ready : !loading}
       />
 
       {/* ── Category filter pills ── */}
@@ -237,10 +238,11 @@ const ShopPage = () => {
           </motion.div>
         )}
 
-        {/* Loading */}
+        {/* Loading — placeholder cards in the grid's own shape, so the real
+            candles drop straight into place instead of pushing the page around. */}
         {loading && (
-          <div className="flex justify-center py-20">
-            <div className="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
+            {[0, 1, 2, 3, 4, 5, 6, 7].map(i => <SkelProductCard key={i} />)}
           </div>
         )}
 
@@ -294,7 +296,7 @@ const ShopPage = () => {
         )}
       </div>
 
-      <FooterSection data={content.footer} />
+      <FooterSection />
     </div>
   );
 };

@@ -1,8 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, DEFAULT_PRODUCT_CARD_THEME, resolveCardAccent, type Product, type Bundle, type DealsContent, type ProductCardTheme } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import useIsMobile from "@/hooks/useIsMobile";
@@ -14,6 +13,8 @@ import { SITE_URL, breadcrumbJsonLd } from "@/lib/seo";
 import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
 import AddToCartButton from "@/components/ui/AddToCartButton";
+import { SkelBlock } from "@/components/ui/ContentSkeleton";
+import { useContent } from "@/hooks/useContent";
 import RichText, { stripRichText } from "@/lib/richtext";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -172,31 +173,21 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
 };
 
 const DealsPage = () => {
-  const [deals, setDeals]       = useState<DealsContent>(DEFAULT_DEALS);
-  const [allProducts, setAllProducts] = useState<Product[]>([]);
-  const [content, setContent]   = useState(DEFAULT_CONTENT);
-  const [cardTheme, setCardTheme] = useState<ProductCardTheme>(DEFAULT_PRODUCT_CARD_THEME);
+  // Navbar / announcement / footer copy used to be fetched here into state this
+  // page never rendered — Layout and FooterSection own those.
+  const dealsC    = useContent<DealsContent>("deals", DEFAULT_DEALS);
+  const productsC = useContent("products", DEFAULT_CONTENT.products);
+  const themeC    = useContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME);
 
-  useEffect(() => {
-    Promise.all([
-      getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
-      getContent("navbar",          DEFAULT_CONTENT.navbar),
-      getContent("footer",          DEFAULT_CONTENT.footer),
-      getContent<DealsContent>("deals", DEFAULT_DEALS),
-      getContent<{ label: string; headline: string; subtext: string; items: Product[] }>("products", DEFAULT_CONTENT.products),
-      getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME),
-    ]).then(([announcementBar, navbar, footer, dealsData, productsData, theme]) => {
-      setContent(prev => ({ ...prev, announcementBar, navbar, footer }));
-      setDeals(dealsData ?? DEFAULT_DEALS);
-      setAllProducts(productsData?.items ?? []);
-      if (theme) setCardTheme(theme);
-    });
-  }, []);
+  const deals       = dealsC.data;
+  const allProducts = productsC.data?.items ?? [];
+  const cardTheme   = themeC.data;
+  const ready       = dealsC.ready && productsC.ready && themeC.ready;
 
   // Bundles aren't tied to one category, so they always use the global accent.
   const bundleAccent = resolveCardAccent(cardTheme, null);
 
-  const activeBundles = deals.bundles.filter(b => b.is_active);
+  const activeBundles = ready ? deals.bundles.filter(b => b.is_active) : [];
 
   useJsonLd("breadcrumb", breadcrumbJsonLd([["Home", "/"], ["Candle Gift Sets & Deals", "/deals"]]));
 
@@ -230,6 +221,7 @@ const DealsPage = () => {
           title={deals.page_title}
           titleGold={deals.page_title_gold}
           subtitle={deals.page_subtitle}
+          ready={ready}
         />
 
         {/* Bundles */}
@@ -241,7 +233,11 @@ const DealsPage = () => {
             paddingInline: "clamp(12px,4vw,32px)",
           }}
         >
-          {activeBundles.length === 0 ? (
+          {!ready ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "clamp(26px,5vw,56px)", paddingBottom: 32, color: "var(--color-forest-dark)" }}>
+              {[0, 1, 2].map(i => <SkelBlock key={i} height="clamp(340px,42vw,420px)" />)}
+            </div>
+          ) : activeBundles.length === 0 ? (
             <div className="text-center py-20">
               <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "2rem", color: "var(--color-forest-dark)", opacity: 0.4 }}>No deals right now</p>
               <a href="/shop" style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "1rem", color: "#6b3520" }}>Browse all candles →</a>
@@ -258,7 +254,7 @@ const DealsPage = () => {
         </div>
       </div>
 
-      <FooterSection data={content.footer} />
+      <FooterSection />
     </div>
   );
 };

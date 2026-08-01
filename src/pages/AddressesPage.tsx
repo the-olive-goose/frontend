@@ -3,7 +3,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import PageSubNav, { ACCOUNT_NAV } from "@/components/PageSubNav";
 import FooterSection from "@/components/sections/FooterSection";
 import AddressFields from "@/components/AddressFields";
-import { DEFAULT_CONTENT } from "@/lib/defaults";
 import {
   fetchAddresses, createAddress, updateAddress, deleteAddress, setDefaultAddress,
   type SavedAddress, type DeliveryAddress,
@@ -244,7 +243,7 @@ const AddressesPage = () => {
           )}
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

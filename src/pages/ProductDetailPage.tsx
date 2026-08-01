@@ -19,6 +19,7 @@ import { useJsonLd } from "@/hooks/useJsonLd";
 import { applyMeta, SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import FooterSection from "@/components/sections/FooterSection";
 import AddToCartButton from "@/components/ui/AddToCartButton";
+import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 import RichText, { stripRichText } from "@/lib/richtext";
 import m1 from "@/assets/M1.png";
 
@@ -424,7 +425,6 @@ const ProductDetailPage = () => {
   const [pageCopy, setPageCopy]     = useState<ProductPageContent>(DEFAULT_CONTENT.productPage);
   const [deals, setDeals]           = useState<DealsContent>(DEFAULT_DEALS);
   const [categories, setCategories] = useState<ShopCategory[]>([]);
-  const [footer, setFooter]         = useState(DEFAULT_CONTENT.footer);
   const [loading, setLoading]       = useState(true);
 
   const [quantity, setQuantity]   = useState(1);
@@ -436,9 +436,8 @@ const ProductDetailPage = () => {
       getContent<ProductsContent>("products", DEFAULT_CONTENT.products),
       getContent<ProductPageContent>("productPage", DEFAULT_CONTENT.productPage),
       getContent<DealsContent>("deals", DEFAULT_DEALS),
-      getContent("footer", DEFAULT_CONTENT.footer),
       getShopCategories(),
-    ]).then(([productsData, productPage, dealsData, footerData, cats]) => {
+    ]).then(([productsData, productPage, dealsData, cats]) => {
       setProducts(productsData?.items ?? []);
       // Merge over defaults so a partially-saved section can't blank the page.
       setPageCopy({
@@ -447,7 +446,6 @@ const ProductDetailPage = () => {
         circle: { ...DEFAULT_CONTENT.productPage.circle, ...(productPage?.circle ?? {}) },
       });
       setDeals(dealsData ?? DEFAULT_DEALS);
-      setFooter(footerData);
       setCategories(cats);
     }).finally(() => setLoading(false));
   }, []);
@@ -565,10 +563,20 @@ const ProductDetailPage = () => {
     });
   };
 
+  // Placeholders in the page's own shape rather than a spinner, so the candle
+  // drops into a layout that is already the right size.
   if (loading) {
     return (
-      <div className="min-h-screen pt-[var(--nav-h,112px)] flex justify-center items-start" style={{ background: "var(--bg-page)" }}>
-        <div className="w-8 h-8 mt-24 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+      <div className="min-h-screen pt-[var(--nav-h,112px)]" style={{ background: "var(--bg-page)", color: "var(--text-primary)" }}>
+        <div className="max-w-6xl mx-auto px-6 py-10 grid gap-10 md:grid-cols-2">
+          <SkelBlock height="clamp(320px,52vw,560px)" />
+          <div className="space-y-5">
+            <SkelText lines={2} width="80%" style={{ fontSize: "var(--text-display-sm)" }} />
+            <SkelText width="30%" style={{ fontSize: "1.4rem" }} />
+            <SkelText lines={4} lineHeight={1.6} />
+            <SkelBlock height="48px" width="220px" radius="var(--radius-pill)" />
+          </div>
+        </div>
       </div>
     );
   }
@@ -592,7 +600,7 @@ const ProductDetailPage = () => {
             Browse all candles →
           </Link>
         </div>
-        <FooterSection data={footer} />
+        <FooterSection />
       </div>
     );
   }
@@ -714,7 +722,7 @@ const ProductDetailPage = () => {
 
       {pageCopy.circle.enabled && <CircleSignup data={pageCopy.circle} />}
 
-      <FooterSection data={footer} />
+      <FooterSection />
     </div>
   );
 };

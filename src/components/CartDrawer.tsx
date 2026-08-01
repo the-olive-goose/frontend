@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
-import { getContent } from "@/lib/api";
-import { DEFAULT_CONTENT, type PickupSettingsContent } from "@/lib/defaults";
+import { DEFAULT_CONTENT } from "@/lib/defaults";
+import { useContent } from "@/hooks/useContent";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
@@ -15,13 +15,9 @@ const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean;
   const { user } = useAuth();
   const navigate = useNavigate();
   const [internalOpen, setInternalOpen] = useState(false);
-  const [pickup, setPickup] = useState<PickupSettingsContent>(DEFAULT_CONTENT.pickupSettings);
+  const { data: pickup, ready: pickupReady } = useContent("pickupSettings", DEFAULT_CONTENT.pickupSettings);
   const open = externalOpen ?? internalOpen;
   const setOpen = (v: boolean) => { setInternalOpen(v); if (!v) onExternalClose?.(); };
-
-  useEffect(() => {
-    getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings).then(setPickup);
-  }, []);
 
   // The drawer covers the screen on a phone; the page behind it stays put.
   useBodyScrollLock(open);
@@ -175,7 +171,7 @@ const CartDrawer = ({ externalOpen, onExternalClose }: { externalOpen?: boolean;
               {items.length > 0 && (
                 <div className="px-6 py-5" style={{ borderTop: "1px solid var(--color-border)" }}>
                   <div className="mb-4">
-                    <FreeShippingBar subtotal={cartSubtotal(items)} threshold={pickup.free_shipping_threshold} compact />
+                    <FreeShippingBar subtotal={cartSubtotal(items)} threshold={pickup.free_shipping_threshold} ready={pickupReady} compact />
                   </div>
                   <div className="flex items-center justify-between mb-4">
                     <span className="font-display text-base" style={{ color: "rgba(30,41,24,0.65)" }}>Total</span>

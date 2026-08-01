@@ -12,6 +12,7 @@ import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 import RichText, { stripRichText } from "@/lib/richtext";
 import { fillOfferTokens, type OfferValues } from "@/lib/offerTokens";
 import AccountDropdown from "@/components/AccountDropdown";
+import { SkelText } from "@/components/ui/ContentSkeleton";
 import logo from "@/assets/logo.jpg";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -22,25 +23,31 @@ interface Props {
   data: NavbarContent;
   announcement: AnnouncementBarContent;
   offer: OfferValues;
+  /** False until the real navbar/announcement copy has loaded — see useContent. */
+  ready?: boolean;
 }
 
 // ── Announcement bar ───────────────────────────────────────────────────────────
 
-const AnnouncementBar = ({ data, offer }: { data: AnnouncementBarContent; offer: OfferValues }) => {
+const AnnouncementBar = (
+  { data, offer, ready }: { data: AnnouncementBarContent; offer: OfferValues; ready: boolean }
+) => {
   // Resolve {free_shipping} / {discount} against the live settings so the bar can
   // never promise a threshold or a percent that checkout won't honour.
-  const raw = data.messages?.length ? data.messages : [`Free shipping {free_shipping}`];
-  const messages = raw.map(m => fillOfferTokens(m, offer));
+  const messages = (data.messages ?? []).map(m => fillOfferTokens(m, offer));
   const interval = data.interval_ms ?? 3000;
   const [current, setCurrent] = useState(0);
   const [phase, setPhase]     = useState<"enter" | "show" | "exit">("enter");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const count = messages.length;
+
   useEffect(() => {
+    if (count === 0) return;
     const cycle = () => {
       setPhase("exit");
       timerRef.current = setTimeout(() => {
-        setCurrent(c => (c + 1) % messages.length);
+        setCurrent(c => (c + 1) % count);
         setPhase("enter");
         timerRef.current = setTimeout(() => {
           setPhase("show");
@@ -54,7 +61,24 @@ const AnnouncementBar = ({ data, offer }: { data: AnnouncementBarContent; offer:
       timerRef.current = setTimeout(cycle, interval - 650);
     }, 350);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [messages.length, interval]);
+  }, [count, interval]);
+
+  // Until the real copy lands, a placeholder line — never the bundled default.
+  // Painting the default here is what made a deleted "free shipping over €65"
+  // message reappear for a frame on every load.
+  if (!ready) {
+    return (
+      <div data-testid="announcement-bar-skeleton" aria-hidden="true"
+        className="w-full py-2 px-4 flex items-center justify-center overflow-hidden"
+        style={{ background: "var(--bg-announce)", minHeight: "34px", color: "var(--color-white)" }}>
+        <SkelText width="min(260px,60%)" style={{ fontSize: "0.75rem" }} />
+      </div>
+    );
+  }
+
+  // Every message deleted means the admin wants no bar. Honour that instead of
+  // substituting copy of our own.
+  if (count === 0) return null;
 
   const cls = phase === "enter" ? "announce-enter" : phase === "exit" ? "announce-exit" : "";
   return (
@@ -63,7 +87,7 @@ const AnnouncementBar = ({ data, offer }: { data: AnnouncementBarContent; offer:
       style={{ background: "var(--bg-announce)", minHeight: "34px" }}>
       <p key={current} className={`font-display text-xs tracking-wide text-center ${cls}`}
         style={{ color: "var(--color-white)" }}>
-        <RichText text={messages[current]} />
+        <RichText text={messages[current % count]} />
       </p>
     </div>
   );
@@ -109,7 +133,7 @@ const ShopDropdown = ({ categories, onClose }: { categories: ShopCategory[]; onC
 
 // ── Main Navbar ────────────────────────────────────────────────────────────────
 
-const NavbarSection = ({ data, announcement, offer }: Props) => {
+const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
   const [mobileOpen, setMobileOpen]         = useState(false);
   const [shopOpen, setShopOpen]             = useState(false);
   const [mobileShopOpen, setMobileShopOpen] = useState(false);
@@ -119,7 +143,9 @@ const NavbarSection = ({ data, announcement, offer }: Props) => {
   const [searchOpen, setSearchOpen]         = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
-  const links = data.links ?? [];
+  // Nav labels are admin-editable too, so an unloaded navbar shows placeholder
+  // pills rather than the bundled link set.
+  const links = ready ? (data.links ?? []) : [];
   const shopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const accountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -153,6 +179,11 @@ const NavbarSection = ({ data, announcement, offer }: Props) => {
   // clearance would tuck page content under the fixed header. Only the header
   // rows are measured — the expanded mobile menu is a sibling, so opening it
   // must not push every page's content down.
+  // Re-runs whenever the announcement bar appears or disappears, not just on a
+  // resize: an admin with no announcement messages has no bar at all, and the
+  // ResizeObserver alone did not catch that row leaving — every page was left
+  // with a 34px gap under the navbar.
+  const announcementRows = ready ? (announcement.messages?.length ?? 0) : 1;
   useEffect(() => {
     const el = headerRef.current;
     if (!el) return;
@@ -162,7 +193,7 @@ const NavbarSection = ({ data, announcement, offer }: Props) => {
     const observer = new ResizeObserver(setVar);
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [announcementRows]);
 
   // Close dropdown on outside click. Touch is listened for separately: a tap
   // outside should dismiss the results as it lands, not wait for the synthetic
@@ -229,7 +260,7 @@ const NavbarSection = ({ data, announcement, offer }: Props) => {
     <div id="site-navbar" className="fixed top-0 left-0 right-0 z-50">
       {/* Measured header rows — see the --nav-h effect above. */}
       <div ref={headerRef}>
-      <AnnouncementBar data={announcement} offer={offer} />
+      <AnnouncementBar data={announcement} offer={offer} ready={ready} />
 
       <nav style={{ background: "var(--bg-nav)" }}>
 
@@ -401,6 +432,11 @@ const NavbarSection = ({ data, announcement, offer }: Props) => {
         {/* ── Row 2: Nav links (desktop) — centered ── */}
         <div className="hidden sm:block border-t" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2 flex items-center justify-center gap-1.5">
+            {!ready && [0, 1, 2, 3, 4].map(i => (
+              <span key={`skel-${i}`} className="px-4 py-2" style={{ color: "var(--color-white)" }}>
+                <SkelText width={i % 2 ? "84px" : "68px"} style={{ fontSize: "15px" }} />
+              </span>
+            ))}
             {links.map((link, i) => {
               const active = isShopLink(link.href) ? location.pathname.startsWith("/shop") : isLinkActive(link.href);
               if (isShopLink(link.href)) {

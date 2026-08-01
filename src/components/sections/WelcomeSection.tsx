@@ -2,6 +2,7 @@ import React from "react";
 import { Link } from "react-router-dom";
 import { WelcomeClubContent } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
+import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 
 const pillBase = "inline-flex items-center justify-center font-sans text-sm font-medium transition-all";
 const pillLayout: React.CSSProperties = {
@@ -26,9 +27,13 @@ const pillSolid: React.CSSProperties = {
 // only has to acknowledge the pointer.
 const pillHover = "hover:opacity-90 hover:-translate-y-0.5";
 
-interface Props { data: WelcomeClubContent }
+interface Props {
+  data: WelcomeClubContent;
+  /** False while the club copy is still loading. */
+  ready?: boolean;
+}
 
-const WelcomeSection = ({ data }: Props) => (
+const WelcomeSection = ({ data, ready = true }: Props) => (
   <section
     id="story"
     className="w-full py-20 px-6"
@@ -48,7 +53,9 @@ const WelcomeSection = ({ data }: Props) => (
             border: "3px solid rgba(255,255,255,0.5)",
           }}
         >
-          {data.photo_url ? (
+          {!ready ? (
+            <SkelBlock radius="50%" style={{ color: "var(--color-white)" }} />
+          ) : data.photo_url ? (
             <img
               src={data.photo_url}
               alt="The founder of The Olive Goose"
@@ -74,7 +81,7 @@ const WelcomeSection = ({ data }: Props) => (
             letterSpacing: "var(--tracking-nav)",
           }}
         >
-          <RichText text={data.headline} />
+          {ready ? <RichText text={data.headline} /> : <SkelText width="min(360px,70vw)" lineHeight={1.2} style={{ color: "var(--color-white)" }} />}
         </h2>
 
         <p
@@ -86,7 +93,7 @@ const WelcomeSection = ({ data }: Props) => (
             maxWidth: "600px",
           }}
         >
-          <RichText text={data.name_line} />
+          {ready ? <RichText text={data.name_line} /> : <SkelText width="min(280px,60vw)" lineHeight={1.4} style={{ color: "var(--color-white)" }} />}
         </p>
 
         <p
@@ -98,14 +105,20 @@ const WelcomeSection = ({ data }: Props) => (
             maxWidth: "580px",
           }}
         >
-          <RichText text={data.bio} />
+          {ready ? <RichText text={data.bio} /> : <SkelText lines={3} width="min(560px,84vw)" lineHeight={1.6} style={{ color: "var(--color-white)" }} />}
         </p>
 
         {/* Two buttons, one row — they wrap rather than shrink on narrow phones
             so neither label is ever clipped. The diary button is an in-app
             route, so it goes through Link and skips the full page reload. */}
         <div className="mt-2 flex flex-wrap items-center justify-center md:justify-start gap-3">
-          {data.diary_cta_text && (
+          {!ready && (
+            <>
+              <SkelBlock height="45px" width="180px" radius="var(--radius-pill)" style={{ color: "var(--color-white)" }} />
+              <SkelBlock height="45px" width="160px" radius="var(--radius-pill)" style={{ color: "var(--color-white)" }} />
+            </>
+          )}
+          {ready && data.diary_cta_text && (
             <Link
               to={data.diary_cta_href || "/our-story"}
               className={`${pillBase} ${pillHover}`}
@@ -115,13 +128,15 @@ const WelcomeSection = ({ data }: Props) => (
             </Link>
           )}
 
-          <a
-            href={data.cta_href || "#"}
-            className={`${pillBase} ${pillHover}`}
-            style={pillSolid}
-          >
-            {data.cta_text}
-          </a>
+          {ready && (
+            <a
+              href={data.cta_href || "#"}
+              className={`${pillBase} ${pillHover}`}
+              style={pillSolid}
+            >
+              {data.cta_text}
+            </a>
+          )}
         </div>
       </div>
     </div>

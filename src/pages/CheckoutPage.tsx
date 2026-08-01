@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
+import { useContent } from "@/hooks/useContent";
 import {
   createCheckoutSession, validateDiscountCode, SessionExpiredError,
   fetchAddresses, createAddress, updateAddress,
@@ -54,7 +55,7 @@ const CheckoutPage = () => {
   const { items, count, addToCart } = useCart();
   const [searchParams] = useSearchParams();
 
-  const [pickup, setPickup] = useState<PickupSettingsContent>(DEFAULT_CONTENT.pickupSettings);
+  const { data: pickup, ready: pickupReady } = useContent("pickupSettings", DEFAULT_CONTENT.pickupSettings);
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [addingNudge, setAddingNudge] = useState(false);
@@ -113,7 +114,6 @@ const CheckoutPage = () => {
   );
 
   useEffect(() => {
-    getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings).then(setPickup);
     getContent<DealsContent>("deals", DEFAULT_DEALS).then(d => setBundles(d?.bundles ?? []));
     getContent("products", DEFAULT_CONTENT.products).then(d => setAllProducts(d?.items ?? []));
   }, []);
@@ -389,7 +389,7 @@ const CheckoutPage = () => {
 
                   {!isPickup && (
                     <div className="p-3 rounded-lg" style={{ background: "#f8f8f8" }}>
-                      <FreeShippingBar subtotal={subtotalNum} threshold={pickup.free_shipping_threshold} compact />
+                      <FreeShippingBar subtotal={subtotalNum} threshold={pickup.free_shipping_threshold} ready={pickupReady} compact />
                     </div>
                   )}
 
@@ -709,7 +709,7 @@ const CheckoutPage = () => {
         </div>
       )}
 
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

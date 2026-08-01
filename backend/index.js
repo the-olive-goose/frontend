@@ -3798,6 +3798,21 @@ app.put('/api/settings', requireAuth, async (req, res) => {
   } catch (err) { sendServerError(res, err); }
 });
 
+// Every section in one round trip. The storefront primes its content cache from
+// this on boot: fetching the ~28 sections individually left a window where pages
+// had nothing to render but the bundled defaults, and that window was long enough
+// to see. Same exposure as the per-section GET below — it is the same rows.
+app.get('/api/content', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT key, value FROM site_settings WHERE key LIKE 'content\\_%'"
+    );
+    const sections = {};
+    for (const row of rows) sections[row.key.slice('content_'.length)] = row.value;
+    res.json(sections);
+  } catch (err) { sendServerError(res, err); }
+});
+
 app.get('/api/content/:section', async (req, res) => {
   const key = `content_${req.params.section}`;
   try {

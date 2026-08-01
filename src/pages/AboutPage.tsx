@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useRef } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
+import { useContentSections } from "@/hooks/useContent";
+import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
 import RichText from "@/lib/richtext";
@@ -39,28 +40,21 @@ const FounderCta = ({ href, text }: { href?: string; text?: string }) => {
 };
 
 const AboutPage = () => {
-  const [content, setContent] = useState(DEFAULT_CONTENT);
-
-  useEffect(() => {
-    Promise.all([
-      getContent("announcementBar", DEFAULT_CONTENT.announcementBar),
-      getContent("navbar",          DEFAULT_CONTENT.navbar),
-      getContent("brandStory",      DEFAULT_CONTENT.brandStory),
-      getContent("aboutPage",       DEFAULT_CONTENT.aboutPage),
-      getContent("welcomeClub",     DEFAULT_CONTENT.welcomeClub),
-      getContent("aboutFounder",    DEFAULT_CONTENT.aboutFounder),
-      getContent("footer",          DEFAULT_CONTENT.footer),
-    ]).then(([announcementBar, navbar, brandStory, aboutPage, welcomeClub, aboutFounder, footer]) => {
-      setContent(prev => ({ ...prev, announcementBar, navbar, brandStory, aboutPage, welcomeClub, aboutFounder, footer }));
-    });
-  }, []);
+  // Navbar / announcement / footer copy is owned elsewhere — this page only reads
+  // the sections it renders.
+  const { data: content, ready } = useContentSections({
+    brandStory:   DEFAULT_CONTENT.brandStory,
+    aboutPage:    DEFAULT_CONTENT.aboutPage,
+    welcomeClub:  DEFAULT_CONTENT.welcomeClub,
+    aboutFounder: DEFAULT_CONTENT.aboutFounder,
+  });
 
   const story = content.brandStory;
   const aboutPageContent = content.aboutPage;
   const founder = resolveAboutFounder(content.aboutFounder, content.welcomeClub);
   // Removing every card in the admin removes the strip, so the story block can
   // run straight into the maker block.
-  const values = aboutPageContent.values ?? [];
+  const values = ready ? (aboutPageContent.values ?? []) : [];
 
   // The story CTA ("Learn More" by default) has no page to go to — it walks the
   // reader down to the values strip, which leaves the maker section peeking in
@@ -95,6 +89,7 @@ const AboutPage = () => {
         title={aboutPageContent.page_title}
         titleGold={aboutPageContent.page_title_gold}
         subtitle={aboutPageContent.page_subtitle}
+        ready={ready}
       />
 
       {/* ── Brand story ── */}
@@ -108,7 +103,9 @@ const AboutPage = () => {
               className="w-full rounded-2xl overflow-hidden"
               style={{ aspectRatio: "4/5", background: "var(--color-sage-pale)" }}
             >
-              {story.image_url ? (
+              {!ready ? (
+                <SkelBlock height="100%" radius="0" style={{ color: "var(--color-forest-dark)" }} />
+              ) : story.image_url ? (
                 <img src={story.image_url} alt="The Olive Goose story — hand-poured candles from Dublin" loading="lazy" decoding="async" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
@@ -124,15 +121,20 @@ const AboutPage = () => {
               className="font-display text-xs tracking-[0.2em] uppercase"
               style={{ color: "var(--color-sage-light)" }}
             >
-              {story.label}
+              {ready ? story.label : <SkelText width="140px" />}
             </motion.p>
             <motion.h2 {...fadeUp(0.08)}
               className="font-serif font-semibold"
               style={{ fontSize: "clamp(1.8rem,3.5vw,2.8rem)", color: "var(--color-forest-dark)", lineHeight: 1.15 }}
             >
-              {story.headline}
+              {ready ? story.headline : <SkelText lines={2} width="88%" lineHeight={1.15} />}
             </motion.h2>
-            {story.body.split("\n\n").map((para, i) => (
+            {!ready && (
+              <p className="font-sans text-base leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}>
+                <SkelText lines={5} lineHeight={1.6} />
+              </p>
+            )}
+            {ready && story.body.split("\n\n").map((para, i) => (
               <motion.p key={i} {...fadeUp(0.12 + i * 0.06)}
                 className="font-sans text-base leading-relaxed"
                 style={{ color: "rgba(30,41,24,0.72)" }}
@@ -143,7 +145,7 @@ const AboutPage = () => {
             {/* Two buttons, one row — they wrap rather than shrink on narrow
                 phones so neither label is ever clipped. */}
             <div className="flex flex-wrap items-center gap-3">
-              {story.cta_text && (
+              {ready && story.cta_text && (
                 <motion.a {...fadeUp(0.24)}
                   href={story.cta_href || "#values"}
                   onClick={scrollToStoryTarget}
@@ -153,7 +155,7 @@ const AboutPage = () => {
                   {story.cta_text} &nbsp;→
                 </motion.a>
               )}
-              {founder.jump_cta_text && (
+              {ready && founder.jump_cta_text && (
                 <motion.a {...fadeUp(0.3)}
                   href="#meet-the-maker"
                   onClick={scrollToFounder}
@@ -223,7 +225,7 @@ const AboutPage = () => {
           className="font-display text-xs tracking-[0.2em] uppercase"
           style={{ color: "var(--color-sage-light)" }}
         >
-          <RichText text={founder.label} />
+          {ready ? <RichText text={founder.label} /> : <SkelText width="150px" center />}
         </motion.p>
 
         <motion.div {...fadeUp(0.06)} className="mt-8 mb-8 flex justify-center">
@@ -236,7 +238,9 @@ const AboutPage = () => {
               border: "3px solid rgba(255,255,255,0.6)",
             }}
           >
-            {founder.photo_url ? (
+            {!ready ? (
+              <SkelBlock height="100%" radius="0" style={{ color: "var(--color-forest-dark)" }} />
+            ) : founder.photo_url ? (
               <img src={founder.photo_url} alt="The founder of The Olive Goose" loading="lazy" decoding="async" className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
@@ -250,31 +254,31 @@ const AboutPage = () => {
           className="font-serif font-semibold"
           style={{ fontSize: "clamp(1.8rem,3.5vw,2.8rem)", color: "var(--color-forest-dark)", lineHeight: 1.15 }}
         >
-          <RichText text={founder.headline} />
+          {ready ? <RichText text={founder.headline} /> : <SkelText width="min(420px,80%)" lineHeight={1.15} center />}
         </motion.h2>
 
         <motion.p {...fadeUp(0.16)}
           className="font-sans text-base font-medium mt-5"
           style={{ color: "var(--color-forest-dark)" }}
         >
-          <RichText text={founder.name_line} />
+          {ready ? <RichText text={founder.name_line} /> : <SkelText width="220px" center />}
         </motion.p>
 
         <motion.p {...fadeUp(0.2)}
           className="font-sans text-base leading-relaxed mt-4"
           style={{ color: "rgba(30,41,24,0.72)" }}
         >
-          <RichText text={founder.bio} />
+          {ready ? <RichText text={founder.bio} /> : <SkelText lines={4} lineHeight={1.6} center />}
         </motion.p>
 
-        {founder.cta_text && (
+        {ready && founder.cta_text && (
           <motion.div {...fadeUp(0.26)} className="mt-8">
             <FounderCta href={founder.cta_href} text={founder.cta_text} />
           </motion.div>
         )}
       </section>
 
-      <FooterSection data={content.footer} />
+      <FooterSection />
     </div>
   );
 };

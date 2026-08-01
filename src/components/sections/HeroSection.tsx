@@ -1,11 +1,15 @@
-import { useState, useEffect } from "react";
 import { HeroContent } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
+import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 import CountdownTimer from "@/components/CountdownTimer";
 import { useAuth } from "@/contexts/AuthContext";
 import heroBg from "@/assets/hero-bg.jpg";
 
-interface Props { data: HeroContent }
+interface Props {
+  data: HeroContent;
+  /** False while the hero copy is still loading — skeletons stand in for it. */
+  ready?: boolean;
+}
 
 const hexToRgba = (hex: string, alpha: number) => {
   const h = hex.replace("#", "");
@@ -15,48 +19,47 @@ const hexToRgba = (hex: string, alpha: number) => {
   return `rgba(${r},${g},${b},${alpha})`;
 };
 
-const HeroSection = ({ data }: Props) => {
+const HeroSection = ({ data, ready = true }: Props) => {
   const bgImage     = data.bg_image_url || heroBg;
   const bgOpacity   = data.bg_opacity   ?? 1.0;
   const tintColor   = data.tint_color   ?? "#1e2918";
   const tintOpacity = data.tint_opacity ?? 0.45;
   const { user, openAuthModal } = useAuth();
 
-  // Measure the fixed navbar height so the image starts exactly below it
-  const [navbarHeight, setNavbarHeight] = useState(0);
-  useEffect(() => {
-    const measure = () => {
-      const el = document.getElementById("site-navbar");
-      if (el) setNavbarHeight(el.offsetHeight);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    const el = document.getElementById("site-navbar");
-    if (el) observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
+  // The image starts exactly below the fixed navbar. It reads --nav-h — which
+  // NavbarSection publishes from its own measurement — rather than measuring
+  // #site-navbar a second time here: two independent measurements drift the
+  // moment the header changes height (an admin with no announcement messages has
+  // no announcement bar), and this one left a gap under the navbar.
   return (
     <section
       id="hero"
       className="relative w-full"
-      style={{ marginTop: navbarHeight }}
+      style={{ marginTop: "var(--nav-h, 112px)" }}
     >
       {/* ── Image fills a responsive fixed height so the centered text overlay
              always has room, regardless of the image's own aspect ratio ── */}
       <div className="relative w-full h-[440px] sm:h-[620px] lg:h-[760px]">
-        <img
-          src={bgImage}
-          alt="Handmade café-inspired candles by The Olive Goose, Dublin"
-          // React 18 only passes the LCP fetch hint through as a lowercase DOM
-          // attribute (camelCase fetchPriority lands in React 19).
-          {...({ fetchpriority: "high" } as React.ImgHTMLAttributes<HTMLImageElement>)}
-          decoding="async"
-          className="absolute inset-0 w-full h-full object-cover"
-          style={{
-            opacity: Math.max(0.05, bgOpacity),
-          }}
-        />
+        {/* Held back until the hero content is known: the admin can point this at
+            their own photo, and rendering the bundled one first would swap the
+            whole hero out from under the visitor. */}
+        {ready && (
+          <img
+            src={bgImage}
+            alt="Handmade café-inspired candles by The Olive Goose, Dublin"
+            // React 18 only passes the LCP fetch hint through as a lowercase DOM
+            // attribute (camelCase fetchPriority lands in React 19).
+            {...({ fetchpriority: "high" } as React.ImgHTMLAttributes<HTMLImageElement>)}
+            decoding="async"
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{
+              opacity: Math.max(0.05, bgOpacity),
+            }}
+          />
+        )}
+        {!ready && (
+          <div className="absolute inset-0" style={{ background: "var(--bg-hero)" }} />
+        )}
 
         {/* Configurable tint overlay */}
         {tintOpacity > 0 && (
@@ -115,7 +118,9 @@ const HeroSection = ({ data }: Props) => {
             {/* When the admin leaves the headline blank (text baked into the hero
                 image), keep a screen-reader/crawler-visible H1 so the homepage
                 never ships an empty heading. */}
-            {data.headline ? (
+            {!ready ? (
+              <SkelText lines={2} width="min(560px,86vw)" lineHeight={1.1} center />
+            ) : data.headline ? (
               <RichText text={data.headline} />
             ) : (
               <span className="sr-only">The Olive Goose — handmade café-inspired candles, Dublin</span>
@@ -131,7 +136,7 @@ const HeroSection = ({ data }: Props) => {
               marginBottom: "var(--space-10)",
             }}
           >
-            <RichText text={data.subtext} />
+            {ready ? <RichText text={data.subtext} /> : <SkelText lines={2} width="min(420px,80vw)" lineHeight={1.5} center />}
           </p>
 
           {/* Countdown */}
@@ -143,7 +148,9 @@ const HeroSection = ({ data }: Props) => {
 
           {/* CTA — single centered button */}
           <div className="animate-fade-up-delay-2">
-            {user ? (
+            {!ready ? (
+              <SkelBlock height="49px" width="196px" radius="var(--radius-pill)" style={{ color: "var(--text-on-dark)" }} />
+            ) : user ? (
               <a
                 href={data.cta_href}
                 className="inline-flex items-center gap-2 font-sans text-sm font-medium transition-all hover:opacity-90 hover:-translate-y-0.5"

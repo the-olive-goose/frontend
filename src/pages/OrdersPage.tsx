@@ -4,7 +4,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { fetchOrders, type Order } from "@/lib/userApi";
 import PageSubNav, { ORDERS_NAV } from "@/components/PageSubNav";
 import FooterSection from "@/components/sections/FooterSection";
-import { DEFAULT_CONTENT } from "@/lib/defaults";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
 
@@ -128,7 +127,7 @@ const OrdersPage = () => {
           </div>
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

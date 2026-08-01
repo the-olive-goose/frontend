@@ -3,7 +3,6 @@ import { useParams, useNavigate } from "react-router-dom";
 import { fetchOrder, requestOrderCancellation, SessionExpiredError, type Order } from "@/lib/userApi";
 import { useAuth } from "@/contexts/AuthContext";
 import FooterSection from "@/components/sections/FooterSection";
-import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { formatPrice } from "@/lib/cart";
 import { formatAddressBlock, formatPhoneDisplay } from "@/lib/addressValidation";
 import m1 from "@/assets/M1.png";
@@ -364,7 +363,7 @@ const OrderTrackingPage = () => {
           )}
         </div>
       </div>
-      <FooterSection data={DEFAULT_CONTENT.footer} />
+      <FooterSection />
     </div>
   );
 };

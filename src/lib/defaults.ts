@@ -802,7 +802,6 @@ export const DEFAULT_CONTENT: SiteContent = {
     social_links: [
       { platform: "Instagram", href: "#" },
       { platform: "TikTok", href: "#" },
-      { platform: "Pinterest", href: "#" },
     ],
     policy_links: [
       { label: "Privacy policy",      href: "/privacy-policy" },
