@@ -1,6 +1,59 @@
 /* Fonts are loaded via <link> in index.html (preconnect + non-blocking) —
    keep them out of CSS @import, which serialises the request chain. */
 
+/* ── Metrics-matched fallbacks ─────────────────────────────────────────────
+   Fredoka and Inter arrive over the network with `display=swap`, so the first
+   paint uses a local font and every line re-wraps when the real one lands. On a
+   three-line headline that re-wrap moved a whole line — 0.076 of layout shift on
+   /about alone, and a wobble on every hero band.
+
+   These faces are the local font re-scaled to the webfont's own metrics, so the
+   text occupies the same box before and after the swap and the wrap doesn't
+   change. Measured against the loaded webfonts (Chrome, canvas measureText):
+   Fredoka semibold runs ~0.94× Arial's width, Inter regular ~1.06×; both fonts
+   report a 0.97/0.24 ascent/descent against Arial's 0.91/0.21. The override
+   percentages are divided by their own size-adjust, which is how the cascade
+   applies them.
+
+   If none of the `local()` fonts exist the face is simply dropped and the stack
+   falls through to the generic family, exactly as it did before. */
+@font-face {
+  font-family: "Fredoka Fallback";
+  src: local("Arial"), local("Helvetica Neue"), local("Roboto"), local("Segoe UI");
+  font-weight: 100 500;
+  size-adjust: 100%;
+  ascent-override: 97%;
+  descent-override: 24%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Fredoka Fallback";
+  src: local("Arial Bold"), local("Arial"), local("Helvetica Neue"), local("Roboto"), local("Segoe UI");
+  font-weight: 501 900;
+  size-adjust: 94%;
+  ascent-override: 103.2%;
+  descent-override: 25.5%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Inter Fallback";
+  src: local("Arial"), local("Helvetica Neue"), local("Roboto"), local("Segoe UI");
+  font-weight: 100 500;
+  size-adjust: 107%;
+  ascent-override: 90.7%;
+  descent-override: 22.4%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Inter Fallback";
+  src: local("Arial Bold"), local("Arial"), local("Helvetica Neue"), local("Roboto"), local("Segoe UI");
+  font-weight: 501 900;
+  size-adjust: 101%;
+  ascent-override: 96%;
+  descent-override: 23.8%;
+  line-gap-override: 0%;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -67,11 +120,14 @@
 
     /* Unified type system: Fredoka for all headings/display, Inter for body,
        Permanent Marker for small handwritten accents only. */
-    --font-display:  'Fredoka', 'Inter', sans-serif;
+    /* The stand-in sits directly behind each webfont (see the @font-face block
+       at the top of this file) so the pre-swap frame is already the right size.
+       Inter stays in the display stacks as the last real-font resort. */
+    --font-display:  'Fredoka', 'Fredoka Fallback', 'Inter', sans-serif;
     --font-sketch:   'Permanent Marker', cursive;
-    --font-rounded:  'Fredoka', 'Inter', sans-serif;
-    --font-serif:    'Fredoka', 'Inter', sans-serif;
-    --font-sans:     'Inter', system-ui, sans-serif;
+    --font-rounded:  'Fredoka', 'Fredoka Fallback', 'Inter', sans-serif;
+    --font-serif:    'Fredoka', 'Fredoka Fallback', 'Inter', sans-serif;
+    --font-sans:     'Inter', 'Inter Fallback', system-ui, sans-serif;
 
     /* ── Type Scale ─────────────────────────────────────────────── */
 
@@ -1086,13 +1142,39 @@
   animation: og-skel-pulse 1.4s ease-in-out infinite;
 }
 
+/* The line-shaped variant (see SkelCopy). The bars are a repeating gradient
+   pinned to the line box rather than one element per line, so the placeholder
+   fits however many lines the hidden copy inside it wraps to — which is how it
+   can reserve a headline's real height before that headline has loaded.
+   `--skel-lh` is the surrounding line-height; `--skel-gap` is the breathing room
+   left between bars. */
+.og-skel-lines {
+  --skel-lh: 1.2;
+  --skel-gap: 0.32em;
+  display: inline-block;
+  max-width: 100%;
+  border-radius: 0.2em;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--skel-gap) / 2),
+    currentColor calc(var(--skel-gap) / 2),
+    currentColor calc(var(--skel-lh) * 1em - var(--skel-gap) / 2),
+    transparent calc(var(--skel-lh) * 1em - var(--skel-gap) / 2),
+    transparent calc(var(--skel-lh) * 1em)
+  );
+  opacity: 0.13;
+  animation: og-skel-pulse 1.4s ease-in-out infinite;
+}
+
 @keyframes og-skel-pulse {
   0%, 100% { opacity: 0.10; }
   50%      { opacity: 0.18; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .og-skel { animation: none; }
+  .og-skel,
+  .og-skel-lines { animation: none; }
 }
 
 /* ── Gen-Z squiggle underline ────────────────────────────────── */

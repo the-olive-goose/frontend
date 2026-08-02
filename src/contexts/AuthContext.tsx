@@ -24,7 +24,7 @@ interface AuthContextType {
   verifyOtp: (phone: string, otp: string) => Promise<void>;
   requestPasswordReset: (email: string) => Promise<{ dev_otp?: string }>;
   confirmPasswordReset: (email: string, otp: string, newPassword: string) => Promise<void>;
-  signOut: () => void;
+  signOut: () => Promise<void>;
   completeOAuthLogin: () => Promise<boolean>;
   updateProfile: (update: ProfileUpdate) => Promise<void>;
   showAuthModal: boolean;
@@ -51,10 +51,60 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
   const pendingActionRef = useRef<(() => void) | null>(null);
+  // Guards the revalidation below: a shopper flicking between tabs shouldn't
+  // fire a /me per switch.
+  const lastCheckRef = useRef(0);
+  // Read by the revalidation listeners, which are registered once and would
+  // otherwise close over the user as it was on mount.
+  const userRef = useRef<AppUser | null>(null);
+  useEffect(() => { userRef.current = user; }, [user]);
 
-  // Restore session on mount (cookie, if any, is validated server-side)
+  // Restore session on mount (cookie, if any, is validated server-side).
+  // A network failure is NOT a verdict on the session (see userMe), so it retries
+  // once before settling on "signed out" — and never flags the session as expired,
+  // which would wrongly push the sign-in modal at someone who never lost it.
   useEffect(() => {
-    userMe().then(u => { setUser(u); setLoading(false); });
+    let alive = true;
+    const settle = (u: AppUser | null) => { if (alive) { setUser(u); setLoading(false); } };
+    userMe()
+      .then(settle)
+      .catch(() => new Promise(r => setTimeout(r, 1500)).then(() => userMe().then(settle).catch(() => settle(null))));
+    return () => { alive = false; };
+  }, []);
+
+  // Revalidate when the customer comes back to the tab. Sessions end for reasons
+  // this tab can't see — signed out on another device, password changed, idle
+  // window lapsed — and without this the stale header would keep saying "signed
+  // in" until some action failed, typically at the worst moment (checkout).
+  // Throttled, and skipped entirely while signed out so it can't become a poller.
+  useEffect(() => {
+    const REVALIDATE_AFTER_MS = 60_000;
+    const revalidate = () => {
+      if (!userRef.current || document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastCheckRef.current < REVALIDATE_AFTER_MS) return;
+      lastCheckRef.current = now;
+      userMe()
+        .then(u => {
+          if (u) { setUser(u); return; }
+          // Server says the session is gone: same treatment as any other 401.
+          setUser(null);
+          setSessionExpired(true);
+        })
+        // Offline/flaky — keep the user as they are and try again next time.
+        .catch(() => { lastCheckRef.current = 0; });
+    };
+    document.addEventListener("visibilitychange", revalidate);
+    window.addEventListener("focus", revalidate);
+    // Back/forward restores a fully rendered page from the bfcache without ever
+    // running the mount effect — the one case where the UI can be arbitrarily old.
+    const onPageShow = (e: PageTransitionEvent) => { if (e.persisted) { lastCheckRef.current = 0; revalidate(); } };
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", revalidate);
+      window.removeEventListener("focus", revalidate);
+      window.removeEventListener("pageshow", onPageShow);
+    };
   }, []);
 
   // A 401 anywhere in the app → drop the local user, surface the sign-in modal
@@ -74,7 +124,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const handler = (e: StorageEvent) => {
       if (e.key !== AUTH_PULSE_KEY) return;
-      userMe().then(setUser);
+      lastCheckRef.current = Date.now();
+      // Ignore a failed check here rather than signing the tab out on a blip —
+      // the other tab's pulse is a hint to re-read, not evidence of anything.
+      userMe().then(setUser).catch(() => {});
     };
     window.addEventListener("storage", handler);
     return () => window.removeEventListener("storage", handler);
@@ -85,6 +138,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const onAuthenticated = (u: AppUser) => {
     setUser(u);
     setSessionExpired(false);
+    lastCheckRef.current = Date.now();
     broadcastAuthChange();
     const action = pendingActionRef.current;
     pendingActionRef.current = null;
@@ -119,7 +173,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   // Called from /auth/callback once the backend has already set the cookie.
   const completeOAuthLogin = async () => {
-    const u = await userMe();
+    const u = await userMe().catch(() => null);
     if (u) onAuthenticated(u);
     return !!u;
   };
@@ -140,9 +194,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     onAuthenticated(user);
   };
 
-  const signOut = () => {
-    logoutUser();
+  // Local state clears immediately (signing out should feel instant), but the
+  // other tabs are only pulsed once the server has actually revoked the session —
+  // pulse first and they'd re-read /me mid-revoke and stay "signed in".
+  const signOut = async () => {
     setUser(null);
+    setSessionExpired(false);
+    lastCheckRef.current = Date.now();
+    await logoutUser();
     broadcastAuthChange();
   };
 

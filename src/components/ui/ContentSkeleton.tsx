@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 /**
  * Placeholders for admin-editable content that has not loaded yet.
@@ -60,6 +60,49 @@ export const SkelText = ({
         }}
       />
     ))}
+  </span>
+);
+
+interface SkelCopyProps {
+  /**
+   * The copy this placeholder stands in for — rendered, but invisible. It is
+   * never shown; it is here purely so the box is exactly the height the real
+   * copy will need, at this viewport, with this font.
+   */
+  children: ReactNode;
+  /**
+   * The line-height the surrounding element actually uses, as a number. It only
+   * positions the bars — the copy inside keeps its inherited line-height — so
+   * passing a value that disagrees with the CSS misaligns the bars, it does not
+   * change the reserved height.
+   */
+  lineHeight?: number;
+  className?: string;
+  style?: CSSProperties;
+}
+
+/**
+ * A skeleton that reserves the exact box its copy will occupy.
+ *
+ * `SkelText` guesses a line count, which is fine for a fixed-size element and
+ * wrong for admin copy: a three-line headline standing behind a one-line
+ * placeholder drops the whole page ~80px the moment it lands. This one hides the
+ * fallback text inside itself instead — `visibility: hidden`, so it is invisible
+ * to eyes, screen readers and selection alike, but it still lays out — and paints
+ * bars over the top with a repeating gradient pinned to the line box. Any number
+ * of lines, no measurement, and the swap to real copy moves nothing as long as
+ * the admin's wording is close to the bundled default's length.
+ *
+ * Use it wherever the copy's length is unknown but a fallback exists; keep
+ * `SkelText` for fixed-size slots (a price, a button label).
+ */
+export const SkelCopy = ({ children, lineHeight = 1.2, className, style }: SkelCopyProps) => (
+  <span
+    aria-hidden="true"
+    className={`og-skel-lines ${className ?? ""}`}
+    style={{ ["--skel-lh" as string]: lineHeight, ...style }}
+  >
+    <span style={{ visibility: "hidden" }}>{children}</span>
   </span>
 );
 

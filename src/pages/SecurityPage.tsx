@@ -4,12 +4,13 @@ import { changePassword } from "@/lib/userApi";
 import PhoneInput from "@/components/PhoneInput";
 import { phoneError as validatePhone, splitPhone, composePhone } from "@/lib/addressValidation";
 import PageSubNav, { ACCOUNT_NAV } from "@/components/PageSubNav";
+import SignedInDevices from "@/components/SignedInDevices";
 import FooterSection from "@/components/sections/FooterSection";
 
 const inputStyle = { border: "1px solid #ccc", background: "#fff", color: "#111" } as const;
 
 const SecurityPage = () => {
-  const { user, loading: authLoading, updateProfile, openAuthModal } = useAuth();
+  const { user, loading: authLoading, updateProfile, openAuthModal, signOut } = useAuth();
   const [phone, setPhone] = useState("");
   const [savingPhone, setSavingPhone] = useState(false);
   const [phoneSaved, setPhoneSaved] = useState(false);
@@ -20,6 +21,13 @@ const SecurityPage = () => {
   const [changingPw, setChangingPw] = useState(false);
   const [pwSaved, setPwSaved] = useState(false);
   const [pwError, setPwError] = useState("");
+  // Changing the password ends every other signed-in session. Saying so — with the
+  // count — is what turns it from a silent side effect into the reassurance a
+  // shopper who suspects someone else is in their account actually came for.
+  const [pwSignedOut, setPwSignedOut] = useState(0);
+  // Bumped after a password change so the device list re-reads and stops showing
+  // sessions the change just killed.
+  const [devicesKey, setDevicesKey] = useState(0);
 
   useEffect(() => {
     if (!user) return;
@@ -56,10 +64,12 @@ const SecurityPage = () => {
     setPwError("");
     setPwSaved(false);
     try {
-      await changePassword(currentPassword, newPassword);
+      const { signed_out_sessions = 0 } = await changePassword(currentPassword, newPassword);
       setCurrentPassword("");
       setNewPassword("");
       setPwSaved(true);
+      setPwSignedOut(signed_out_sessions);
+      setDevicesKey(k => k + 1);
       setTimeout(() => setPwSaved(false), 2500);
     } catch (err) {
       setPwError(err instanceof Error ? err.message : "Could not change password");
@@ -155,9 +165,19 @@ const SecurityPage = () => {
                       </button>
                       {pwSaved && <span className="font-sans text-sm font-semibold" style={{ color: "#007600" }}>Password changed ✓</span>}
                     </div>
+                    {pwSaved && pwSignedOut > 0 && (
+                      <p className="font-sans text-sm" style={{ color: "#555" }}>
+                        {pwSignedOut === 1
+                          ? "1 other device was signed out."
+                          : `${pwSignedOut} other devices were signed out.`}
+                      </p>
+                    )}
                   </form>
                 )}
               </div>
+
+              {/* Signed-in devices */}
+              <SignedInDevices key={devicesKey} onSelfRevoked={signOut} />
             </>
           )}
         </div>

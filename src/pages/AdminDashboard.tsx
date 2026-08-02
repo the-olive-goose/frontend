@@ -98,6 +98,15 @@ import {
   type NavLink,
   type SocialLink,
 } from "@/lib/defaults";
+import {
+  DEFAULT_QUALITY,
+  QUALITY_TIERS,
+  buildOptimizedUrl,
+  buildPosterUrl,
+  isCloudinaryVideo,
+  isOptimizedUrl,
+  type VideoQuality,
+} from "@/lib/cloudinaryVideo";
 import { productSlug } from "@/lib/products";
 import { SITE_NAME, SITE_URL } from "@/lib/seo";
 import { META_SOURCES, previewMeta } from "@/lib/seoContent";
@@ -1434,6 +1443,139 @@ const CandleCareEditor = ({
   </div>
 );
 
+/**
+ * The media half of a reel: where the video comes from, and the still shown on
+ * the card while that reel is not the one playing.
+ *
+ * Cloudinary's upload URL points at the *original* file. Straight off a phone
+ * that is a 2160x3840 capture of around 100 MB, and the home page shows six
+ * reels — enough to exhaust a phone browser before the page has settled.
+ * "Optimise for web" rewrites the URL to ask Cloudinary for a web-sized encode
+ * of the same asset: no re-upload, and no visible quality change, because even
+ * the smallest tier is sampled above what a phone can resolve in a 240px card.
+ *
+ * The rewritten URL is written straight into the field. What is stored is what
+ * ships — nothing rewrites it again at render time — so it stays yours to edit,
+ * override, or replace with a transformation chain of your own.
+ */
+const ReelMediaFields = ({
+  item,
+  onPatch,
+}: {
+  item: VideoItem;
+  onPatch: (patch: Partial<VideoItem>) => void;
+}) => {
+  const [quality, setQuality] = useState<VideoQuality>(DEFAULT_QUALITY);
+
+  const url = item.video_url ?? "";
+  const cloudinary = isCloudinaryVideo(url);
+  const optimised = cloudinary && isOptimizedUrl(url);
+  const derivedPoster = cloudinary ? buildPosterUrl(url) : "";
+
+  const optimise = () => {
+    onPatch({
+      video_url: buildOptimizedUrl(url, quality),
+      // An explicit poster is the admin's; only fill a blank one.
+      poster_url: item.poster_url?.trim() ? item.poster_url : buildPosterUrl(url),
+    });
+  };
+
+  return (
+    <>
+      <Field
+        label="Video URL"
+        hint="A direct video file URL (.mp4 / .webm / .mov — including a Cloudinary or other CDN link), or a YouTube link in any form (watch, youtu.be or Shorts), or a Vimeo link. These play automatically. An Instagram link also works but Instagram's embed will not autoplay: it shows a still until it's tapped. A Google Drive or Dropbox share page is not a video file and will not play."
+      >
+        <Input
+          placeholder="https://…/reel.mp4  or  https://youtube.com/shorts/…"
+          value={item.video_url}
+          onChange={(e) => onPatch({ video_url: e.target.value })}
+        />
+
+        {cloudinary && !optimised && (
+          <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
+            <p className="text-xs font-sans text-foreground">
+              <strong>This link points at the original upload.</strong> Phone footage is
+              usually 4K and can be 100&nbsp;MB or more, which is what makes the home page
+              slow and can crash a mobile browser. Optimising asks Cloudinary for a
+              web-sized copy of the same video — no re-upload, no visible quality change.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={quality}
+                onChange={(e) => setQuality(e.target.value as VideoQuality)}
+                className="px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40"
+              >
+                {(Object.keys(QUALITY_TIERS) as VideoQuality[]).map((key) => (
+                  <option key={key} value={key}>{QUALITY_TIERS[key].label}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={optimise}
+                className="px-3 py-2 rounded-lg bg-primary text-primary-foreground font-sans text-xs font-medium hover:opacity-90"
+              >
+                Optimise for web
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground font-sans">{QUALITY_TIERS[quality].hint}</p>
+          </div>
+        )}
+
+        {optimised && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <p className="text-xs font-sans text-emerald-600 dark:text-emerald-400">
+              ✓ Optimised — Cloudinary will deliver a web-sized copy of this video.
+            </p>
+            <select
+              value={quality}
+              onChange={(e) => setQuality(e.target.value as VideoQuality)}
+              className="px-2 py-1 rounded-md border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40"
+            >
+              {(Object.keys(QUALITY_TIERS) as VideoQuality[]).map((key) => (
+                <option key={key} value={key}>{QUALITY_TIERS[key].label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={optimise}
+              className="px-2 py-1 rounded-md border border-border font-sans text-xs hover:bg-muted"
+            >
+              Re-apply
+            </button>
+          </div>
+        )}
+
+        {item.video_url && (
+          <p className="text-xs text-muted-foreground truncate mt-1">✓ {item.video_url}</p>
+        )}
+      </Field>
+
+      <Field
+        label="Poster image"
+        hint="The still shown on the card until this reel is the one playing — only the reel in focus is ever loaded, which is what keeps the page light. Leave blank to use the video's first frame."
+      >
+        <Input
+          placeholder={derivedPoster || "https://…/still.jpg"}
+          value={item.poster_url ?? ""}
+          onChange={(e) => onPatch({ poster_url: e.target.value })}
+        />
+        {!item.poster_url?.trim() && derivedPoster && (
+          <p className="text-xs text-muted-foreground font-sans mt-1">
+            Using the video's first frame automatically.
+          </p>
+        )}
+        {!item.poster_url?.trim() && !derivedPoster && item.video_url && (
+          <p className="text-xs text-muted-foreground font-sans mt-1">
+            No still can be derived from this link — the card shows a plain frame until
+            it's tapped. Paste an image URL to give it a cover.
+          </p>
+        )}
+      </Field>
+    </>
+  );
+};
+
 const VideosEditor = ({
   data,
   onChange,
@@ -1534,20 +1676,14 @@ const VideosEditor = ({
                 onChange({ ...data, items });
               }} />
             </Field>
-            <Field label="Video URL" hint="A direct video file URL (.mp4 / .webm / .mov — including a Cloudinary or other CDN link), or a YouTube link in any form (watch, youtu.be or Shorts), or a Vimeo link. These play automatically. An Instagram link also works but Instagram's embed will not autoplay: it shows a still until it's tapped. A Google Drive or Dropbox share page is not a video file and will not play.">
-              <Input
-                placeholder="https://…/reel.mp4  or  https://youtube.com/shorts/…"
-                value={item.video_url}
-                onChange={(e) => {
-                  const items = [...data.items];
-                  items[i] = { ...items[i], video_url: e.target.value };
-                  onChange({ ...data, items });
-                }}
-              />
-              {item.video_url && (
-                <p className="text-xs text-muted-foreground truncate mt-1">✓ {item.video_url}</p>
-              )}
-            </Field>
+            <ReelMediaFields
+              item={item}
+              onPatch={(patch) => {
+                const items = [...data.items];
+                items[i] = { ...items[i], ...patch };
+                onChange({ ...data, items });
+              }}
+            />
           </Card>
         ))}
         <AddButton

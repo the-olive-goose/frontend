@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { useContent } from "@/hooks/useContent";
-import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
+import { SkelBlock, SkelCopy } from "@/components/ui/ContentSkeleton";
 import FooterSection from "@/components/sections/FooterSection";
 import RichText from "@/lib/richtext";
 import { useJsonLd } from "@/hooks/useJsonLd";
@@ -25,19 +25,28 @@ const GiftCardsPage = () => {
       <div className="pt-[var(--nav-h,112px)]">
         <div className="max-w-2xl mx-auto px-3 sm:px-8 pt-6 sm:pt-8 pb-3">
           <h1 className="font-serif text-3xl font-bold" style={{ color: "#0F1111" }}>
-            {ready ? <RichText text={content.heading} /> : <SkelText width="340px" />}
+            {ready ? <RichText text={content.heading} /> : <SkelCopy lineHeight={1.2}><RichText text={content.heading} /></SkelCopy>}
           </h1>
           <div className="mt-3 mb-5" style={{ height: 1, background: "#DDD" }} />
         </div>
 
         <div className="max-w-2xl mx-auto px-3 sm:px-8 py-4 sm:py-6 space-y-4">
           <div className="bg-white rounded-xl p-6 space-y-5 text-center" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+            {/* Every placeholder on this card is sized against the copy it is
+                standing in for (hidden, never painted) — a guessed line count
+                left the card growing under the visitor as each field landed. */}
             <p className="font-sans text-sm leading-relaxed" style={{ color: "#333" }}>
-              {ready ? <RichText text={content.intro} /> : <SkelText lines={2} lineHeight={1.6} center />}
+              {ready ? <RichText text={content.intro} /> : <SkelCopy lineHeight={1.625}><RichText text={content.intro} /></SkelCopy>}
             </p>
 
             <div className="flex flex-wrap justify-center gap-3" style={{ color: "#1D2B1B" }}>
-              {!ready && [0, 1, 2].map(i => <SkelBlock key={i} height="60px" width="104px" radius="12px" />)}
+              {/* Sized like the real €-chips (px-6 py-4 around text-lg), so the
+                  three of them stay on one row on a phone — at 104px wide they
+                  wrapped onto a second row and the card collapsed by 70px when
+                  the real denominations landed. */}
+              {!ready && content.denominations.map(d => (
+                <SkelBlock key={d} height="62px" width="84px" radius="12px" />
+              ))}
               {ready && content.denominations.map(d => (
                 <div key={d} className="px-6 py-4 rounded-xl font-display font-bold text-lg"
                   style={{ background: "#f5efe6", border: "1px solid var(--color-gold, #C9B26D)", color: "#1D2B1B", opacity: content.available ? 1 : 0.55 }}>
@@ -47,11 +56,18 @@ const GiftCardsPage = () => {
             </div>
 
             <p className="font-sans text-xs" style={{ color: "#555" }}>
-              {ready ? <RichText text={content.note} /> : <SkelText width="70%" center />}
+              {ready ? <RichText text={content.note} /> : <SkelCopy lineHeight={1.5}><RichText text={content.note} /></SkelCopy>}
             </p>
 
+            {/* The button and the notify form are different heights, so the
+                placeholder follows whichever one the fallback says is coming. */}
             {!ready ? (
-              <SkelBlock height="42px" width="180px" radius="var(--radius-pill)" style={{ color: "#1D2B1B", margin: "0 auto" }} />
+              <SkelBlock
+                height={content.available ? "42px" : "94px"}
+                width={content.available ? "180px" : "min(384px,100%)"}
+                radius={content.available ? "var(--radius-pill)" : "var(--radius-card)"}
+                style={{ color: "#1D2B1B", margin: "0 auto" }}
+              />
             ) : content.available ? (
               <a href="/shop" className="inline-block font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95"
                 style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>

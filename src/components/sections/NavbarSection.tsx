@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate, useLocation } from "react-router-dom";
 import { NavbarContent, AnnouncementBarContent, type Product } from "@/lib/defaults";
@@ -12,7 +12,7 @@ import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 import RichText, { stripRichText } from "@/lib/richtext";
 import { fillOfferTokens, type OfferValues } from "@/lib/offerTokens";
 import AccountDropdown from "@/components/AccountDropdown";
-import { SkelText } from "@/components/ui/ContentSkeleton";
+import { SkelCopy, SkelText } from "@/components/ui/ContentSkeleton";
 import logo from "@/assets/logo.jpg";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
@@ -183,8 +183,14 @@ const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
   // resize: an admin with no announcement messages has no bar at all, and the
   // ResizeObserver alone did not catch that row leaving — every page was left
   // with a 34px gap under the navbar.
+  // Layout effect, not effect: every page offsets its content by --nav-h, and
+  // the fallback in those `var(--nav-h, 112px)` reads is 44px short of the real
+  // mobile header. Publishing it after paint let a page paint once at 112px and
+  // then drop 44px — a shift on whichever page happened to render in the same
+  // frame as the navbar (Gift Cards did, reliably). Setting it before the
+  // browser paints means no page ever sees the fallback.
   const announcementRows = ready ? (announcement.messages?.length ?? 0) : 1;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = headerRef.current;
     if (!el) return;
     const setVar = () =>
@@ -432,9 +438,15 @@ const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
         {/* ── Row 2: Nav links (desktop) — centered ── */}
         <div className="hidden sm:block border-t" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2 flex items-center justify-center gap-1.5">
-            {!ready && [0, 1, 2, 3, 4].map(i => (
-              <span key={`skel-${i}`} className="px-4 py-2" style={{ color: "var(--color-white)" }}>
-                <SkelText width={i % 2 ? "84px" : "68px"} style={{ fontSize: "15px" }} />
+            {/* Placeholders sized off the fallback labels (hidden, never shown)
+                and carrying the real links' type classes. As flex items these
+                rows take their height from their content, so a guessed bar
+                height left the row 6px short — and since --nav-h is measured
+                from it, every page's content dropped 6px when the labels
+                landed. */}
+            {!ready && (data.links ?? []).map((link, i) => (
+              <span key={`skel-${i}`} className="font-display text-[15px] px-4 py-2" style={{ color: "var(--color-white)" }}>
+                <SkelCopy lineHeight={1.5}>{link.label}</SkelCopy>
               </span>
             ))}
             {links.map((link, i) => {

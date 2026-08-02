@@ -28,6 +28,41 @@ export default defineConfig(({ mode: _mode }) => ({
     },
   },
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        /**
+         * Split the dependencies that never change from the app code that
+         * changes every deploy. A shopper who came back after a release then
+         * re-downloads our code rather than React and Framer Motion along with
+         * it, and the browser parses the pieces in parallel instead of chewing
+         * through one 800 KB file before it can paint.
+         *
+         * Only the libraries the storefront itself runs on are named here.
+         * There is deliberately no catch-all `vendor` bucket: it would put
+         * admin-only weight (recharts) in the same chunk as something the home
+         * page imports, and every shopper would download the charting library
+         * to look at a candle. Anything unnamed is left to Rollup, which keeps
+         * it with whichever route actually pulls it in.
+         */
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          // React, the router and the router's own core share a chunk: they
+          // reference each other at module scope, and splitting them apart
+          // produces a circular chunk graph with an unpredictable load order.
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler|@remix-run[\\/]router)[\\/]/.test(id)) {
+            return "vendor-react";
+          }
+          if (/[\\/]node_modules[\\/](framer-motion|motion-dom|motion-utils)[\\/]/.test(id)) {
+            return "vendor-motion";
+          }
+          if (id.includes("@radix-ui")) return "vendor-radix";
+          if (id.includes("@tanstack")) return "vendor-query";
+          return undefined;
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

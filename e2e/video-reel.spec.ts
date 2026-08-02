@@ -176,8 +176,11 @@ test.describe("show/hide toggle", () => {
   test("content with no `enabled` key still shows — the toggle is opt-out", async ({ page }) => {
     // This is the regression that matters on deploy day: every existing row in
     // the content table looks like this, and none of them may go dark.
-    const { enabled, ...withoutKey } = { ...originalVideos, items: [reel] } as Record<string, unknown>;
-    expect(enabled, "the fixture must genuinely lack the key").toBeUndefined();
+    // Assert the fixture, not the seed it came from: the saved content now
+    // carries `enabled` (the toggle has since been used), so the pre-toggle row
+    // this test needs has to be built by stripping the key back off.
+    const { enabled: _dropped, ...withoutKey } = { ...originalVideos, items: [reel] } as Record<string, unknown>;
+    expect(withoutKey, "the fixture must genuinely lack the key").not.toHaveProperty("enabled");
     await saveVideos(withoutKey);
 
     await page.goto(`${BASE}/`);
@@ -213,13 +216,25 @@ test.describe("show/hide toggle", () => {
   });
 });
 
-test("the whole configured rail plays — no blank frames", async ({ page }) => {
-  // The per-shape tests each run a rail of one. This is the check that was
-  // missing entirely: whatever is actually saved, every card plays something.
+test("a full rail shows a picture in every card — no blank frames", async ({ page }) => {
+  /*
+   * The per-shape tests each run a rail of one, so every card there is the one
+   * playing. A real rail is not like that: six reels playing at once is about a
+   * third of a gigabyte of video and six hardware decoders, so only the cards in
+   * view are mounted (VideosSection — `isMounted`) and the rest are ~40 KB
+   * stills. On this desktop viewport that window is the active card and its two
+   * neighbours, and the active card starts at 0.
+   *
+   * So "no blank frames" is no longer "everything plays" — it is that a card
+   * either plays or shows its still, and never sits there as an empty frame.
+   * That is the failure mode worth guarding: a YouTube link has no still to
+   * derive from Cloudinary, and before youtubeThumbnailUrl an out-of-window
+   * Shorts reel rendered nothing at all.
+   */
   const items = [
-    { id: "e2e-1", title: "Shorts",     description: "", tag: "", video_url: "https://youtube.com/shorts/--Q_WkPaXBY?si=abc" },
-    { id: "e2e-2", title: "Local file", description: "", tag: "", video_url: "/videos/V2.mp4" },
-    { id: "e2e-3", title: "Vimeo",      description: "", tag: "", video_url: "https://vimeo.com/76979871" },
+    { id: "e2e-1", title: "Local file",   description: "", tag: "", video_url: "/videos/V2.mp4" },
+    { id: "e2e-2", title: "Shorts",       description: "", tag: "", video_url: "https://youtube.com/shorts/--Q_WkPaXBY?si=abc" },
+    { id: "e2e-3", title: "Shorts, back", description: "", tag: "", video_url: "https://youtu.be/dQw4w9WgXcQ?si=abc" },
   ];
   const res = await admin.put("/api/content/videos", {
     headers: auth(TOKEN), data: { ...originalVideos, items },
@@ -231,10 +246,19 @@ test("the whole configured rail plays — no blank frames", async ({ page }) => 
   await expect(cards).toHaveCount(items.length);
   await expect(page.locator("#journal").getByText(PLACEHOLDER)).toHaveCount(0);
 
-  for (let i = 0; i < items.length; i++) {
+  // The mounted window plays for real.
+  for (const i of [0, 1]) {
     await expect(
       cards.nth(i).locator("iframe, video"),
-      `reel ${i + 1} (${items[i].video_url}) must render playable media`
+      `reel ${i + 1} (${items[i].video_url}) is in view and must play`
     ).toHaveCount(1);
+  }
+
+  // Everything else still shows a picture rather than an empty frame.
+  for (let i = 0; i < items.length; i++) {
+    await expect(
+      cards.nth(i).locator("iframe, video, img"),
+      `reel ${i + 1} (${items[i].video_url}) must render a player or its still`
+    ).not.toHaveCount(0);
   }
 });

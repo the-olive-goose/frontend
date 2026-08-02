@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { useContentSections } from "@/hooks/useContent";
-import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
+import { SkelBlock, SkelCopy, SkelText } from "@/components/ui/ContentSkeleton";
 import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
 import RichText from "@/lib/richtext";
@@ -121,19 +121,22 @@ const AboutPage = () => {
               className="font-display text-xs tracking-[0.2em] uppercase"
               style={{ color: "var(--color-sage-light)" }}
             >
-              {ready ? story.label : <SkelText width="140px" />}
+              {ready ? story.label : <SkelCopy>{story.label}</SkelCopy>}
             </motion.p>
             <motion.h2 {...fadeUp(0.08)}
               className="font-serif font-semibold"
               style={{ fontSize: "clamp(1.8rem,3.5vw,2.8rem)", color: "var(--color-forest-dark)", lineHeight: 1.15 }}
             >
-              {ready ? story.headline : <SkelText lines={2} width="88%" lineHeight={1.15} />}
+              {ready ? story.headline : <SkelCopy lineHeight={1.15}>{story.headline}</SkelCopy>}
             </motion.h2>
-            {!ready && (
-              <p className="font-sans text-base leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}>
-                <SkelText lines={5} lineHeight={1.6} />
+            {/* One placeholder paragraph per real paragraph, each sized against
+                the copy it stands in for — a fixed five-line block left this
+                column growing by ~130px when the story landed. */}
+            {!ready && story.body.split("\n\n").map((para, i) => (
+              <p key={i} className="font-sans text-base leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}>
+                <SkelCopy lineHeight={1.625}>{para}</SkelCopy>
               </p>
-            )}
+            ))}
             {ready && story.body.split("\n\n").map((para, i) => (
               <motion.p key={i} {...fadeUp(0.12 + i * 0.06)}
                 className="font-sans text-base leading-relaxed"
@@ -145,6 +148,18 @@ const AboutPage = () => {
             {/* Two buttons, one row — they wrap rather than shrink on narrow
                 phones so neither label is ever clipped. */}
             <div className="flex flex-wrap items-center gap-3">
+              {/* Placeholder pills carry the buttons' own padding and label, so
+                  the row is already their height and width before they land. */}
+              {!ready && story.cta_text && (
+                <span className="inline-flex items-center gap-2 font-display text-sm font-semibold px-6 py-3" style={{ color: "var(--color-forest-dark)" }}>
+                  <SkelCopy lineHeight={1.5}>{story.cta_text} &nbsp;→</SkelCopy>
+                </span>
+              )}
+              {!ready && founder.jump_cta_text && (
+                <span className="inline-flex items-center gap-2 font-display text-sm font-semibold px-6 py-3" style={{ color: "var(--color-forest-dark)", border: "1.5px solid transparent" }}>
+                  <SkelCopy lineHeight={1.5}><RichText text={founder.jump_cta_text} /> &nbsp;↓</SkelCopy>
+                </span>
+              )}
               {ready && story.cta_text && (
                 <motion.a {...fadeUp(0.24)}
                   href={story.cta_href || "#values"}

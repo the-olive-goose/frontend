@@ -684,19 +684,26 @@ export interface AnalyticsOverview {
   start: string; // YYYY-MM-DD, inclusive
   end: string;   // YYYY-MM-DD, inclusive
   days: number;
+  timezone: string; // IANA zone every day boundary was resolved in
   filters: { device: string | null; source: string | null; attr: 'source' | 'medium' | 'campaign' };
-  // True when device/source filters are active — sales are then attributed via
-  // tracked purchase sessions rather than read exactly from the orders table.
+  // True when device/source filters are active — sales then cover only the
+  // orders whose purchase could be tied back to a matching session.
   attributed: boolean;
   abandoned: { checkout_sessions: number; abandoned_sessions: number; lost_revenue: number };
   traffic: {
     visitors: number; sessions: number; pageviews: number;
     pages_per_session: number; bounce_rate: number;
     new_visitors: number; returning_visitors: number;
+    // % of visitors whose id survives the tab (cookie banner accepted). The
+    // rest count as "new" on every visit. null when there were no visitors.
+    identified_visitor_pct: number | null;
     prev: { visitors: number; sessions: number; pageviews: number };
   };
   sales: {
     revenue: number; orders: number; aov: number; conversion_rate: number;
+    // Orders in the window that carry a tracked session. Below `orders` means
+    // the funnel, conversion rate and attribution table under-count real sales.
+    attributed_orders: number;
     prev: { revenue: number; orders: number; aov: number };
   };
   customers: {

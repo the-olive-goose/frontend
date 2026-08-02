@@ -13,12 +13,16 @@ export default {
       },
     },
     extend: {
+      // The "* Fallback" faces are the local-font stand-ins declared at the top
+      // of src/index.css — metrics-matched, so text doesn't re-wrap when the
+      // real webfont swaps in. Keep these stacks in step with the --font-*
+      // tokens there.
       fontFamily: {
-        serif:    ['Fredoka', 'Inter', 'sans-serif'],
-        sans:     ['Inter', 'system-ui', 'sans-serif'],
-        display:  ['Fredoka', 'Inter', 'sans-serif'],
+        serif:    ['Fredoka', 'Fredoka Fallback', 'Inter', 'sans-serif'],
+        sans:     ['Inter', 'Inter Fallback', 'system-ui', 'sans-serif'],
+        display:  ['Fredoka', 'Fredoka Fallback', 'Inter', 'sans-serif'],
         sketch:   ['Permanent Marker', 'cursive'],
-        rounded:  ['Fredoka', 'Inter', 'sans-serif'],
+        rounded:  ['Fredoka', 'Fredoka Fallback', 'Inter', 'sans-serif'],
       },
       colors: {
         border: "hsl(var(--border))",

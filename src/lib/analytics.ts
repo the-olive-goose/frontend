@@ -85,9 +85,27 @@ const getUtm = (): { utm_source: string; utm_medium: string; utm_campaign: strin
   return utm;
 };
 
-const getDevice = (): string => {
-  const w = window.innerWidth;
-  return w < 768 ? 'mobile' : w < 1024 ? 'tablet' : 'desktop';
+// A hint, not a verdict. The backend classifies the device from the User-Agent
+// header (see classifyDevice) and only falls back to this when the UA can't
+// settle it — chiefly an iPad in desktop mode, which reports a macOS UA and is
+// distinguishable only by being touch-capable.
+//
+// Deliberately NOT viewport width. Width called anything under 1024px a
+// "tablet": a half-screen window on a 1080p monitor, a laptop at 125% browser
+// zoom, devtools docked to the side, a phone in landscape. That is how a shop
+// with no tablet visitors ended up reporting tablet traffic — the number was
+// measuring window size and being read as hardware.
+const getDeviceHint = (): string => {
+  try {
+    const touch = (navigator.maxTouchPoints ?? 0) > 1;
+    // iPadOS 13+ Safari asks for desktop sites by default and sends a
+    // "Macintosh" UA. A Mac with a touchscreen does not exist; this is an iPad.
+    if (touch && /Macintosh/.test(navigator.userAgent)) return 'tablet';
+    const uaData = (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData;
+    if (uaData?.mobile === true) return 'mobile';
+    if (!touch && window.matchMedia('(pointer: fine)').matches) return 'desktop';
+  } catch { /* fall through — the server's UA parse decides */ }
+  return '';
 };
 
 // External referrer only — internal navigation is already captured as the
@@ -101,9 +119,17 @@ const getReferrer = (): string => {
 
 const queue: QueuedEvent[] = [];
 
+// 'persistent' — the visitor id survives in localStorage, so this person is
+// recognisable on a later visit. 'session' — consent wasn't given, the id lives
+// in sessionStorage and dies with the tab, so the same human returning tomorrow
+// counts as a brand-new visitor. The dashboard needs this to say how much of
+// "Visitors" and "New vs returning" it can actually stand over.
+const visitorScope = () => (consentGiven() ? 'persistent' : 'session');
+
 const payload = () => JSON.stringify({
   visitor_id: getVisitorId(),
   session_id: getSessionId(),
+  visitor_scope: visitorScope(),
   events: queue.splice(0, MAX_BATCH),
 });
 
@@ -135,7 +161,7 @@ export const track = (type: EventType, props: Record<string, unknown> = {}) => {
       path: window.location.pathname,
       referrer: getReferrer(),
       ...getUtm(),
-      device: getDevice(),
+      device: getDeviceHint(),
       props,
     });
     if (queue.length >= MAX_BATCH) flush();
@@ -179,8 +205,13 @@ const observeWebVitals = () => {
     let maxInp = 0;
     new PerformanceObserver(list => {
       for (const entry of list.getEntries()) {
-        const dur = (entry as unknown as { duration: number }).duration;
-        if (dur > maxInp) { maxInp = dur; vitals.INP = Math.round(maxInp); }
+        // Only entries with an interactionId are real user interactions. The
+        // 'event' stream also carries non-interactive events whose durations are
+        // not INP candidates — counting those inflated p75 and graded healthy
+        // pages "Poor".
+        const e = entry as unknown as { duration: number; interactionId?: number };
+        if (!e.interactionId) continue;
+        if (e.duration > maxInp) { maxInp = e.duration; vitals.INP = Math.round(maxInp); }
       }
     }).observe({ type: 'event', buffered: true, durationThreshold: 40 } as PerformanceObserverInit);
   } catch { /* unsupported */ }
@@ -213,11 +244,16 @@ export const initAnalytics = () => {
   if (initialized || typeof window === 'undefined') return;
   initialized = true;
   setInterval(() => flush(), FLUSH_INTERVAL_MS);
+  // Vitals are wired up FIRST so its hide/pagehide listeners run before the
+  // flush listeners registered below — same events, and listeners fire in
+  // registration order. Flushing first sent an empty queue and left the vitals
+  // sitting in it, so every sample from a closing tab was dropped and the p75s
+  // were built from whoever happened to switch tabs and come back.
+  observeWebVitals();
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flush(true);
   });
   window.addEventListener('pagehide', () => flush(true));
-  observeWebVitals();
 };
 
 /** Ids the checkout flow forwards so the backend can attribute the purchase. */

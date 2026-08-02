@@ -560,8 +560,20 @@ test.describe("customers & feedback panels", () => {
     const email = `e2e-sub-${Date.now()}@test.local`;
     const sub = await request.post(`${API}/api/subscribers`, { data: { email } });
     expect(sub.status()).toBe(201);
-    // duplicate subscription is a clean conflict
-    expect((await request.post(`${API}/api/subscribers`, { data: { email } })).status()).toBe(409);
+    const firstCode = (await sub.json()).discount?.code;
+
+    /*
+     * Subscribing again is not an error while the welcome code is still unused:
+     * someone who lost the email must be able to ask for it back (see the route —
+     * it also backfills anyone who subscribed before the discount existed). So the
+     * answer is 200 and the SAME code, never a second one. That last part is the
+     * whole anti-abuse property: re-subscribing must not mint discounts.
+     */
+    const again = await request.post(`${API}/api/subscribers`, { data: { email } });
+    expect(again.status()).toBe(200);
+    const body = await again.json();
+    expect(body.already_subscribed).toBe(true);
+    expect(body.discount?.code, "re-subscribing must re-issue, never mint").toBe(firstCode);
 
     const list = await (await admin.get(`/api/subscribers`, { headers: auth(TOKEN) })).json();
     const row = list.find((s: any) => s.email === email);
@@ -634,14 +646,27 @@ test.describe("analytics", () => {
     const res = await admin.get(`/api/admin/analytics?start=2026-04-01&end=2026-06-30`, { headers: auth(TOKEN) });
     expect(res.ok()).toBeTruthy();
     const a = await res.json();
-    expect(a.range.start).toBe("2026-04-01");
-    expect(a.range.end).toBe("2026-06-30");
+    // The window it actually rendered comes back at the top level, alongside the
+    // timezone the day boundaries were drawn in — a quarter is 91 days, and the
+    // panel needs to be able to say so rather than implying the range it asked
+    // for is necessarily the range it got (see the clamping cases below).
+    expect(a.start).toBe("2026-04-01");
+    expect(a.end).toBe("2026-06-30");
+    expect(a.days).toBe(91);
+    expect(a.timezone).toBeTruthy();
   });
 
   test("nonsense ranges fall back safely instead of erroring", async () => {
     for (const q of ["start=2026-99-99&end=2026-01-01", "start=2026-06-30&end=2026-04-01", "days=99999", "days=-5"]) {
       const res = await admin.get(`/api/admin/analytics?${q}`, { headers: auth(TOKEN) });
       expect(res.ok(), `?${q} should degrade gracefully`).toBeTruthy();
+      // Degrading is only safe if the answer says which window it fell back to;
+      // otherwise a mistyped quarter reads as a real collapse in the numbers.
+      const a = await res.json();
+      expect(a.start, `?${q} must report the window it used`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(a.end).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(a.days, `?${q} must stay inside the 2-year cap`).toBeLessThanOrEqual(731);
+      expect(a.days).toBeGreaterThan(0);
     }
   });
 
@@ -691,4 +716,46 @@ test.describe("content & uploads", () => {
     expect(anon.status()).toBe(401);
 
     // svg is an XSS vector when served same-origin — must be refused
-    const svg = await admin.post(`
+    const svg = await admin.post(`/api/upload/image`, {
+      headers: auth(TOKEN),
+      multipart: {
+        image: {
+          name: "x.svg",
+          mimeType: "image/svg+xml",
+          buffer: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`),
+        },
+      },
+    });
+    expect(svg.status(), "an .svg must not be stored under /uploads").toBe(400);
+    expect(await svg.text()).not.toContain("/uploads/");
+
+    // The extension allowlist and the declared mime type must BOTH hold: either
+    // one alone is trivially forged by whatever is posting the file.
+    const lyingMime = await admin.post(`/api/upload/image`, {
+      headers: auth(TOKEN),
+      multipart: { image: { name: "shell.php", mimeType: "image/png", buffer: png } },
+    });
+    expect(lyingMime.status(), "an allowed mime cannot rescue a disallowed extension").toBe(400);
+
+    const lyingExt = await admin.post(`/api/upload/image`, {
+      headers: auth(TOKEN),
+      multipart: { image: { name: "a.png", mimeType: "text/html", buffer: png } },
+    });
+    expect(lyingExt.status(), "an allowed extension cannot rescue a disallowed mime").toBe(400);
+
+    // …and a real png still goes through, served with the headers that keep
+    // anything that ever does land in uploads/ from executing.
+    const ok = await admin.post(`/api/upload/image`, {
+      headers: auth(TOKEN),
+      multipart: { image: { name: "a.png", mimeType: "image/png", buffer: png } },
+    });
+    expect(ok.ok(), await ok.text()).toBeTruthy();
+    const { path: uploadedPath } = await ok.json();
+    expect(uploadedPath).toMatch(/^\/uploads\/image-[0-9]+-[0-9a-f]+\.png$/);
+
+    const served = await request.get(`${API}${uploadedPath}`);
+    expect(served.ok()).toBeTruthy();
+    expect(served.headers()["x-content-type-options"]).toBe("nosniff");
+    expect(served.headers()["content-security-policy"]).toContain("default-src 'none'");
+  });
+});

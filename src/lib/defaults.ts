@@ -109,6 +109,16 @@ export interface VideoItem {
   description: string;
   video_url: string;
   /**
+   * A still shown while this reel is not the one playing. The rail only ever
+   * mounts the reel in focus, so every other card is this image — which is why
+   * a rail of six reels can cost less than one photo.
+   *
+   * Written by admin's "Optimise for web" button alongside the video URL, and
+   * editable there. Blank falls back to a frame derived from the video URL when
+   * that URL is a Cloudinary one, and to the plain card frame otherwise.
+   */
+  poster_url?: string;
+  /**
    * The little sticker in the reel's top corner ("how'd they do that").
    * Blank or absent hides it — videos saved before the sticker existed have
    * no tag, so nothing appears until an admin writes one.
@@ -1025,6 +1035,22 @@ export const toEmbedUrl = (url: string): string => {
   }
   // Fallback — treat as direct src
   return raw;
+};
+
+/**
+ * The still frame YouTube already hosts for a video, for a reel card that is not
+ * the one playing. Cloudinary reels derive their own poster (see buildPosterUrl);
+ * a YouTube link cannot, and a card with neither a poster nor a player is an
+ * empty frame — which is what a Shorts link pasted into admin used to produce.
+ *
+ * `hqdefault` is the only size guaranteed to exist for every video: `maxresdefault`
+ * 404s on anything never uploaded above 720p, and a broken <img> is the same blank
+ * card this exists to prevent. Returns "" for anything that isn't YouTube, which
+ * is the signal to fall back to the plain frame.
+ */
+export const youtubeThumbnailUrl = (url: string): string => {
+  const id = toEmbedUrl(url).match(/youtube(?:-nocookie)?\.com\/embed\/([^/?#&\s]+)/)?.[1];
+  return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : "";
 };
 
 export const isEmbedUrl = (url: string) =>

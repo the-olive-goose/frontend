@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { motion } from "framer-motion";
 import RichText from "@/lib/richtext";
 import { splitPageTitle } from "@/lib/pageTitle";
-import { SkelText } from "@/components/ui/ContentSkeleton";
+import { SkelCopy } from "@/components/ui/ContentSkeleton";
 
 interface Props {
   eyebrow: string;
@@ -67,7 +67,20 @@ const PageHero = ({ eyebrow, title, titleGold, subtitle, ready = true }: Props) 
       style={{ fontSize: "clamp(2.4rem,5vw,4rem)", color: "var(--text-on-dark)", lineHeight: 1.05 }}
     >
       {!ready ? (
-        <SkelText width="min(520px,80vw)" lineHeight={1.05} center />
+        // Sized against the copy that is about to land (hidden, never painted),
+        // so a two- or three-line headline doesn't shove the page down when it
+        // arrives. A one-line placeholder here was worth ~0.05 CLS on /about.
+        // Both halves of the headline go in: reserving only the plain part left
+        // the gold tail's line to appear from nowhere.
+        <SkelCopy lineHeight={1.05}>
+          {parts ? (
+            <>
+              {parts.plain && <RichText text={parts.plain} />}
+              {parts.plain && parts.gold && " "}
+              {parts.gold && <RichText text={parts.gold} />}
+            </>
+          ) : title}
+        </SkelCopy>
       ) : parts ? (
         <>
           {parts.plain && <RichText text={parts.plain} />}
@@ -78,10 +91,15 @@ const PageHero = ({ eyebrow, title, titleGold, subtitle, ready = true }: Props) 
         </>
       ) : title}
     </motion.h1>
+    {/* A page with no subtitle renders no <p> at all, in either state — an empty
+        paragraph still occupies a line box, and dropping that line when the copy
+        landed was a shift of its own. */}
     {!ready ? (
-      <p className="font-sans text-base max-w-xl mx-auto leading-relaxed" style={{ color: "var(--text-muted-on-dark)" }}>
-        <SkelText lines={2} width="min(480px,78vw)" lineHeight={1.6} center />
-      </p>
+      subtitle ? (
+        <p className="font-sans text-base max-w-xl mx-auto leading-relaxed" style={{ color: "var(--text-muted-on-dark)" }}>
+          <SkelCopy lineHeight={1.625}><RichText text={subtitle} /></SkelCopy>
+        </p>
+      ) : null
     ) : subtitle ? (
       <motion.p
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.18 }}

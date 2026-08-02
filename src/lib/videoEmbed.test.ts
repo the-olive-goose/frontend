@@ -5,7 +5,7 @@
 // (https://youtube.com/shorts/ID?si=…) sat live on the home page showing
 // nothing. These cases pin the shapes the field claims to accept.
 import { describe, it, expect } from "vitest";
-import { toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled, diaryMediaKind, DEFAULT_CONTENT } from "./defaults";
+import { toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled, diaryMediaKind, youtubeThumbnailUrl, DEFAULT_CONTENT } from "./defaults";
 
 /** What the rail does with a URL: iframe, <video>, or the empty placeholder. */
 const renderAs = (raw: string) => {
@@ -144,5 +144,35 @@ describe("toEmbedUrl — what it can't rescue", () => {
     ["a bare page URL", "https://example.com/our-video"],
   ])("falls back to the placeholder for %s", (_name, raw) => {
     expect(renderAs(raw)).toBe("placeholder");
+  });
+});
+
+/*
+ * The rail only mounts a player for the reels in view; the rest show a still.
+ * Cloudinary reels derive one from the video itself, but a YouTube link cannot —
+ * and a card with neither a player nor a still is the blank frame this whole
+ * suite exists to catch, just moved one step down the road.
+ */
+describe("youtubeThumbnailUrl", () => {
+  const THUMB = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg";
+
+  it.each([
+    ["a Short", "https://youtube.com/shorts/dQw4w9WgXcQ?si=mQNWnZJ4Qn48qtax"],
+    ["a youtu.be share link", "https://youtu.be/dQw4w9WgXcQ?si=JtZcqcmQ5AO_F7hs"],
+    ["a watch link", "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s"],
+    ["an already-embedded URL", "https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0"],
+    ["a nocookie embed", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
+  ])("derives the still for %s", (_name, raw) => {
+    expect(youtubeThumbnailUrl(raw)).toBe(THUMB);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["a Cloudinary video", "https://res.cloudinary.com/demo/video/upload/v1/dog.mp4"],
+    ["a Vimeo link", "https://vimeo.com/76979871"],
+    ["an Instagram reel", "https://www.instagram.com/reel/DaAwNjpoSuB/"],
+    ["a direct file", "https://cdn.example.com/reels/pour.mp4"],
+  ])("returns nothing for %s — the caller falls back", (_name, raw) => {
+    expect(youtubeThumbnailUrl(raw)).toBe("");
   });
 });

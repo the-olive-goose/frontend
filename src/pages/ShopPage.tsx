@@ -13,7 +13,7 @@ import { productPath } from "@/lib/products";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import ProductCard from "@/components/ui/ProductCard";
-import { SkelProductCard } from "@/components/ui/ContentSkeleton";
+import { SkelBlock, SkelProductCard } from "@/components/ui/ContentSkeleton";
 import { useContent } from "@/hooks/useContent";
 import PageHero from "@/components/PageHero";
 import FooterSection from "@/components/sections/FooterSection";
@@ -158,10 +158,21 @@ const ShopPage = () => {
         ready={searchTerm ? true : isAllView ? shopPage.ready : !loading}
       />
 
-      {/* ── Category filter pills ── */}
-      {categories.length > 0 && (
+      {/* ── Category filter pills ──
+          The strip keeps its row while the categories are still in flight: it is
+          ~71px tall, and letting it appear only once they land shoved the whole
+          product grid down that far mid-load — the single biggest layout shift
+          on this page. Skeleton pills hold the row instead. */}
+      {(loading || categories.length > 0) && (
         <div style={{ background: "var(--color-sage-mid)", borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
           <div className="max-w-7xl mx-auto px-6 sm:px-12 py-4 flex items-center gap-3 overflow-x-auto no-scrollbar">
+            {/* Pill height = text-sm line box (20px) + py-2 (16px) + 1.5px border
+                either side, so the real pills drop straight into these slots. */}
+            {loading && [88, 116, 104, 96].map((w, i) => (
+              <SkelBlock key={i} height="39px" width={`${w}px`} radius="9999px"
+                style={{ flex: "0 0 auto", color: "var(--color-forest-dark)" }} />
+            ))}
+
             {/* An aggregate view is only useful when there is more than one category. */}
             {categories.length > 1 && (
               <button

@@ -565,16 +565,39 @@ const ProductDetailPage = () => {
 
   // Placeholders in the page's own shape rather than a spinner, so the candle
   // drops into a layout that is already the right size.
+  //
+  // Every branch below wraps its content in the exact same shell — an outer
+  // `min-h-screen` and an inner `pt-[var(--nav-h)]`. React reuses DOM nodes
+  // across the loading → loaded swap, so when the nav offset lived on the outer
+  // div here and on the inner div in the loaded tree, the reused node lost a
+  // whole navbar's worth of padding and the page jumped ~156px up the moment the
+  // product landed: 0.54 of layout shift, the worst on the site. Keep the two
+  // wrappers identical in every branch.
   if (loading) {
     return (
-      <div className="min-h-screen pt-[var(--nav-h,112px)]" style={{ background: "var(--bg-page)", color: "var(--text-primary)" }}>
-        <div className="max-w-6xl mx-auto px-6 py-10 grid gap-10 md:grid-cols-2">
-          <SkelBlock height="clamp(320px,52vw,560px)" />
-          <div className="space-y-5">
-            <SkelText lines={2} width="80%" style={{ fontSize: "var(--text-display-sm)" }} />
-            <SkelText width="30%" style={{ fontSize: "1.4rem" }} />
-            <SkelText lines={4} lineHeight={1.6} />
-            <SkelBlock height="48px" width="220px" radius="var(--radius-pill)" />
+      <div className="min-h-screen" style={{ background: "var(--bg-page)", color: "var(--text-primary)" }}>
+        <div className="pt-[var(--nav-h,112px)]">
+          {/* Breadcrumb row — reserved so the gallery doesn't slide up under it */}
+          <div className="max-w-6xl mx-auto px-6 pt-6">
+            <SkelText width="180px" style={{ fontSize: "0.75rem" }} />
+          </div>
+          <div className="max-w-6xl mx-auto px-6 py-8 lg:py-12 grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-14">
+            {/* Same 1/1 shot and 88px thumbnail row the Gallery renders, so the
+                buy box below starts at the same y in both states. */}
+            <div className="flex flex-col gap-4">
+              <SkelBlock style={{ aspectRatio: "1/1", width: "100%", height: "auto" }} />
+              <div className="flex gap-3 flex-wrap">
+                {[0, 1].map(i => (
+                  <SkelBlock key={i} height="88px" width="88px" radius="var(--radius-input)" />
+                ))}
+              </div>
+            </div>
+            <div className="space-y-5">
+              <SkelText lines={2} width="80%" style={{ fontSize: "var(--text-display-md)" }} />
+              <SkelText width="30%" style={{ fontSize: "1.6rem" }} />
+              <SkelText lines={4} lineHeight={1.6} />
+              <SkelBlock height="48px" width="220px" radius="var(--radius-pill)" />
+            </div>
           </div>
         </div>
       </div>
@@ -583,22 +606,24 @@ const ProductDetailPage = () => {
 
   if (!product) {
     return (
-      <div className="min-h-screen pt-[var(--nav-h,112px)]" style={{ background: "var(--bg-page)" }}>
-        <div className="max-w-xl mx-auto px-6 py-24 text-center space-y-4">
-          <p className="text-4xl">🕯️</p>
-          <h1 className="font-display" style={{ fontSize: "var(--text-display-sm)", color: "var(--text-primary)" }}>
-            We couldn't find that candle
-          </h1>
-          <p className="font-sans text-sm" style={{ color: "var(--text-muted)" }}>
-            It may have sold out or been renamed.
-          </p>
-          <Link
-            to="/shop"
-            className="inline-block mt-4 font-display text-sm font-semibold px-6 py-2.5"
-            style={{ background: "var(--btn-dark-bg)", color: "var(--btn-dark-text)", borderRadius: "var(--radius-pill)" }}
-          >
-            Browse all candles →
-          </Link>
+      <div className="min-h-screen" style={{ background: "var(--bg-page)" }}>
+        <div className="pt-[var(--nav-h,112px)]">
+          <div className="max-w-xl mx-auto px-6 py-24 text-center space-y-4">
+            <p className="text-4xl">🕯️</p>
+            <h1 className="font-display" style={{ fontSize: "var(--text-display-sm)", color: "var(--text-primary)" }}>
+              We couldn't find that candle
+            </h1>
+            <p className="font-sans text-sm" style={{ color: "var(--text-muted)" }}>
+              It may have sold out or been renamed.
+            </p>
+            <Link
+              to="/shop"
+              className="inline-block mt-4 font-display text-sm font-semibold px-6 py-2.5"
+              style={{ background: "var(--btn-dark-bg)", color: "var(--btn-dark-text)", borderRadius: "var(--radius-pill)" }}
+            >
+              Browse all candles →
+            </Link>
+          </div>
         </div>
         <FooterSection />
       </div>

@@ -86,8 +86,14 @@ const makeUploadStorage = (prefix) => multer.diskStorage({
 });
 const makeUploadFilter = (mimePrefix, allowedExts, label) => (_req, file, cb) => {
   const ext = path.extname(file.originalname || '').toLowerCase();
-  if (file.mimetype.startsWith(mimePrefix) && allowedExts.has(ext)) cb(null, true);
-  else cb(new Error(`Only ${label} files are allowed (${[...allowedExts].join(', ')})`));
+  if (file.mimetype.startsWith(mimePrefix) && allowedExts.has(ext)) return cb(null, true);
+  // /api/upload/image hands multer's error straight to the global handler, which
+  // defaults to 500 — so a rejected .svg read as "the uploader is broken" rather
+  // than "that file type isn't allowed". The refusal is the caller's fault, and
+  // the status has to say so or admin shows the wrong message.
+  const err = new Error(`Only ${label} files are allowed (${[...allowedExts].join(', ')})`);
+  err.status = 400;
+  cb(err);
 };
 
 const upload = multer({
@@ -297,7 +303,35 @@ const BCRYPT_ROUNDS = 12;
 // (Secure is mandatory for None, and Railway serves HTTPS). Dev stays Lax because
 // SameSite=None requires Secure, which a browser won't honour over http://localhost.
 const SESSION_COOKIE = 'og_session';
-const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — sliding, see requireUserAuth
+
+// ── Session lifetimes ─────────────────────────────────────────────────────────
+// Two clocks, as every serious storefront runs them:
+//
+//   idle    — how long a session survives with no activity. Slides forward while
+//             the shopper is browsing (see touchSession), so an active basket is
+//             never dropped mid-checkout.
+//   absolute— a hard ceiling from sign-in that activity CANNOT extend. Without it
+//             a single sign-in on a shared or stolen device is valid forever,
+//             because a sliding window renews itself indefinitely.
+//
+// "Remember me" only changes the idle window (and whether the cookie survives a
+// browser restart) — it never lifts the absolute cap.
+const SESSION_IDLE_REMEMBER_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_IDLE_SHORT_MS    = 12 * 60 * 60 * 1000;      // 12 hours ("remember me" off)
+const SESSION_ABSOLUTE_MS      = 180 * 24 * 60 * 60 * 1000; // 180 days, re-auth after
+
+// last_seen_at/idle_expires_at are only written when the row is this stale, so a
+// shopper clicking through the site doesn't cause a DB write per request. The
+// cost is that the effective idle window is up to this much shorter than the
+// nominal one — immaterial against a 12h/30d window.
+const SESSION_TOUCH_MS = 5 * 60 * 1000;
+
+// Re-issue the cookie once less than this share of the idle window is left. The
+// old code sent Set-Cookie on EVERY authenticated response; renewing lazily keeps
+// the sliding behaviour without an unnecessary header on every API call.
+const SESSION_RENEW_AT = 0.5;
+
+const sessionIdleMs = (remember) => (remember ? SESSION_IDLE_REMEMBER_MS : SESSION_IDLE_SHORT_MS);
 
 // Decide Secure/SameSite from the actual connection, not just NODE_ENV: Railway
 // terminates TLS at its proxy, and with `trust proxy` set req.secure reflects
@@ -318,13 +352,119 @@ const sessionCookieOptions = (res, maxAge) => {
   };
 };
 
-const setSessionCookie = (res, userPayload, { remember = true } = {}) => {
-  const token = jwt.sign({ ...userPayload, remember }, JWT_SECRET, { expiresIn: '30d' });
-  res.cookie(SESSION_COOKIE, token, sessionCookieOptions(res, remember ? SESSION_MAX_AGE_MS : undefined));
+// ── Server-side session records ───────────────────────────────────────────────
+// The cookie carries a signed JWT, but the JWT is only half the credential: it
+// names a row in user_sessions that has to still be there, unrevoked and unexpired.
+// That is what a bare JWT can't give a shop:
+//   • sign out actually ends the session — clearing a cookie does nothing to a
+//     copy of it that was already lifted off the device;
+//   • changing your password can boot every other device, immediately;
+//   • the customer can see where they're signed in and cut a device off.
+// One indexed primary-key lookup per authenticated request buys all of it.
+
+// A phone/tablet/desktop label from the User-Agent — enough for a shopper to
+// recognise their own device in the list, and deliberately no more (no
+// fingerprinting, no third-party UA database).
+const describeDevice = (ua = '') => {
+  const s = String(ua);
+  if (!s.trim()) return 'Unknown device';
+  const browser =
+    /\bEdgA?\//.test(s)                        ? 'Edge'
+    : /\bOPR\/|\bOpera/.test(s)                ? 'Opera'
+    : /\bFirefox\/|\bFxiOS\//.test(s)          ? 'Firefox'
+    : /\bSamsungBrowser\//.test(s)             ? 'Samsung Internet'
+    : /\bCriOS\//.test(s)                      ? 'Chrome'
+    // Chrome's UA also says "Safari", so Safari is what's left after Chrome.
+    : /\bChrome\/|\bChromium\//.test(s)        ? 'Chrome'
+    : /\bSafari\//.test(s)                     ? 'Safari'
+    : 'Browser';
+  const os =
+    /\biPhone\b/.test(s)                       ? 'iPhone'
+    : /\biPad\b/.test(s)                       ? 'iPad'
+    : /\bAndroid\b/.test(s)                    ? 'Android'
+    : /\bWindows NT\b/.test(s)                 ? 'Windows'
+    : /\bMac OS X\b|\bMacintosh\b/.test(s)     ? 'Mac'
+    : /\bCrOS\b/.test(s)                       ? 'ChromeOS'
+    : /\bLinux\b/.test(s)                      ? 'Linux'
+    : '';
+  return os ? `${browser} on ${os}` : browser;
+};
+
+// Behind Railway's proxy `trust proxy` makes req.ip the real client address.
+// Stored only so the shopper can spot a session they don't recognise; truncated
+// to keep an IPv6 address from bloating the row.
+const clipText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+const requestIp = (req) => clipText(req.ip || req.socket?.remoteAddress || '', 45);
+const requestUserAgent = (req) => clipText(req.get('user-agent') || '', 300);
+
+// The JWT never outlives the session row's own limits, so a leaked token stops
+// verifying on its own even if the DB is never consulted again.
+const signSessionToken = (payload, ttlMs) =>
+  jwt.sign(payload, JWT_SECRET, { expiresIn: Math.max(60, Math.floor(ttlMs / 1000)) });
+
+// Writes the cookie for an existing session row. maxAge is omitted when
+// "remember me" is off, making it a browser-session cookie that dies with the tab.
+const writeSessionCookie = (res, session, payload) => {
+  const idleMs = sessionIdleMs(session.remember);
+  // Never hand out a token that outlives the absolute cap.
+  const ttlMs = Math.min(idleMs, new Date(session.absolute_expires_at).getTime() - Date.now());
+  if (ttlMs <= 0) return false;
+  const token = signSessionToken(
+    { userId: session.user_id, email: payload.email, phone: payload.phone, sid: session.id, remember: session.remember },
+    ttlMs
+  );
+  res.cookie(SESSION_COOKIE, token, sessionCookieOptions(res, session.remember ? idleMs : undefined));
+  return true;
+};
+
+// Start a brand-new session. Always a new row (never a reused id), so signing in
+// rotates the session identifier and a fixation attempt can't survive the login.
+const createUserSession = async (req, res, user, { remember = true } = {}) => {
+  const idleMs = sessionIdleMs(remember);
+  const { rows } = await pool.query(
+    `INSERT INTO user_sessions (user_id, remember, user_agent, ip, idle_expires_at, absolute_expires_at)
+     VALUES ($1, $2, $3, $4, NOW() + ($5 || ' milliseconds')::interval, NOW() + ($6 || ' milliseconds')::interval)
+     RETURNING *`,
+    [user.id ?? user.userId, !!remember, requestUserAgent(req), requestIp(req), String(idleMs), String(SESSION_ABSOLUTE_MS)]
+  );
+  const session = rows[0];
+  writeSessionCookie(res, session, { email: user.email, phone: user.phone });
+  return session;
 };
 
 const clearSessionCookie = (res) => {
   res.clearCookie(SESSION_COOKIE, sessionCookieOptions(res));
+};
+
+const revokeSession = (sessionId, reason) =>
+  pool.query(
+    `UPDATE user_sessions SET revoked_at = NOW(), revoked_reason = $2
+     WHERE id = $1 AND revoked_at IS NULL`,
+    [sessionId, reason]
+  );
+
+// Used by "sign out everywhere" and, more importantly, by password change/reset:
+// a shopper who suspects someone else is in their account changes the password,
+// and that has to end the intruder's session on the spot.
+const revokeUserSessions = (userId, { exceptId = null, reason } = {}) =>
+  pool.query(
+    `UPDATE user_sessions SET revoked_at = NOW(), revoked_reason = $3
+     WHERE user_id = $1 AND revoked_at IS NULL AND ($2::uuid IS NULL OR id <> $2::uuid)`,
+    [userId, exceptId, reason]
+  );
+
+// Rows are kept a little past death so a support question ("when did that
+// device last sign in?") is still answerable, then dropped.
+const pruneUserSessions = async () => {
+  try {
+    await pool.query(
+      `DELETE FROM user_sessions
+       WHERE (revoked_at IS NOT NULL AND revoked_at < NOW() - INTERVAL '30 days')
+          OR absolute_expires_at < NOW() - INTERVAL '30 days'`
+    );
+  } catch (err) {
+    console.error('[session prune]', err);
+  }
 };
 
 // ── OAuth state (CSRF protection for the Google/Facebook flows) ───────────────
@@ -446,7 +586,11 @@ const discountValidateLimiter = rateLimit({
 // far below this — while a scripted flood from one IP is still capped.
 const analyticsLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 150,
+  // Overridable like every other limiter here: the e2e suites drive hundreds of
+  // page loads from one IP in a few minutes, and each one beacons. Left at the
+  // default they exhaust this budget partway through the run and the analytics
+  // ingestion tests fail with a 429 that has nothing to do with the code.
+  max: Number(process.env.ANALYTICS_RATE_LIMIT_MAX) || 150,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many events.' },
@@ -636,6 +780,18 @@ const hashIp = (ip) =>
 // keep their message — those are written to be user-facing.
 const sendServerError = (res, err) => {
   if (err?.status) return res.status(err.status).json({ error: err.message });
+  // 22P02 is Postgres refusing to read a value as the column's type — reached by
+  // putting anything that isn't a UUID in an `:id` route (/api/orders/not-a-uuid,
+  // a truncated link out of an email, a scanner). Every id here is server-issued,
+  // so a value the type system rejects cannot match a row: this is "not found",
+  // not "the server broke". Handled once, centrally, because the alternative is
+  // a guard on every one of the ~20 `:id` routes and remembering it on the next.
+  // Still logged: 22P02 can also mean a query of ours built a badly-typed value,
+  // and answering 404 without a line in the log would hide that completely.
+  if (err?.code === '22P02') {
+    console.warn('[22P02] treated as not-found:', err.message);
+    return res.status(404).json({ error: 'Not found' });
+  }
   console.error(err);
   res.status(500).json({ error: IS_PROD ? 'Something went wrong. Please try again.' : err.message });
 };
@@ -1328,21 +1484,85 @@ const requireAuth = async (req, res, next) => {
 
 // ── User auth middleware ───────────────────────────────────────────────────────
 // Reads the httpOnly session cookie (not an Authorization header — the customer-
-// facing session token is never exposed to page JS). On every successful check it
-// reissues the cookie with a fresh expiry ("sliding session"), so an active shopper
-// is never abruptly logged out mid-visit; only real inactivity lets it lapse.
-const requireUserAuth = (req, res, next) => {
+// facing session token is never exposed to page JS), then resolves it against the
+// user_sessions row it names. A valid signature is not sufficient: the row must
+// exist, be unrevoked, and be inside BOTH the idle and absolute windows. That is
+// what makes "sign out", "sign out everywhere" and "password change ends other
+// sessions" real rather than cosmetic.
+//
+// Activity slides the idle window forward (throttled — see SESSION_TOUCH_MS) so an
+// active shopper is never dropped mid-checkout, and the cookie is re-issued only
+// once the window is half spent instead of on every single response.
+const denySession = (res, message = 'Invalid or expired session') => {
+  clearSessionCookie(res);
+  return res.status(401).json({ error: message });
+};
+
+const requireUserAuth = async (req, res, next) => {
   const token = req.cookies?.[SESSION_COOKIE];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
+  let payload;
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    if (!payload.userId) return res.status(401).json({ error: 'Not a user token' });
-    req.user = payload;
-    setSessionCookie(res, { userId: payload.userId, email: payload.email, phone: payload.phone }, { remember: payload.remember !== false });
-    next();
+    payload = jwt.verify(token, JWT_SECRET);
   } catch {
-    clearSessionCookie(res);
-    res.status(401).json({ error: 'Invalid or expired session' });
+    return denySession(res);
+  }
+  if (!payload.userId) return denySession(res, 'Not a user token');
+
+  try {
+    // Cookies issued before the session store existed carry no sid. Rather than
+    // signing every logged-in shopper out on deploy day, the still-valid token is
+    // upgraded once into a real session row.
+    if (!payload.sid) {
+      const session = await createUserSession(req, res,
+        { id: payload.userId, email: payload.email, phone: payload.phone },
+        { remember: payload.remember !== false });
+      req.user = { ...payload, sid: session.id };
+      req.userSession = session;
+      return next();
+    }
+
+    const { rows } = await pool.query(
+      `SELECT * FROM user_sessions WHERE id = $1 AND user_id = $2`,
+      [payload.sid, payload.userId]
+    );
+    const session = rows[0];
+    if (!session) return denySession(res, 'Session ended');
+    if (session.revoked_at) return denySession(res, 'This session was signed out');
+    const now = Date.now();
+    if (now > new Date(session.absolute_expires_at).getTime())
+      return denySession(res, 'Please sign in again to continue');
+    if (now > new Date(session.idle_expires_at).getTime())
+      return denySession(res, 'Signed out after a long time away');
+
+    // Touch: slide the idle window and record the device we last saw. Throttled,
+    // so a burst of API calls costs one UPDATE, not one per request.
+    const lastSeen = new Date(session.last_seen_at).getTime();
+    if (now - lastSeen > SESSION_TOUCH_MS) {
+      const idleMs = sessionIdleMs(session.remember);
+      await pool.query(
+        `UPDATE user_sessions
+            SET last_seen_at = NOW(),
+                idle_expires_at = LEAST(NOW() + ($2 || ' milliseconds')::interval, absolute_expires_at),
+                user_agent = COALESCE(NULLIF($3, ''), user_agent),
+                ip = COALESCE(NULLIF($4, ''), ip)
+          WHERE id = $1`,
+        [session.id, String(idleMs), requestUserAgent(req), requestIp(req)]
+      );
+      session.idle_expires_at = new Date(Math.min(now + idleMs, new Date(session.absolute_expires_at).getTime()));
+    }
+
+    // Lazy cookie renewal — only once the idle window is more than half spent.
+    const remaining = new Date(session.idle_expires_at).getTime() - now;
+    if (remaining < sessionIdleMs(session.remember) * SESSION_RENEW_AT)
+      writeSessionCookie(res, session, { email: payload.email, phone: payload.phone });
+
+    req.user = payload;
+    req.userSession = session;
+    next();
+  } catch (err) {
+    sendServerError(res, err);
   }
 };
 
@@ -1666,7 +1886,7 @@ app.post('/api/user/register/verify', authLimiter, async (req, res) => {
     await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = 'signup'`, [normEmail]);
 
     const user = userRows[0];
-    setSessionCookie(res, { userId: user.id, email: user.email });
+    await createUserSession(req, res, user);
     res.status(201).json({ user });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Email already in use' });
@@ -1691,7 +1911,7 @@ app.post('/api/user/login', authLimiter, async (req, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-    setSessionCookie(res, { userId: user.id, email: user.email }, { remember: !!remember });
+    await createUserSession(req, res, user, { remember: !!remember });
     res.json({ user: { id: user.id, email: user.email, full_name: user.full_name, avatar_url: user.avatar_url, provider: user.provider } });
   } catch (err) {
     sendServerError(res, err);
@@ -1699,9 +1919,90 @@ app.post('/api/user/login', authLimiter, async (req, res) => {
 });
 
 // ── POST /api/user/logout ──────────────────────────────────────────────────────
-app.post('/api/user/logout', (_req, res) => {
+// Revokes the session server-side as well as clearing the cookie, so a copy of
+// the cookie taken off the device is dead the moment the customer signs out.
+// Deliberately not behind requireUserAuth: signing out must succeed even when the
+// session is already expired or unreadable — it should never fail with a 401.
+app.post('/api/user/logout', async (req, res) => {
+  const token = req.cookies?.[SESSION_COOKIE];
   clearSessionCookie(res);
+  if (token) {
+    try {
+      const payload = jwt.verify(token, JWT_SECRET);
+      if (payload.sid) await revokeSession(payload.sid, 'signed_out');
+    } catch {
+      // Unreadable/expired token — nothing left to revoke; the cookie is gone.
+    }
+  }
   res.json({ success: true });
+});
+
+// ── Signed-in devices ──────────────────────────────────────────────────────────
+// The "where you're signed in" list every serious account area has. Only ever
+// exposes the caller's own sessions, and never the session token — the id here is
+// the row id, which is useless as a credential without the signed cookie.
+app.get('/api/user/sessions', requireUserAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, user_agent, ip, remember, created_at, last_seen_at, idle_expires_at, absolute_expires_at
+         FROM user_sessions
+        WHERE user_id = $1 AND revoked_at IS NULL
+          AND idle_expires_at > NOW() AND absolute_expires_at > NOW()
+        ORDER BY last_seen_at DESC`,
+      [req.user.userId]
+    );
+    res.json(rows.map(r => ({
+      id: r.id,
+      current: r.id === req.user.sid,
+      device: describeDevice(r.user_agent),
+      ip: r.ip || '',
+      remember: r.remember,
+      created_at: r.created_at,
+      last_seen_at: r.last_seen_at,
+      // What the shopper cares about is when this device gets signed out, which is
+      // whichever limit bites first.
+      expires_at: new Date(Math.min(
+        new Date(r.idle_expires_at).getTime(),
+        new Date(r.absolute_expires_at).getTime()
+      )),
+    })));
+  } catch (err) {
+    sendServerError(res, err);
+  }
+});
+
+// Sign one device out. Scoped by user_id so a session id guessed or leaked from
+// another account can't be used to log a stranger out.
+app.delete('/api/user/sessions/:id', requireUserAuth, async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE user_sessions SET revoked_at = NOW(), revoked_reason = 'revoked_by_user'
+        WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+      [req.params.id, req.user.userId]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'That session is already signed out.' });
+    // Revoking the device you're holding is just signing out.
+    if (req.params.id === req.user.sid) clearSessionCookie(res);
+    res.json({ success: true, current: req.params.id === req.user.sid });
+  } catch (err) {
+    // An id that isn't a UUID reaches Postgres as a cast error, not a server fault.
+    if (err?.code === '22P02') return res.status(400).json({ error: 'Unknown session.' });
+    sendServerError(res, err);
+  }
+});
+
+// "Sign out everywhere else" — the one-click answer to "I left myself logged in
+// on a shared computer", without logging the customer out of the device they're
+// asking from.
+app.post('/api/user/sessions/revoke-others', requireUserAuth, async (req, res) => {
+  try {
+    const { rowCount } = await revokeUserSessions(req.user.userId, {
+      exceptId: req.user.sid, reason: 'revoked_by_user',
+    });
+    res.json({ success: true, revoked: rowCount });
+  } catch (err) {
+    sendServerError(res, err);
+  }
 });
 
 // ── GET /api/user/me ───────────────────────────────────────────────────────────
@@ -1962,7 +2263,14 @@ app.put('/api/user/me/password', requireUserAuth, authLimiter, async (req, res) 
 
     const newHash = await bcrypt.hash(new_password, BCRYPT_ROUNDS);
     await pool.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [newHash, req.user.userId]);
-    res.json({ success: true });
+
+    // Changing your password is how a customer takes their account back. That only
+    // means anything if it ends every OTHER signed-in device immediately — this one
+    // keeps its session so they aren't bounced out of the form they just submitted.
+    const { rowCount } = await revokeUserSessions(req.user.userId, {
+      exceptId: req.user.sid, reason: 'password_change',
+    });
+    res.json({ success: true, signed_out_sessions: rowCount });
   } catch (err) {
     sendServerError(res, err);
   }
@@ -2051,7 +2359,11 @@ app.post('/api/user/password/reset', authLimiter, async (req, res) => {
     await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = 'reset'`, [normEmail]);
 
     const user = userRows[0];
-    setSessionCookie(res, { userId: user.id, email: user.email });
+    // A reset is the "someone else is in my account" lever, so it ends EVERY
+    // existing session — including any the intruder is holding — before the fresh
+    // one below is issued.
+    await revokeUserSessions(user.id, { reason: 'password_reset' });
+    await createUserSession(req, res, user);
     res.json({ user });
   } catch (err) {
     sendServerError(res, err);
@@ -2181,7 +2493,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
     );
 
     const user = rows[0];
-    setSessionCookie(res, { userId: user.id, email: user.email });
+    await createUserSession(req, res, user);
     res.redirect(`${FRONTEND_URL}/auth/callback`);
   } catch (err) {
     console.error('[google callback]', err);
@@ -2255,7 +2567,7 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
     );
 
     const user = rows[0];
-    setSessionCookie(res, { userId: user.id, email: user.email });
+    await createUserSession(req, res, user);
     res.redirect(`${FRONTEND_URL}/auth/callback`);
   } catch (err) {
     console.error('[facebook callback]', err);
@@ -2344,7 +2656,7 @@ app.post('/api/auth/phone/verify-otp', authLimiter, async (req, res) => {
       [phone]
     );
     const user = userRows[0];
-    setSessionCookie(res, { userId: user.id, phone: user.phone });
+    await createUserSession(req, res, user);
     res.json({ user });
   } catch (err) {
     sendServerError(res, err);
@@ -3362,6 +3674,44 @@ const userIdFromSessionCookie = (req) => {
 
 const OBVIOUS_BOT_RE = /bot|crawler|spider|scraper|headless|lighthouse|pingdom/i;
 
+// Device class from the User-Agent the browser sent with this request, with the
+// client's capability hint as a tie-breaker.
+//
+// The browser cannot be wrong about what it is running on, whereas the previous
+// client-side rule — viewport width, tablet = 768–1023px — was wrong constantly:
+// it labelled every desktop browser in a narrow window a "tablet". Order matters
+// below, because Android tablet UAs also contain "Android", and only phones add
+// "Mobile".
+const classifyDevice = (ua, hint) => {
+  const s = String(ua || '');
+  if (/\biPad\b/i.test(s)) return 'tablet';
+  if (/Android/i.test(s) && !/Mobile/i.test(s)) return 'tablet';
+  if (/\b(Tablet|PlayBook|Silk|Kindle)\b/i.test(s)) return 'tablet';
+  if (/Mobi|iPhone|iPod|Android|Windows Phone|IEMobile|BlackBerry|Opera Mini/i.test(s)) return 'mobile';
+  // The one thing a UA cannot express: iPadOS 13+ requests desktop sites by
+  // default and identifies as macOS. The client's touch hint is the only tell.
+  // Consulted ONLY on a Mac UA — anywhere else the browser has already said
+  // what it is, and a hint must never be able to talk it out of that.
+  if (/Macintosh/i.test(s)) return hint === 'tablet' ? 'tablet' : 'desktop';
+  if (/Windows NT|X11|CrOS/i.test(s)) return 'desktop';
+  return ['mobile', 'tablet', 'desktop'].includes(hint) ? hint : 'unknown';
+};
+
+// The timezone every analytics day boundary is resolved in. created_at is
+// TIMESTAMPTZ, so without this a "day" would silently mean a UTC day — an hour
+// off from the trading day for half the year, sliding late-evening orders into
+// the wrong bucket. Interpolated into SQL, so it's pinned to a validated
+// IANA-shaped constant and never comes from a request.
+const STORE_TZ = /^[A-Za-z]+\/[A-Za-z_+-]+$/.test(process.env.ANALYTICS_TZ || '')
+  ? process.env.ANALYTICS_TZ
+  : 'Europe/Dublin';
+
+// Purchase events written by finalizeCheckoutSession when the client never sent
+// its analytics ids land on this sentinel id. It is not a real browsing session:
+// every such order would otherwise collapse into ONE distinct session_id and add
+// a phantom visitor to traffic, so it's excluded from every session/visitor count.
+const NO_SESSION = 'server';
+
 // ── POST /api/analytics/events — batched ingestion from the storefront ────────
 // Accepts application/json (normal batched fetch) and text/plain (sendBeacon's
 // CORS-safelisted content type, used for the final flush on page hide).
@@ -3377,6 +3727,10 @@ app.post('/api/analytics/events', analyticsLimiter, express.text({ type: 'text/p
   if (OBVIOUS_BOT_RE.test(req.headers['user-agent'] || '')) return res.status(204).end();
 
   const userId = userIdFromSessionCookie(req);
+  // Classified once per batch from this request's own User-Agent — never from
+  // the browser's viewport, which is what made narrow desktop windows "tablets".
+  const device = classifyDevice(req.headers['user-agent'], clip(body?.events?.[0]?.device, 20));
+  const scope = body?.visitor_scope === 'persistent' ? 'persistent' : 'session';
   const values = [];
   const params = [];
   for (const e of events) {
@@ -3388,15 +3742,15 @@ app.post('/api/analytics/events', analyticsLimiter, express.text({ type: 'text/p
       visitorId, sessionId, userId, e.type,
       clip(e.path, 200), clip(e.referrer, 500),
       clip(e.utm_source, 100), clip(e.utm_medium, 100), clip(e.utm_campaign, 100),
-      clip(e.device, 20), props,
+      device, props, scope,
     );
-    values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11})`);
+    values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12})`);
   }
   if (!values.length) return res.status(204).end();
 
   try {
     await pool.query(
-      `INSERT INTO analytics_events (visitor_id, session_id, user_id, event_type, path, referrer, utm_source, utm_medium, utm_campaign, device, props)
+      `INSERT INTO analytics_events (visitor_id, session_id, user_id, event_type, path, referrer, utm_source, utm_medium, utm_campaign, device, props, visitor_scope)
        VALUES ${values.join(',')}`,
       params
     );
@@ -3414,8 +3768,11 @@ app.post('/api/analytics/events', analyticsLimiter, express.text({ type: 'text/p
 // before it so the dashboard can show direction, not just magnitude.
 app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  // isoDay is pure calendar arithmetic on UTC midnights (no DST hazard when
+  // adding whole days); "today" is resolved in the store's timezone so the
+  // dashboard's day boundaries match the ones the shop actually trades in.
   const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
-  const today = isoDay(Date.now());
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: STORE_TZ });
 
   let start = DATE_RE.test(String(req.query.start)) ? req.query.start : null;
   let end   = DATE_RE.test(String(req.query.end))   ? req.query.end   : null;
@@ -3432,34 +3789,91 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   const prevStart = isoDay(Date.parse(start) - lenDays * 86400000); // $3 — previous window start
   const w = [start, endExcl, prevStart];
 
-  // Orders that count toward revenue: paid and not refunded.
+  // Every window bound is resolved in the store's timezone (see STORE_TZ).
+  // $1 = window start, $2 = window end (exclusive), $3 = previous window start.
+  const T1 = `($1::date AT TIME ZONE '${STORE_TZ}')`;
+  const T2 = `($2::date AT TIME ZONE '${STORE_TZ}')`;
+  const T3 = `($3::date AT TIME ZONE '${STORE_TZ}')`;
+  const DAY = (col) => `(${col} AT TIME ZONE '${STORE_TZ}')::date`;
+
+  // Orders that count toward revenue: paid and not refunded in full.
   const PAID = `payment_status = 'paid' AND refund_status <> 'refunded'`;
 
-  // Session source, derivable per event row: UTM params are stamped on every
-  // event of a session and document.referrer survives SPA navigation, so this
-  // expression is stable across a session without a per-session lookup.
-  const SRC_EXPR = `COALESCE(NULLIF(utm_source, ''), NULLIF(regexp_replace(referrer, '^https?://([^/]+).*$', '\\1'), ''), 'direct')`;
+  // Money handed back through an approved return, which `refund_status` does NOT
+  // record: applyReturnStatusChange refunds a single line (its price × quantity)
+  // and updates the *return*, leaving the order still "paid, not refunded". So a
+  // part-refunded order was counting at its full value in Revenue, AOV, lifetime
+  // value and Top products. This deducts exactly what that code refunds.
+  // `o` must be the alias of the orders row in scope.
+  const LINE_VALUE = (item) =>
+    `COALESCE(NULLIF(regexp_replace(${item}->'product_data'->>'price', '[^0-9.]', '', 'g'), ''), '0')::numeric
+     * COALESCE((${item}->>'quantity')::int, 0)`;
+  const REFUNDED_VALUE = `COALESCE((
+    SELECT SUM(${LINE_VALUE('it')})
+    FROM returns r JOIN LATERAL jsonb_array_elements(o.items) AS it ON it->>'product_id' = r.product_id
+    WHERE r.order_id = o.id AND r.status = 'refunded'
+  ), 0)`;
+  // Never below zero: a return refunds the pre-discount line value, which on a
+  // heavily discounted order can exceed the order's share of what was charged.
+  const NET_TOTAL = `GREATEST(o.total - ${REFUNDED_VALUE}, 0)`;
+  // True when the whole order has been handed back line by line — it should drop
+  // out of the order *count*, not just contribute zero revenue.
+  const FULLY_RETURNED = `${REFUNDED_VALUE} >= o.total`;
+
+  // Session source from a single event row. Host is normalised (scheme, www.
+  // and any port stripped) so google.com and www.google.com don't split into
+  // two sources. Only ever evaluated on a session's *landing* row — see
+  // SESSION_DIMS for why it must not be applied row-by-row.
+  const SRC_EXPR = `COALESCE(NULLIF(utm_source, ''), NULLIF(regexp_replace(referrer, '^https?://(?:www\\.)?([^/:]+).*$', '\\1'), ''), 'direct')`;
 
   // ── Dimension filters ─────────────────────────────────────────────────────
   // ?device=mobile|tablet|desktop and ?source=<name> scope every event-derived
-  // metric. When either is active, sales figures switch from the orders table
-  // to session-attributed purchase events (the orders table has no device or
-  // source), and the response flags this via `attributed: true`.
+  // metric. Both are properties of a *session*, not of individual event rows:
+  //   • purchase rows are written server-side with no device/referrer/UTM, so a
+  //     row-level filter drops every purchase and zeroes revenue, conversion and
+  //     top products while showing 100% checkout abandonment;
+  //   • a mid-session full page load clears document.referrer, so later rows in
+  //     an organic session look "direct" and a row-level source filter splits
+  //     one session across two sources.
+  // So dimensions are resolved once per session from its landing event, and the
+  // filter is session membership.
   const device = ['mobile', 'tablet', 'desktop'].includes(String(req.query.device)) ? String(req.query.device) : null;
   const rawSource = typeof req.query.source === 'string' ? req.query.source.slice(0, 100) : '';
   const source = rawSource && rawSource !== 'all' ? rawSource : null;
   const filtered = !!(device || source);
 
-  // Appends "AND …" clauses starting at parameter $nextIdx. Always spread the
-  // returned params after the query's base params — never share one filter
-  // object between queries with different base-param counts.
-  const evf = (nextIdx) => {
-    let sql = '';
-    const params = [];
-    if (device) { sql += ` AND device = $${nextIdx + params.length}`; params.push(device); }
-    if (source) { sql += ` AND ${SRC_EXPR} = $${nextIdx + params.length}`; params.push(source); }
-    return { sql, params };
-  };
+  // One row per session: the device and source of its first tracked browsing
+  // event. Spans both windows ($3 → $2) so the same definition serves the
+  // current period and the one it's compared against.
+  const SESSION_DIMS = `
+    SELECT DISTINCT ON (session_id) session_id,
+           COALESCE(NULLIF(device, ''), 'unknown') AS device,
+           ${SRC_EXPR} AS source
+    FROM analytics_events
+    WHERE created_at >= ${T3} AND created_at < ${T2}
+      AND event_type NOT IN ('purchase', 'web_vital')
+      AND session_id <> '${NO_SESSION}'
+    ORDER BY session_id, created_at ASC, id ASC`;
+
+  // Filter params start at $4 and are identical for every query, so the whole
+  // set can share one params array — no per-query index bookkeeping.
+  const filterParams = [];
+  const dimConds = [];
+  if (device) { dimConds.push(`sd.device = $${4 + filterParams.length}`); filterParams.push(device); }
+  if (source) { dimConds.push(`sd.source = $${4 + filterParams.length}`); filterParams.push(source); }
+  /** ` AND <col> IN (…matching sessions…)`, or '' when no filter is active. */
+  const SF = (col = 'session_id') =>
+    filtered ? ` AND ${col} IN (SELECT sd.session_id FROM (${SESSION_DIMS}) sd WHERE ${dimConds.join(' AND ')})` : '';
+
+  // Restricts the orders table to orders whose purchase event belongs to a
+  // matching session. Keeps filtered revenue on the authoritative order total
+  // (refunds excluded, discounts applied) instead of the props snapshot, so a
+  // filtered figure is always a true subset of the unfiltered one.
+  const ORDER_ATTR = (idCol) =>
+    filtered
+      ? ` AND ${idCol}::text IN (SELECT props->>'order_id' FROM analytics_events
+           WHERE event_type = 'purchase' AND created_at >= ${T3}${SF()})`
+      : '';
 
   // ?attr=source|medium|campaign switches the attribution table's grouping.
   const ATTR_EXPRS = {
@@ -3469,116 +3883,165 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   };
   const attr = ['source', 'medium', 'campaign'].includes(String(req.query.attr)) ? String(req.query.attr) : 'source';
 
-  // Guarded numeric read of the total stashed on purchase/begin_checkout events.
+  // Guarded numeric read of the total stashed on begin_checkout events.
   const PROPS_TOTAL = `CASE WHEN props->>'total' ~ '^[0-9.]+$' THEN (props->>'total')::numeric END`;
 
+  // A session counts as converted if it has a purchase event at any point from
+  // the window start onward — deliberately *not* capped at the window end. A
+  // checkout at 23:55 that pays at 00:03 is a sale, not an abandonment.
+  const CONVERTED = `
+    SELECT DISTINCT session_id FROM analytics_events
+    WHERE event_type = 'purchase' AND created_at >= ${T1} AND session_id <> '${NO_SESSION}'`;
+
   try {
-    const f3 = evf(3); // filter clauses for queries with 2 base params
-    const f4 = evf(4); // filter clauses for queries with 3 base params
+    // Current-window queries reference $3 only when a filter is active; the
+    // two that always compare against the previous window pass it unconditionally.
+    const PC = filtered ? [...w, ...filterParams] : [start, endExcl];
+    const PW = [...w, ...filterParams];
 
     const [traffic, newVsReturning, funnel, daily, sales, customers, topProducts, topPages, sources, devices, vitals, abandoned] = await Promise.all([
 
       // Traffic KPIs — current window vs the previous window of the same length.
       pool.query(
         `SELECT
-           COUNT(DISTINCT visitor_id) FILTER (WHERE created_at >= $1)::int AS visitors,
-           COUNT(DISTINCT session_id) FILTER (WHERE created_at >= $1)::int AS sessions,
-           COUNT(*) FILTER (WHERE event_type = 'page_view' AND created_at >= $1)::int AS pageviews,
-           COUNT(DISTINCT visitor_id) FILTER (WHERE created_at < $1)::int AS prev_visitors,
-           COUNT(DISTINCT session_id) FILTER (WHERE created_at < $1)::int AS prev_sessions,
-           COUNT(*) FILTER (WHERE event_type = 'page_view' AND created_at < $1)::int AS prev_pageviews
+           COUNT(DISTINCT visitor_id) FILTER (WHERE created_at >= ${T1})::int AS visitors,
+           COUNT(DISTINCT session_id) FILTER (WHERE created_at >= ${T1})::int AS sessions,
+           COUNT(*) FILTER (WHERE event_type = 'page_view' AND created_at >= ${T1})::int AS pageviews,
+           COUNT(DISTINCT visitor_id) FILTER (WHERE created_at < ${T1})::int AS prev_visitors,
+           COUNT(DISTINCT session_id) FILTER (WHERE created_at < ${T1})::int AS prev_sessions,
+           COUNT(*) FILTER (WHERE event_type = 'page_view' AND created_at < ${T1})::int AS prev_pageviews
          FROM analytics_events
-         WHERE created_at >= $3 AND created_at < $2 AND event_type <> 'web_vital'${f4.sql}`,
-        [...w, ...f4.params]
+         WHERE created_at >= ${T3} AND created_at < ${T2}
+           AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}`,
+        PW
       ),
 
       // New vs returning + bounce, over the current window only. A visitor is
-      // "new" when their first event ever falls inside the window; a bounced
-      // session viewed exactly one page. first_seen stays unfiltered — whether
-      // a visitor is returning depends on their whole history, not the slice.
+      // "new" when their first event ever falls inside the window — first_seen
+      // looks at each visitor's whole history, not the slice, but is restricted
+      // to visitors seen in the window so it rides the (visitor_id, created_at)
+      // index instead of grouping the entire table.
+      // Bounce = one page view AND no engagement. Counting a session that added
+      // to cart from a single product page as a bounce is a false positive.
       pool.query(
-        `WITH first_seen AS (
-           SELECT visitor_id, MIN(created_at) AS first_at FROM analytics_events GROUP BY visitor_id
-         ), window_visitors AS (
-           SELECT DISTINCT visitor_id FROM analytics_events WHERE created_at >= $1 AND created_at < $2${f3.sql}
-         ), session_pages AS (
-           SELECT session_id, COUNT(*) FILTER (WHERE event_type = 'page_view') AS pages
-           FROM analytics_events WHERE created_at >= $1 AND created_at < $2${f3.sql} GROUP BY session_id
+        `WITH scoped AS (
+           SELECT visitor_id, session_id, event_type, visitor_scope FROM analytics_events
+           WHERE created_at >= ${T1} AND created_at < ${T2}
+             AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}
+         ), first_seen AS (
+           SELECT visitor_id, MIN(created_at) AS first_at FROM analytics_events
+           WHERE visitor_id IN (SELECT visitor_id FROM scoped) GROUP BY visitor_id
+         ), sess AS (
+           SELECT session_id,
+                  COUNT(*) FILTER (WHERE event_type = 'page_view') AS pages,
+                  BOOL_OR(event_type IN ('add_to_cart', 'begin_checkout', 'purchase')) AS engaged
+           FROM scoped GROUP BY session_id
+         ), vis AS (
+           -- A visitor is recognisable across visits only when the cookie banner
+           -- was accepted; otherwise the id lives in sessionStorage and the same
+           -- person returning tomorrow is counted as new. Tracking that share is
+           -- what lets the panel state how far these two numbers can be trusted.
+           SELECT visitor_id, BOOL_OR(visitor_scope = 'persistent') AS persistent
+           FROM scoped GROUP BY visitor_id
          )
          SELECT
-           (SELECT COUNT(*) FROM window_visitors wv JOIN first_seen fs USING (visitor_id) WHERE fs.first_at >= $1)::int AS new_visitors,
-           (SELECT COUNT(*) FROM window_visitors wv JOIN first_seen fs USING (visitor_id) WHERE fs.first_at < $1)::int AS returning_visitors,
-           (SELECT COUNT(*) FROM session_pages WHERE pages = 1)::int AS bounced_sessions,
-           (SELECT COUNT(*) FROM session_pages WHERE pages > 0)::int AS pageview_sessions`,
-        [start, endExcl, ...f3.params]
+           (SELECT COUNT(*) FROM vis JOIN first_seen USING (visitor_id) WHERE first_at >= ${T1})::int AS new_visitors,
+           (SELECT COUNT(*) FROM vis JOIN first_seen USING (visitor_id) WHERE first_at < ${T1})::int AS returning_visitors,
+           (SELECT COUNT(*) FROM vis WHERE persistent)::int AS identified_visitors,
+           (SELECT COUNT(*) FROM vis)::int AS total_visitors,
+           (SELECT COUNT(*) FROM sess WHERE pages = 1 AND NOT engaged)::int AS bounced_sessions,
+           (SELECT COUNT(*) FROM sess WHERE pages > 0)::int AS pageview_sessions`,
+        PC
       ),
 
-      // Conversion funnel — distinct sessions reaching each stage in the window.
+      // Conversion funnel. Each stage counts sessions that reached it *or any
+      // later stage*, so the funnel can never widen as it descends: someone who
+      // lands straight on /products/<slug> from Instagram and buys is credited
+      // with browsing too. Counting stages independently produced ">100% of
+      // previous" steps and understated overall conversion.
+      // Stage 1 uses the same predicate as the sessions KPI, so the funnel's
+      // conversion figure and the Session conversion tile always agree.
       pool.query(
-        `SELECT
-           COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'page_view')::int AS visited,
-           COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'page_view' AND (path LIKE '/shop%' OR path LIKE '/deals%'))::int AS browsed,
-           COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'add_to_cart')::int AS carted,
-           COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'begin_checkout')::int AS checkout,
-           COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'purchase')::int AS purchased
-         FROM analytics_events WHERE created_at >= $1 AND created_at < $2${f3.sql}`,
-        [start, endExcl, ...f3.params]
+        `WITH scoped AS (
+           SELECT session_id, event_type, path FROM analytics_events
+           WHERE created_at >= ${T1} AND created_at < ${T2}
+             AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}
+         ), converted AS (${CONVERTED}
+         ), sess AS (
+           SELECT s.session_id,
+             BOOL_OR(s.event_type = 'page_view' AND (s.path LIKE '/shop%' OR s.path LIKE '/deals%' OR s.path LIKE '/products%')) AS browsed,
+             BOOL_OR(s.event_type = 'add_to_cart') AS carted,
+             BOOL_OR(s.event_type = 'begin_checkout') AS checkout,
+             BOOL_OR(c.session_id IS NOT NULL) AS purchased
+           FROM scoped s LEFT JOIN converted c USING (session_id)
+           GROUP BY s.session_id
+         )
+         SELECT
+           COUNT(*)::int AS visited,
+           COUNT(*) FILTER (WHERE browsed OR carted OR checkout OR purchased)::int AS browsed,
+           COUNT(*) FILTER (WHERE carted OR checkout OR purchased)::int AS carted,
+           COUNT(*) FILTER (WHERE checkout OR purchased)::int AS checkout,
+           COUNT(*) FILTER (WHERE purchased)::int AS purchased
+         FROM sess`,
+        PC
       ),
 
-      // Daily series — traffic from events, zero-filled. Sales come from the
-      // orders table (exact) normally, or from session-attributed purchase
-      // events when a device/source filter is active.
+      // Daily series — traffic from events, zero-filled. Sales always come from
+      // the orders table; a device/source filter narrows *which orders* count
+      // (via their purchase event's session) but never changes the money, so a
+      // filtered bar is always a true subset of the unfiltered one.
       pool.query(
-        `SELECT to_char(day, 'YYYY-MM-DD') AS day,
+        `SELECT to_char(d, 'YYYY-MM-DD') AS day,
                 COALESCE(e.visitors, 0) AS visitors, COALESCE(e.sessions, 0) AS sessions,
                 COALESCE(e.pageviews, 0) AS pageviews,
                 COALESCE(o.orders, 0) AS orders, COALESCE(o.revenue, 0) AS revenue
-         FROM generate_series($1::date, $2::date - 1, '1 day') AS day
+         FROM (SELECT gs::date AS d FROM generate_series($1::date, $2::date - 1, '1 day') gs) days
          LEFT JOIN (
-           SELECT created_at::date AS day, COUNT(DISTINCT visitor_id)::int AS visitors,
+           SELECT ${DAY('created_at')} AS d, COUNT(DISTINCT visitor_id)::int AS visitors,
                   COUNT(DISTINCT session_id)::int AS sessions,
                   COUNT(*) FILTER (WHERE event_type = 'page_view')::int AS pageviews
-           FROM analytics_events WHERE created_at >= $1 AND created_at < $2 AND event_type <> 'web_vital'${f3.sql}
+           FROM analytics_events
+           WHERE created_at >= ${T1} AND created_at < ${T2}
+             AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY 1
-         ) e USING (day)
+         ) e USING (d)
          LEFT JOIN (
-           ${filtered
-             ? `SELECT created_at::date AS day, COUNT(*)::int AS orders,
-                       COALESCE(ROUND(SUM(${PROPS_TOTAL}), 2), 0)::float AS revenue
-                FROM analytics_events
-                WHERE event_type = 'purchase' AND created_at >= $1 AND created_at < $2${f3.sql}
-                GROUP BY 1`
-             : `SELECT created_at::date AS day, COUNT(*)::int AS orders, ROUND(SUM(total), 2)::float AS revenue
-                FROM orders WHERE created_at >= $1 AND created_at < $2 AND ${PAID}
-                GROUP BY 1`}
-         ) o USING (day)
-         ORDER BY day`,
-        [start, endExcl, ...f3.params]
+           SELECT ${DAY('o.created_at')} AS d, COUNT(*)::int AS orders, ROUND(SUM(${NET_TOTAL}), 2)::float AS revenue
+           FROM orders o
+           WHERE o.created_at >= ${T1} AND o.created_at < ${T2} AND ${PAID}
+             AND NOT (${FULLY_RETURNED})${ORDER_ATTR('o.id')}
+           GROUP BY 1
+         ) o USING (d)
+         ORDER BY d`,
+        PC
       ),
 
-      // Sales KPIs — current vs previous window. Same source switch as above.
+      // Sales KPIs — current vs previous window, always off the orders table so
+      // revenue is money actually kept: charged total, less anything handed back
+      // as a full refund or an approved return. attributed_orders reports how
+      // many of this window's orders could be tied back to a tracked session;
+      // anything less than `orders` is the exact amount by which the funnel,
+      // conversion rate and attribution table under-report.
       pool.query(
-        filtered
-          ? `SELECT
-               COUNT(*) FILTER (WHERE created_at >= $1)::int AS orders,
-               COALESCE(ROUND(SUM(pt) FILTER (WHERE created_at >= $1), 2), 0)::float AS revenue,
-               COALESCE(ROUND(AVG(pt) FILTER (WHERE created_at >= $1), 2), 0)::float AS aov,
-               COUNT(*) FILTER (WHERE created_at < $1)::int AS prev_orders,
-               COALESCE(ROUND(SUM(pt) FILTER (WHERE created_at < $1), 2), 0)::float AS prev_revenue,
-               COALESCE(ROUND(AVG(pt) FILTER (WHERE created_at < $1), 2), 0)::float AS prev_aov
-             FROM (
-               SELECT created_at, ${PROPS_TOTAL} AS pt FROM analytics_events
-               WHERE event_type = 'purchase' AND created_at >= $3 AND created_at < $2${f4.sql}
-             ) p`
-          : `SELECT
-               COUNT(*) FILTER (WHERE created_at >= $1)::int AS orders,
-               COALESCE(ROUND(SUM(total) FILTER (WHERE created_at >= $1), 2), 0)::float AS revenue,
-               COALESCE(ROUND(AVG(total) FILTER (WHERE created_at >= $1), 2), 0)::float AS aov,
-               COUNT(*) FILTER (WHERE created_at < $1)::int AS prev_orders,
-               COALESCE(ROUND(SUM(total) FILTER (WHERE created_at < $1), 2), 0)::float AS prev_revenue,
-               COALESCE(ROUND(AVG(total) FILTER (WHERE created_at < $1), 2), 0)::float AS prev_aov
-             FROM orders WHERE created_at >= $3 AND created_at < $2 AND ${PAID}`,
-        filtered ? [...w, ...f4.params] : w
+        `SELECT
+           COUNT(*) FILTER (WHERE created_at >= ${T1})::int AS orders,
+           COALESCE(ROUND(SUM(net) FILTER (WHERE created_at >= ${T1}), 2), 0)::float AS revenue,
+           COALESCE(ROUND(AVG(net) FILTER (WHERE created_at >= ${T1}), 2), 0)::float AS aov,
+           COUNT(*) FILTER (WHERE created_at < ${T1})::int AS prev_orders,
+           COALESCE(ROUND(SUM(net) FILTER (WHERE created_at < ${T1}), 2), 0)::float AS prev_revenue,
+           COALESCE(ROUND(AVG(net) FILTER (WHERE created_at < ${T1}), 2), 0)::float AS prev_aov,
+           COUNT(*) FILTER (WHERE created_at >= ${T1} AND attributed)::int AS attributed_orders
+         FROM (
+           SELECT o.created_at, ${NET_TOTAL} AS net,
+                  o.id::text IN (
+                    SELECT props->>'order_id' FROM analytics_events
+                    WHERE event_type = 'purchase' AND created_at >= ${T3} AND session_id <> '${NO_SESSION}'
+                  ) AS attributed
+           FROM orders o
+           WHERE o.created_at >= ${T3} AND o.created_at < ${T2} AND ${PAID}
+             AND NOT (${FULLY_RETURNED})${ORDER_ATTR('o.id')}
+         ) s`,
+        PW
       ),
 
       // Customer KPIs — lifetime view plus what happened inside the window.
@@ -3586,7 +4049,8 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // customer in window" = ordered in the window with an earlier paid order.
       pool.query(
         `WITH paid_orders AS (
-           SELECT user_id, total, created_at FROM orders WHERE ${PAID}
+           SELECT o.user_id, ${NET_TOTAL} AS total, o.created_at FROM orders o
+           WHERE ${PAID} AND o.user_id IS NOT NULL AND NOT (${FULLY_RETURNED})
          ), per_customer AS (
            SELECT user_id, COUNT(*) AS orders, SUM(total) AS spent, MIN(created_at) AS first_order
            FROM paid_orders GROUP BY user_id
@@ -3594,84 +4058,122 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
          SELECT
            (SELECT COUNT(*) FROM per_customer)::int AS total_customers,
            (SELECT COUNT(*) FROM per_customer WHERE orders > 1)::int AS lifetime_repeat_customers,
-           (SELECT COUNT(*) FROM per_customer WHERE first_order >= $1 AND first_order < $2)::int AS new_customers,
+           (SELECT COUNT(*) FROM per_customer WHERE first_order >= ${T1} AND first_order < ${T2})::int AS new_customers,
            (SELECT COUNT(DISTINCT p.user_id) FROM paid_orders p JOIN per_customer c USING (user_id)
-             WHERE p.created_at >= $1 AND p.created_at < $2 AND c.first_order < $1)::int AS returning_customers,
+             WHERE p.created_at >= ${T1} AND p.created_at < ${T2} AND c.first_order < ${T1})::int AS returning_customers,
            COALESCE((SELECT ROUND(AVG(spent), 2) FROM per_customer), 0)::float AS avg_lifetime_value,
            COALESCE((SELECT ROUND(AVG(orders), 2) FROM per_customer), 0)::float AS avg_orders_per_customer`,
         [start, endExcl]
       ),
 
-      // Top products by revenue from order line items, joined with add-to-cart
-      // counts from events so cart-to-purchase leaks are visible per product.
-      // Under a filter, only orders whose purchase event landed in a matching
-      // session are counted (purchase props carry the order id).
+      // Top products. Revenue is the line's share of what was actually charged:
+      // the order's discount is prorated across its lines, so these figures roll
+      // up to the Revenue KPI minus shipping instead of overstating every line by
+      // the discount. Products added to cart but never bought are kept (FULL
+      // JOIN) — a product with demand and no sales is exactly the leak ops needs
+      // to see, and dropping it was hiding the worst rows.
       pool.query(
         `WITH line_items AS (
            SELECT item->>'product_id' AS product_id,
                   item->'product_data'->>'name' AS name,
                   (item->>'quantity')::int AS qty,
-                  COALESCE(NULLIF(regexp_replace(item->'product_data'->>'price', '[^0-9.]', '', 'g'), ''), '0')::numeric AS price
+                  COALESCE(NULLIF(regexp_replace(item->'product_data'->>'price', '[^0-9.]', '', 'g'), ''), '0')::numeric
+                    * (item->>'quantity')::int
+                    * COALESCE(1 - COALESCE(o.discount_amount, 0) / NULLIF(o.subtotal, 0), 1) AS net
            FROM orders o, jsonb_array_elements(o.items) AS item
-           WHERE o.created_at >= $1 AND o.created_at < $2 AND ${PAID}
-           ${filtered ? `AND o.id::text IN (
-             SELECT props->>'order_id' FROM analytics_events
-             WHERE event_type = 'purchase' AND created_at >= $1 AND created_at < $2${f3.sql})` : ''}
+           WHERE o.created_at >= ${T1} AND o.created_at < ${T2} AND ${PAID}${ORDER_ATTR('o.id')}
+             -- A line the customer returned and was refunded for was not sold.
+             -- Leaving it in overstated both units and revenue for that product.
+             AND NOT EXISTS (
+               SELECT 1 FROM returns r
+               WHERE r.order_id = o.id AND r.status = 'refunded'
+                 AND r.product_id = item->>'product_id'
+             )
+         ), sold AS (
+           SELECT product_id, MAX(name) AS name, SUM(qty)::int AS units,
+                  ROUND(SUM(net), 2)::float AS revenue
+           FROM line_items GROUP BY product_id
          ), carts AS (
-           SELECT props->>'product_id' AS product_id, COUNT(*)::int AS add_to_carts
+           SELECT props->>'product_id' AS product_id, MAX(props->>'name') AS name,
+                  COUNT(DISTINCT session_id)::int AS add_to_carts
            FROM analytics_events
-           WHERE event_type = 'add_to_cart' AND created_at >= $1 AND created_at < $2${f3.sql}
+           WHERE event_type = 'add_to_cart' AND created_at >= ${T1} AND created_at < ${T2}
+             AND props->>'product_id' IS NOT NULL AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY 1
          )
-         SELECT COALESCE(li.name, 'Unknown') AS name,
-                SUM(li.qty)::int AS units,
-                ROUND(SUM(li.qty * li.price), 2)::float AS revenue,
-                COALESCE(MAX(c.add_to_carts), 0)::int AS add_to_carts
-         FROM line_items li LEFT JOIN carts c USING (product_id)
-         GROUP BY li.product_id, li.name ORDER BY revenue DESC LIMIT 10`,
-        [start, endExcl, ...f3.params]
+         SELECT COALESCE(s.name, c.name, 'Unknown') AS name,
+                COALESCE(s.units, 0)::int AS units,
+                COALESCE(s.revenue, 0)::float AS revenue,
+                COALESCE(c.add_to_carts, 0)::int AS add_to_carts
+         FROM sold s FULL JOIN carts c USING (product_id)
+         ORDER BY revenue DESC, add_to_carts DESC LIMIT 10`,
+        PC
       ),
 
       // Top pages by views + unique sessions.
       pool.query(
         `SELECT path, COUNT(*)::int AS views, COUNT(DISTINCT session_id)::int AS sessions
          FROM analytics_events
-         WHERE event_type = 'page_view' AND created_at >= $1 AND created_at < $2${f3.sql}
+         WHERE event_type = 'page_view' AND created_at >= ${T1} AND created_at < ${T2}
+           AND session_id <> '${NO_SESSION}'${SF()}
          GROUP BY path ORDER BY views DESC LIMIT 10`,
-        [start, endExcl, ...f3.params]
+        PC
       ),
 
-      // Attribution table — grouped by source (default), medium, or campaign.
-      // Sessions are attributed by their landing event; purchases join back on
-      // session so each row shows the revenue it actually produced.
+      // Attribution — grouped by source (default), medium, or campaign. Sessions
+      // are attributed by their landing event; purchases join back on session and
+      // read the charged order total, so a refunded order stops counting here the
+      // same moment it stops counting in the Revenue KPI.
+      // Purchases are deliberately NOT re-filtered by dimension: `landing` has
+      // already restricted the session set, and purchase rows carry no device or
+      // referrer of their own — filtering them again zeroed every row's revenue.
+      // Everything past the top 10 is folded into one row so the columns still
+      // add up to the session and revenue totals above.
       pool.query(
         `WITH landing AS (
            SELECT DISTINCT ON (session_id) session_id, ${ATTR_EXPRS[attr]} AS source
            FROM analytics_events
-           WHERE created_at >= $1 AND created_at < $2 AND event_type <> 'web_vital'${f3.sql}
-           ORDER BY session_id, created_at ASC
+           WHERE created_at >= ${T1} AND created_at < ${T2}
+             AND event_type NOT IN ('web_vital', 'purchase') AND session_id <> '${NO_SESSION}'${SF()}
+           ORDER BY session_id, created_at ASC, id ASC
          ), purchases AS (
-           SELECT session_id, COUNT(*)::int AS orders,
-                  ROUND(SUM(COALESCE(${PROPS_TOTAL}, 0)), 2)::float AS revenue
-           FROM analytics_events
-           WHERE event_type = 'purchase' AND created_at >= $1 AND created_at < $2${f3.sql}
-           GROUP BY session_id
+           SELECT e.session_id, COUNT(*)::int AS orders, SUM(${NET_TOTAL}) AS revenue
+           FROM analytics_events e
+           JOIN orders o ON o.id::text = e.props->>'order_id' AND ${PAID}
+           WHERE e.event_type = 'purchase' AND e.created_at >= ${T1} AND e.created_at < ${T2}
+             AND NOT (${FULLY_RETURNED})
+           GROUP BY e.session_id
+         ), grouped AS (
+           SELECT l.source, COUNT(*)::int AS sessions,
+                  COALESCE(SUM(p.orders), 0)::int AS orders,
+                  COALESCE(SUM(p.revenue), 0) AS revenue
+           FROM landing l LEFT JOIN purchases p USING (session_id)
+           GROUP BY l.source
+         ), ranked AS (
+           SELECT *, ROW_NUMBER() OVER (ORDER BY sessions DESC, source ASC) AS rn FROM grouped
          )
-         SELECT l.source, COUNT(*)::int AS sessions,
-                COALESCE(SUM(p.orders), 0)::int AS orders,
-                COALESCE(ROUND(SUM(p.revenue)::numeric, 2), 0)::float AS revenue
-         FROM landing l LEFT JOIN purchases p USING (session_id)
-         GROUP BY l.source ORDER BY sessions DESC LIMIT 10`,
-        [start, endExcl, ...f3.params]
+         SELECT source, sessions, orders, ROUND(revenue, 2)::float AS revenue, rn AS ord
+         FROM ranked WHERE rn <= 10
+         UNION ALL
+         SELECT '+ ' || COUNT(*) || ' more', SUM(sessions)::int, SUM(orders)::int,
+                ROUND(SUM(revenue), 2)::float, 999999::bigint
+         FROM ranked WHERE rn > 10 HAVING COUNT(*) > 0
+         ORDER BY ord`,
+        PC
       ),
 
-      // Device mix by sessions.
+      // Device mix by sessions. The device is a property of the session (taken
+      // from its landing event), not of each row: counting rows put any session
+      // with a server-written purchase row into 'unknown' *as well as* its real
+      // device, so the shares summed past 100%.
       pool.query(
-        `SELECT COALESCE(NULLIF(device, ''), 'unknown') AS device, COUNT(DISTINCT session_id)::int AS sessions
-         FROM analytics_events
-         WHERE created_at >= $1 AND created_at < $2 AND event_type <> 'web_vital'${f3.sql}
+        `SELECT COALESCE(sd.device, 'unknown') AS device, COUNT(DISTINCT e.session_id)::int AS sessions
+         FROM analytics_events e
+         LEFT JOIN (${SESSION_DIMS}) sd USING (session_id)
+         WHERE e.created_at >= ${T1} AND e.created_at < ${T2}
+           AND e.event_type <> 'web_vital' AND e.session_id <> '${NO_SESSION}'${SF('e.session_id')}
          GROUP BY 1 ORDER BY sessions DESC`,
-        [start, endExcl, ...f3.params]
+        PW
       ),
 
       // Web vitals — p75 per metric (the threshold Google grades against).
@@ -3680,29 +4182,30 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
                 ROUND(percentile_cont(0.75) WITHIN GROUP (ORDER BY (props->>'value')::numeric)::numeric, 4)::float AS p75,
                 COUNT(*)::int AS samples
          FROM analytics_events
-         WHERE event_type = 'web_vital' AND created_at >= $1 AND created_at < $2
-           AND props->>'value' ~ '^[0-9.]+$'${f3.sql}
+         WHERE event_type = 'web_vital' AND created_at >= ${T1} AND created_at < ${T2}
+           AND props->>'value' ~ '^[0-9.]+$'${SF()}
          GROUP BY 1`,
-        [start, endExcl, ...f3.params]
+        PC
       ),
 
-      // Checkout abandonment — sessions that started checkout but never
-      // purchased, with the basket value they walked away from.
+      // Checkout abandonment — sessions that reached payment but never bought,
+      // with the basket value they walked away from. "Converted" is unbounded at
+      // the top end (see CONVERTED): a payment started at 23:55 and confirmed at
+      // 00:03 is a sale, and counting it as abandoned was a nightly false positive.
       pool.query(
-        `WITH s AS (
-           SELECT session_id,
-                  BOOL_OR(event_type = 'begin_checkout') AS started,
-                  BOOL_OR(event_type = 'purchase') AS purchased,
-                  MAX(CASE WHEN event_type = 'begin_checkout' THEN ${PROPS_TOTAL} END) AS checkout_total
+        `WITH checkout AS (
+           SELECT session_id, MAX(${PROPS_TOTAL}) AS basket
            FROM analytics_events
-           WHERE created_at >= $1 AND created_at < $2 AND event_type IN ('begin_checkout', 'purchase')${f3.sql}
+           WHERE event_type = 'begin_checkout' AND created_at >= ${T1} AND created_at < ${T2}
+             AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY session_id
+         ), converted AS (${CONVERTED}
          )
-         SELECT COUNT(*) FILTER (WHERE started)::int AS checkout_sessions,
-                COUNT(*) FILTER (WHERE started AND NOT purchased)::int AS abandoned_sessions,
-                COALESCE(ROUND(SUM(checkout_total) FILTER (WHERE started AND NOT purchased), 2), 0)::float AS lost_revenue
-         FROM s`,
-        [start, endExcl, ...f3.params]
+         SELECT COUNT(*)::int AS checkout_sessions,
+                COUNT(*) FILTER (WHERE c.session_id IS NULL)::int AS abandoned_sessions,
+                COALESCE(ROUND(SUM(k.basket) FILTER (WHERE c.session_id IS NULL), 2), 0)::float AS lost_revenue
+         FROM checkout k LEFT JOIN converted c USING (session_id)`,
+        PC
       ),
     ]);
 
@@ -3711,11 +4214,17 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
     const s = sales.rows[0];
     const f = funnel.rows[0];
 
+    // f.visited uses the same predicate as t.sessions, so the funnel's first
+    // stage and the Sessions tile are the same number by construction — and the
+    // conversion rate below is the funnel's own end-to-end rate, not a second
+    // figure computed against a different denominator.
+    const conversionRate = t.sessions ? +(f.purchased / t.sessions * 100).toFixed(2) : 0;
+
     res.json({
-      start, end, days: lenDays,
+      start, end, days: lenDays, timezone: STORE_TZ,
       filters: { device, source, attr },
-      // True when device/source filters forced sales onto session-attributed
-      // purchase events instead of the exact orders table.
+      // True when a device/source filter is active, so event-derived metrics
+      // cover only orders that could be tied back to a matching session.
       attributed: filtered,
       abandoned: abandoned.rows[0],
       traffic: {
@@ -3723,25 +4232,40 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
         pages_per_session: t.sessions ? +(t.pageviews / t.sessions).toFixed(2) : 0,
         bounce_rate: nvr.pageview_sessions ? +(nvr.bounced_sessions / nvr.pageview_sessions * 100).toFixed(1) : 0,
         new_visitors: nvr.new_visitors, returning_visitors: nvr.returning_visitors,
+        // Share of this window's visitors carrying an id that survives the tab.
+        // The rest cannot be recognised on a return visit, so they land in
+        // "new" every time and inflate the visitor count — the panel says so
+        // rather than presenting "returning" as a complete figure.
+        identified_visitor_pct: nvr.total_visitors
+          ? +(nvr.identified_visitors / nvr.total_visitors * 100).toFixed(1)
+          : null,
         prev: { visitors: t.prev_visitors, sessions: t.prev_sessions, pageviews: t.prev_pageviews },
       },
       sales: {
         revenue: s.revenue, orders: s.orders, aov: s.aov,
-        conversion_rate: t.sessions ? +(f.purchased / t.sessions * 100).toFixed(2) : 0,
+        conversion_rate: conversionRate,
+        // Orders in this window that carry a tracked session. When this is below
+        // `orders`, the funnel, conversion rate and attribution table are
+        // measuring fewer sales than actually happened — the panel says so
+        // rather than letting the gap read as a genuine drop.
+        attributed_orders: s.attributed_orders,
         prev: { revenue: s.prev_revenue, orders: s.prev_orders, aov: s.prev_aov },
       },
       customers: customers.rows[0],
       funnel: [
-        { stage: 'Visited site', sessions: f.visited },
+        { stage: 'Sessions', sessions: f.visited },
         { stage: 'Browsed products', sessions: f.browsed },
         { stage: 'Added to cart', sessions: f.carted },
-        { stage: 'Started checkout', sessions: f.checkout },
+        // begin_checkout fires when the shopper commits to pay, not when the
+        // checkout page loads — so this stage and the abandonment card below
+        // measure the payment step specifically.
+        { stage: 'Reached payment', sessions: f.checkout },
         { stage: 'Purchased', sessions: f.purchased },
       ],
       daily: daily.rows,
       top_products: topProducts.rows,
       top_pages: topPages.rows,
-      sources: sources.rows,
+      sources: sources.rows.map(({ ord, ...row }) => row),
       devices: devices.rows,
       web_vitals: vitals.rows,
     });
@@ -3759,7 +4283,8 @@ app.get('/api/admin/analytics/live', requireAuth, async (_req, res) => {
         `SELECT COUNT(DISTINCT session_id)::int AS active_sessions,
                 COUNT(DISTINCT visitor_id)::int AS active_visitors
          FROM analytics_events
-         WHERE created_at > NOW() - INTERVAL '5 minutes' AND event_type <> 'web_vital'`
+         WHERE created_at > NOW() - INTERVAL '5 minutes'
+           AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'`
       ),
       // Where each active session currently is — its most recent page view.
       pool.query(
@@ -4273,6 +4798,35 @@ const SHIPPED_ICONS = new Set([
   'favicon-192.png', 'apple-touch-icon.png', 'icon-512.png',
 ]);
 
+// An icon configured as an external URL is fetched here and streamed back rather
+// than redirected to. Google's favicon crawler indexes the bytes it can download
+// from the URL named in the page, and a cross-origin hop to an image host is the
+// difference between a new icon showing up in search and the old cached one
+// sticking around. Cached in memory so the crawler and every page load don't each
+// cost an upstream request; keyed by URL, so changing it in the admin takes effect
+// on the next request rather than waiting out the TTL.
+const REMOTE_ICON_TTL_MS = 60 * 60 * 1000;
+const REMOTE_ICON_MAX_BYTES = 2 * 1024 * 1024;
+const remoteIconCache = new Map();
+
+async function fetchRemoteIcon(url) {
+  const cached = remoteIconCache.get(url);
+  if (cached && Date.now() - cached.at < REMOTE_ICON_TTL_MS) return cached;
+
+  const upstream = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(5000) });
+  if (!upstream.ok) throw new Error(`upstream responded ${upstream.status}`);
+  const type = String(upstream.headers.get('content-type') || '').split(';')[0].trim();
+  if (!type.startsWith('image/')) throw new Error(`upstream sent ${type || 'no content-type'}`);
+  const body = Buffer.from(await upstream.arrayBuffer());
+  if (!body.length || body.length > REMOTE_ICON_MAX_BYTES) {
+    throw new Error(`upstream sent ${body.length} bytes`);
+  }
+
+  const entry = { body, type, at: Date.now() };
+  remoteIconCache.set(url, entry);
+  return entry;
+}
+
 app.get('/api/favicon/:file', async (req, res) => {
   // Only ever serve a known icon name: the path is attacker-supplied and both
   // branches below turn it into a filesystem read.
@@ -4289,14 +4843,19 @@ app.get('/api/favicon/:file', async (req, res) => {
     const { rows } = await pool.query("SELECT value FROM site_settings WHERE key = 'content_seo'");
     const configured = String(rows[0]?.value?.favicon_url || '').trim();
     if (configured) {
-      // Uploaded through the admin: serve the bytes from disk so the crawler gets
-      // a 200 with the real image rather than a hop it may not follow.
+      // Either way the crawler gets a 200 with the real image rather than a hop it
+      // may not follow: uploads are read off disk, external URLs are fetched above.
       const uploaded = configured.match(/\/uploads\/([A-Za-z0-9._-]+)$/);
       if (uploaded) {
         const onDisk = path.join(uploadDir, uploaded[1]);
         if (existsSync(onDisk)) return res.sendFile(onDisk);
       } else if (/^https?:\/\//i.test(configured)) {
-        return res.redirect(302, configured);
+        try {
+          const icon = await fetchRemoteIcon(configured);
+          return res.type(icon.type).send(icon.body);
+        } catch (err) {
+          console.error('[favicon] could not fetch', configured, '—', err.message);
+        }
       }
       // Configured but unusable (file deleted, or a path we can't resolve) —
       // fall through to the shipped icon rather than 404ing the site's favicon.
@@ -4708,6 +5267,29 @@ async function initDb() {
     }')
     ON CONFLICT (key) DO NOTHING;
 
+    -- One row per signed-in device. The session cookie's JWT names a row here, and
+    -- requireUserAuth refuses a token whose row is missing, revoked, or past either
+    -- expiry — that is what makes "sign out", "sign out everywhere" and "changing
+    -- your password ends other sessions" actually end a session, instead of only
+    -- clearing a cookie the attacker already copied. Two clocks: idle_expires_at
+    -- slides while the shopper is active, absolute_expires_at never moves.
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id                  UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      user_id             UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      remember            BOOLEAN     NOT NULL DEFAULT true,
+      user_agent          TEXT        NOT NULL DEFAULT '',
+      ip                  TEXT        NOT NULL DEFAULT '',
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      idle_expires_at     TIMESTAMPTZ NOT NULL,
+      absolute_expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at          TIMESTAMPTZ,
+      revoked_reason      TEXT
+    );
+    -- The device list reads by user; the prune sweep reads by expiry.
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user    ON user_sessions (user_id, last_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions (absolute_expires_at);
+
     -- Admin accounts live in the DB (not just env vars) so a password reset can
     -- actually persist. token_version is bumped on every password change and
     -- checked on every request (see requireAuth) so a stolen JWT issued before
@@ -4742,6 +5324,13 @@ async function initDb() {
       props        JSONB       DEFAULT '{}',
       created_at   TIMESTAMPTZ DEFAULT NOW()
     );
+    -- 'persistent' when the visitor id survives in localStorage (cookie banner
+    -- accepted) and the person is recognisable on a later visit; 'session' when
+    -- it dies with the tab, so the same human returning tomorrow counts as new.
+    -- Without this the dashboard cannot say how far "Visitors" and "New vs
+    -- returning" can be trusted. '' on rows written before this column existed.
+    ALTER TABLE analytics_events ADD COLUMN IF NOT EXISTS visitor_scope TEXT NOT NULL DEFAULT '';
+
     CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events (created_at);
     CREATE INDEX IF NOT EXISTS idx_analytics_events_type    ON analytics_events (event_type, created_at);
     CREATE INDEX IF NOT EXISTS idx_analytics_events_session ON analytics_events (session_id);
@@ -4921,5 +5510,7 @@ initDb()
     setInterval(runDecisionSweep, 60 * 60 * 1000);
     setTimeout(pruneAnalyticsEvents, 90 * 1000);
     setInterval(pruneAnalyticsEvents, 24 * 60 * 60 * 1000);
+    setTimeout(pruneUserSessions, 120 * 1000);
+    setInterval(pruneUserSessions, 24 * 60 * 60 * 1000);
   })
   .catch((err) => { console.error('DB init failed:', err); process.exit(1); });

@@ -143,6 +143,9 @@ async function main() {
   const boot = startBackend({
     AUTH_RATE_LIMIT_MAX: "100000", API_RATE_LIMIT_MAX: "100000",
     PUBLIC_WRITE_RATE_LIMIT_MAX: "100000", OTP_RATE_LIMIT_MAX: "100000",
+    // Every page a suite opens beacons to /api/analytics/events, so the storefront
+    // suites alone spend the 150/5min budget before the analytics tests run.
+    ANALYTICS_RATE_LIMIT_MAX: "100000",
     // The discount suite tries far more codes from one IP than the 20/15min
     // anti-enumeration budget a real shopper ever would.
     DISCOUNT_VALIDATE_RATE_LIMIT_MAX: "100000",
@@ -162,7 +165,7 @@ async function main() {
     : "PHASE 1: storefront + customer + admin suites (raised limits)");
   ok = runPlaywright(
     only.length ? only : [
-      "e2e/olive-goose.spec.ts", "e2e/auth-journey.spec.ts",
+      "e2e/olive-goose.spec.ts", "e2e/auth-journey.spec.ts", "e2e/session-management.spec.ts",
       "e2e/customer-journey.spec.ts", "e2e/mobile-journey.spec.ts",
       "e2e/admin-journey.spec.ts", "e2e/admin-payment-status.spec.ts",
       "e2e/discount-codes.spec.ts", "e2e/bundle-discounts.spec.ts",
@@ -172,10 +175,18 @@ async function main() {
     {}
   ) && ok;
 
-  // A scoped run stops here. Phase 2 restarts the backend and starts a SECOND
-  // playwright run, which clears test-results/ on startup — that wipes the traces
-  // and screenshots phase 1 just wrote, exactly when you are trying to read them.
+  // A scoped run stops here. The later phases start a SECOND playwright run,
+  // which clears test-results/ on startup — that wipes the traces and
+  // screenshots phase 1 just wrote, exactly when you are trying to read them.
   if (only.length) return ok;
+
+  // Phase 1b — admin-api on FRESH fixtures. It drives OGE2ECANA/CANB/RETURN
+  // through the same one-way cancellation and return lifecycles admin-journey
+  // does, so the two cannot share one seeding: whichever ran second would find
+  // the order already cancelled. Its own playwright invocation re-runs
+  // globalSetup, which re-creates the OGE2E* orders first.
+  log("PHASE 1b: admin-api on re-seeded fixtures");
+  ok = runPlaywright(["e2e/admin-api.spec.ts"], {}) && ok;
 
   // Phase 2 — payment-security on the DEFAULT auth limit so its throttling
   // assertion holds. Restart the backend without AUTH_RATE_LIMIT_MAX.

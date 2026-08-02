@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { VideosContent, VideoItem, toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled } from "@/lib/defaults";
+import { VideosContent, VideoItem, toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled, youtubeThumbnailUrl } from "@/lib/defaults";
+import { buildPosterUrl } from "@/lib/cloudinaryVideo";
 import RichText, { stripRichText } from "@/lib/richtext";
 import useIsMobile from "@/hooks/useIsMobile";
 import useSwipe from "@/hooks/useSwipe";
@@ -54,7 +55,7 @@ const instagramId = (url: string) => {
  * it on the way back. The rail copy is therefore nudged awake whenever it's
  * visible again, so a reel is never sitting there as a still frame.
  */
-const DirectVideo = ({ src, interactive }: { src: string; interactive: boolean }) => {
+const DirectVideo = ({ src, interactive, poster }: { src: string; interactive: boolean; poster?: string }) => {
   const ref = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -100,6 +101,9 @@ const DirectVideo = ({ src, interactive }: { src: string; interactive: boolean }
     <video
       ref={ref}
       src={src}
+      // Holds the still the card was already showing, so there is no black
+      // frame between the poster being replaced and the first decoded frame.
+      poster={poster || undefined}
       style={{
         position: "absolute", inset: 0, width: "100%", height: "100%",
         // The rail fills its 9:16 frame; the lightbox shows the whole shot,
@@ -112,6 +116,36 @@ const DirectVideo = ({ src, interactive }: { src: string; interactive: boolean }
       preload="auto"
       muted={!interactive}
       controls={interactive}
+    />
+  );
+};
+
+/**
+ * The still a card shows while it is not the reel playing.
+ *
+ * An admin can set one per reel; a Cloudinary video can have its first frame
+ * derived instead, which is what the six reels saved before posters existed
+ * fall back to, and YouTube already hosts a still for every video it serves.
+ * Those three cover every shape the rail has actually been given. Anything left
+ * (a Vimeo or Instagram link with no poster set) gets the plain frame, which
+ * still carries the caption and the tap target — set poster_url to fill it.
+ */
+const posterFor = (item: VideoItem): string => {
+  const url = item.video_url ?? "";
+  return item.poster_url?.trim() || buildPosterUrl(url) || youtubeThumbnailUrl(url);
+};
+
+const ReelPoster = ({ item }: { item: VideoItem }) => {
+  const poster = posterFor(item);
+  if (!poster) return null;
+  return (
+    <img
+      src={poster}
+      alt=""
+      aria-hidden="true"
+      loading="lazy"
+      decoding="async"
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
     />
   );
 };
@@ -160,7 +194,7 @@ const ReelMedia = ({ item, interactive }: { item: VideoItem; interactive: boolea
   }
 
   if (embed && isDirectVideo(embed)) {
-    return <DirectVideo src={embed} interactive={interactive} />;
+    return <DirectVideo src={embed} interactive={interactive} poster={posterFor(item)} />;
   }
 
   return (
@@ -231,7 +265,7 @@ const Marquee = ({ words }: { words: string[] }) => {
 
 /* ── Rail card ─────────────────────────────────────────────────────────────── */
 const ReelCard = ({
-  item, index, total, isFocused, isCue, onOpen,
+  item, index, total, isFocused, isCue, isMounted, onOpen,
 }: {
   item: VideoItem;
   index: number;
@@ -240,6 +274,13 @@ const ReelCard = ({
   isFocused: boolean;
   /** The one card whose full-screen button pulses, so the cue reads once. */
   isCue: boolean;
+  /**
+   * Whether this card gets a real player or its still. Six reels playing at
+   * once is roughly a third of a gigabyte of video and six hardware decoders,
+   * which is what used to take phone browsers down mid-scroll — so only the
+   * reels in view are ever mounted, and the rest are ~40 KB images.
+   */
+  isMounted: boolean;
   onOpen: () => void;
 }) => (
   <motion.div
@@ -249,7 +290,10 @@ const ReelCard = ({
     style={{ originY: 0.5 }}
   >
     <div className="og-reel-frame">
-      <ReelMedia item={item} interactive={false} />
+      {/* The still sits under the player so the swap from image to video has
+          nothing to flash through, and stays put when there is no player. */}
+      <ReelPoster item={item} />
+      {isMounted && <ReelMedia item={item} interactive={false} />}
 
       {/* Shield — swallows the touch the iframe would have eaten, so the rail
           keeps scrolling, and turns the whole reel into one big open-me tap. */}
@@ -530,6 +574,10 @@ const VideosSection = ({ data, ready = true }: Props) => {
                 total={items.length}
                 isFocused={!isMobile || i === active}
                 isCue={i === active}
+                // A phone shows one reel at a time, so it plays one. A wide
+                // screen fits three side by side, and a card that is fully in
+                // view but frozen reads as broken — so the neighbours play too.
+                isMounted={Math.abs(i - active) <= (isMobile ? 0 : 1)}
                 onOpen={() => setOpen(i)}
               />
             ))}

@@ -84,14 +84,18 @@ export const userLogin = async (email: string, password: string, remember = true
   return data as { user: AppUser };
 };
 
+// Resolves the session against the server. `null` means the server actively said
+// "not signed in" (401) — the only answer that should log someone out of the UI.
+// A dropped connection or a 500 THROWS instead of resolving null: those say
+// nothing about whether the session is valid, and treating them as "signed out"
+// is how a shopper on a flaky train connection loses their basket page.
+// Deliberately not routed through checkAuth — this call is the session check
+// itself, so a 401 here is an answer, not a global "session expired" event.
 export const userMe = async (): Promise<AppUser | null> => {
-  try {
-    const res = await fetchWithTimeout(`${API_URL}/api/user/me`, { credentials: CREDENTIALS });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+  const res = await fetchWithTimeout(`${API_URL}/api/user/me`, { credentials: CREDENTIALS });
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error('Could not reach your account');
+  return await res.json();
 };
 
 export const logoutUser = async (): Promise<void> => {
@@ -252,7 +256,7 @@ export const deleteAddress = async (id: string): Promise<void> => {
   }
 };
 
-export const changePassword = async (currentPassword: string, newPassword: string): Promise<void> => {
+export const changePassword = async (currentPassword: string, newPassword: string) => {
   const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/me/password`, {
     method: 'PUT',
     headers: JSON_HEADERS,
@@ -261,6 +265,53 @@ export const changePassword = async (currentPassword: string, newPassword: strin
   }));
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Could not change password');
+  // How many other devices this password change signed out — worth telling the
+  // customer, since that's the whole point of changing it.
+  return data as { signed_out_sessions?: number };
+};
+
+// ── Signed-in devices ─────────────────────────────────────────────────────────
+
+// One signed-in device. `id` is the session row id, not a credential — the actual
+// session token lives in an httpOnly cookie and never reaches page JS.
+export interface UserSession {
+  id: string;
+  current: boolean;
+  device: string;
+  ip: string;
+  remember: boolean;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+}
+
+export const fetchSessions = async (): Promise<UserSession[]> => {
+  const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/sessions`, { credentials: CREDENTIALS }));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Could not load your signed-in devices');
+  return data;
+};
+
+// Signing out a device. Returns whether the revoked session was this browser's —
+// the caller has to drop local auth state in that case.
+export const revokeSession = async (id: string): Promise<{ current: boolean }> => {
+  const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/sessions/${id}`, {
+    method: 'DELETE',
+    credentials: CREDENTIALS,
+  }));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Could not sign that device out');
+  return data;
+};
+
+export const revokeOtherSessions = async (): Promise<{ revoked: number }> => {
+  const res = checkAuth(await fetchWithTimeout(`${API_URL}/api/user/sessions/revoke-others`, {
+    method: 'POST',
+    credentials: CREDENTIALS,
+  }));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Could not sign the other devices out');
+  return data;
 };
 
 // ── Cart ──────────────────────────────────────────────────────────────────────

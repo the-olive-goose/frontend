@@ -31,14 +31,21 @@ const StatTile = ({ label, value, prev, invert = false, sub }: {
   label: string; value: string; prev?: { current: number; previous: number }; invert?: boolean; sub?: string;
 }) => {
   let delta: { text: string; good: boolean } | null = null;
-  if (prev && prev.previous > 0) {
-    const pct = ((prev.current - prev.previous) / prev.previous) * 100;
-    if (Number.isFinite(pct)) {
-      const up = pct >= 0;
-      delta = {
-        text: `${up ? "↑" : "↓"} ${Math.abs(pct).toFixed(1)}% vs previous period`,
-        good: invert ? !up : up,
-      };
+  // No baseline is stated outright rather than left blank — a missing delta and
+  // a flat one must not look the same.
+  let noBaseline = false;
+  if (prev) {
+    if (prev.previous > 0) {
+      const pct = ((prev.current - prev.previous) / prev.previous) * 100;
+      if (Number.isFinite(pct)) {
+        const up = pct >= 0;
+        delta = {
+          text: `${up ? "↑" : "↓"} ${Math.abs(pct).toFixed(1)}% vs previous period`,
+          good: invert ? !up : up,
+        };
+      }
+    } else {
+      noBaseline = true;
     }
   }
   return (
@@ -50,7 +57,12 @@ const StatTile = ({ label, value, prev, invert = false, sub }: {
           {delta.text}
         </p>
       )}
-      {!delta && sub && <p className="font-sans text-xs text-muted-foreground mt-1">{sub}</p>}
+      {!delta && noBaseline && (
+        <p className="font-sans text-xs text-muted-foreground mt-1">
+          {prev.current > 0 ? "no activity in the previous period" : "nothing in either period"}
+        </p>
+      )}
+      {!delta && !noBaseline && sub && <p className="font-sans text-xs text-muted-foreground mt-1">{sub}</p>}
     </div>
   );
 };
@@ -104,7 +116,7 @@ const axisProps = {
 // Ordered stages → single-hue ordinal ramp; widths scale to the first stage.
 // Values sit at the bar tip (never inside a too-small bar) and each stage shows
 // its conversion from the previous one.
-const Funnel = ({ stages }: { stages: AnalyticsOverview["funnel"] }) => {
+const Funnel = ({ stages, conversionRate }: { stages: AnalyticsOverview["funnel"]; conversionRate: number }) => {
   const max = Math.max(stages[0]?.sessions ?? 0, 1);
   return (
     <div className="space-y-3">
@@ -136,11 +148,11 @@ const Funnel = ({ stages }: { stages: AnalyticsOverview["funnel"] }) => {
           </div>
         );
       })}
+      {/* Reads the API's own conversion figure rather than recomputing it, so
+          this and the Session conversion tile can never disagree. */}
       <p className="font-sans text-[11px] text-muted-foreground pt-1">
-        Distinct sessions reaching each stage. Overall conversion:{" "}
-        <span className="font-semibold text-foreground">
-          {max > 0 ? ((stages[4]?.sessions ?? 0) / max * 100).toFixed(2) : "0"}%
-        </span>
+        Sessions reaching each stage or any later one. Overall conversion:{" "}
+        <span className="font-semibold text-foreground">{conversionRate}%</span>
       </p>
     </div>
   );
@@ -148,9 +160,12 @@ const Funnel = ({ stages }: { stages: AnalyticsOverview["funnel"] }) => {
 
 // ── Devices — part-to-whole as one stacked horizontal bar + legend ─────────────
 const DeviceSplit = ({ devices }: { devices: AnalyticsOverview["devices"] }) => {
-  const order = ["desktop", "mobile", "tablet"];
-  const colors = [SERIES.blue, SERIES.aqua, SERIES.yellow];
-  const sorted = [...devices].sort((a, b) => order.indexOf(a.device) - order.indexOf(b.device));
+  // "unknown" is listed explicitly so it sorts last and keeps a stable colour —
+  // with indexOf alone it scored -1 and jumped to the front of the bar.
+  const order = ["desktop", "mobile", "tablet", "unknown"];
+  const colors = [SERIES.blue, SERIES.aqua, SERIES.yellow, INK_MUTED];
+  const rank = (d: string) => { const i = order.indexOf(d); return i === -1 ? order.length : i; };
+  const sorted = [...devices].sort((a, b) => rank(a.device) - rank(b.device));
   const total = sorted.reduce((s, d) => s + d.sessions, 0);
   if (!total) return <p className="font-sans text-xs text-muted-foreground">No sessions yet.</p>;
   return (
@@ -352,18 +367,37 @@ const AnalyticsPanel = () => {
       lines.push("");
     };
     const activeFilters = [data.filters.device && `device=${data.filters.device}`, data.filters.source && `source=${data.filters.source}`].filter(Boolean).join(" ") || "none";
-    section(`Olive Goose analytics ${data.start} to ${data.end} (filters: ${activeFilters})`, ["metric", "value"], [
-      ["Revenue EUR", data.sales.revenue], ["Orders", data.sales.orders], ["Average order value EUR", data.sales.aov],
-      ["Session conversion %", data.sales.conversion_rate],
-      ["Visitors", data.traffic.visitors], ["Sessions", data.traffic.sessions], ["Page views", data.traffic.pageviews],
-      ["Bounce rate %", data.traffic.bounce_rate], ["New visitors", data.traffic.new_visitors], ["Returning visitors", data.traffic.returning_visitors],
-      ["Checkout sessions", data.abandoned.checkout_sessions], ["Abandoned checkouts", data.abandoned.abandoned_sessions], ["Abandoned basket value EUR", data.abandoned.lost_revenue],
-      ["Total customers", data.customers.total_customers], ["New customers", data.customers.new_customers],
-      ["Avg lifetime value EUR", data.customers.avg_lifetime_value],
-    ]);
+    // Previous-period values ship alongside the current ones so the deltas on
+    // screen can be re-derived from the file rather than taken on trust.
+    section(
+      `Olive Goose analytics ${data.start} to ${data.end} (${data.days}-day period, days in ${data.timezone}, filters: ${activeFilters})`,
+      ["metric", "value", "previous period"],
+      [
+        ["Revenue EUR", data.sales.revenue, data.sales.prev.revenue],
+        ["Orders", data.sales.orders, data.sales.prev.orders],
+        ["Orders linked to a tracked session", data.sales.attributed_orders, ""],
+        ["Average order value EUR", data.sales.aov, data.sales.prev.aov],
+        ["Session conversion %", data.sales.conversion_rate, ""],
+        ["Visitors", data.traffic.visitors, data.traffic.prev.visitors],
+        ["Sessions", data.traffic.sessions, data.traffic.prev.sessions],
+        ["Page views", data.traffic.pageviews, data.traffic.prev.pageviews],
+        ["Bounce rate %", data.traffic.bounce_rate, ""],
+        ["New visitors", data.traffic.new_visitors, ""], ["Returning visitors", data.traffic.returning_visitors, ""],
+        ["Sessions reaching payment", data.abandoned.checkout_sessions, ""],
+        ["Abandoned at payment", data.abandoned.abandoned_sessions, ""],
+        ["Abandoned basket value EUR", data.abandoned.lost_revenue, ""],
+        ["Total customers", data.customers.total_customers, ""], ["New customers", data.customers.new_customers, ""],
+        ["Avg lifetime value EUR", data.customers.avg_lifetime_value, ""],
+      ]
+    );
+    if (data.sales.orders > data.sales.attributed_orders) {
+      section("Caveat", ["note"], [[
+        `${data.sales.orders - data.sales.attributed_orders} paid order(s) have no tracked session — funnel, session conversion and attribution cover ${data.sales.attributed_orders} of ${data.sales.orders} orders.`,
+      ]]);
+    }
     section("Funnel", ["stage", "sessions"], data.funnel.map(f => [f.stage, f.sessions]));
     section("Daily", ["day", "visitors", "sessions", "pageviews", "orders", "revenue"], data.daily.map(r => [r.day, r.visitors, r.sessions, r.pageviews, r.orders, r.revenue]));
-    section("Top products", ["product", "units", "revenue", "adds_to_cart"], data.top_products.map(p => [p.name, p.units, p.revenue, p.add_to_carts]));
+    section("Top products (revenue after discount, excl. shipping)", ["product", "units", "revenue", "sessions_adding"], data.top_products.map(p => [p.name, p.units, p.revenue, p.add_to_carts]));
     section(`Attribution by ${data.filters.attr}`, [data.filters.attr, "sessions", "orders", "revenue"], data.sources.map(s => [s.source, s.sessions, s.orders, s.revenue]));
     section("Top pages", ["path", "views", "sessions"], data.top_pages.map(p => [p.path, p.views, p.sessions]));
     section("Devices", ["device", "sessions"], data.devices.map(dv => [dv.device, dv.sessions]));
@@ -485,9 +519,10 @@ const AnalyticsPanel = () => {
 
       <p className="font-sans text-xs text-muted-foreground mb-6">
         {period.label} · {fmtRange(period.start, period.end)} — compared with the {data?.days ?? ""}-day period before it
+        {data?.timezone && <> · days run {data.timezone.replace("_", " ")} time</>}
         {device && <> · device: <span className="font-semibold text-foreground">{device}</span></>}
         {source && <> · source: <span className="font-semibold text-foreground">{source}</span></>}
-        {data?.attributed && <> · sales attributed via tracked sessions</>}
+        {data?.attributed && <> · limited to orders from matching sessions</>}
       </p>
 
       {error && (
@@ -503,6 +538,24 @@ const AnalyticsPanel = () => {
         // no skeleton flash, no layout jump.
         <div className="space-y-6" style={{ opacity: loading ? 0.55 : 1, transition: "opacity 0.15s" }}>
 
+          {/* Every session-derived number (funnel, conversion, attribution) can
+              only see orders that carry a tracked session. When some don't, say
+              so with the exact count — an ops lead must never read a tracking
+              gap as a fall in conversion. */}
+          {data.sales.orders > data.sales.attributed_orders && (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <p className="font-sans text-sm text-foreground">
+                ⚠ {fmtInt(data.sales.orders - data.sales.attributed_orders)} of {fmtInt(data.sales.orders)} paid orders
+                aren't linked to a browsing session.
+              </p>
+              <p className="font-sans text-xs text-muted-foreground mt-1">
+                Revenue, Orders, AOV and the customer figures are complete — they come from the orders table.
+                The funnel, session conversion and attribution table cover the {fmtInt(data.sales.attributed_orders)} linked
+                {" "}order{data.sales.attributed_orders === 1 ? "" : "s"} only, so treat them as a floor, not a total.
+              </p>
+            </div>
+          )}
+
           {!hasTraffic && (
             <div className="rounded-xl border border-border bg-card p-4">
               <p className="font-sans text-sm text-foreground">📡 Tracking is live — waiting for the first visitors.</p>
@@ -514,7 +567,7 @@ const AnalyticsPanel = () => {
 
           {/* ── Sales KPIs ── */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <StatTile label="Revenue" value={fmtCompactEur(data.sales.revenue)} prev={{ current: data.sales.revenue, previous: data.sales.prev.revenue }} />
+            <StatTile label="Revenue" value={fmtCompactEur(data.sales.revenue)} prev={{ current: data.sales.revenue, previous: data.sales.prev.revenue }} sub="Charged total, less refunds and returns" />
             <StatTile label="Orders" value={fmtInt(data.sales.orders)} prev={{ current: data.sales.orders, previous: data.sales.prev.orders }} />
             <StatTile label="Average order value" value={fmtEur(data.sales.aov)} prev={{ current: data.sales.aov, previous: data.sales.prev.aov }} />
             <StatTile label="Session conversion" value={`${data.sales.conversion_rate}%`} sub="Sessions that ended in a purchase" />
@@ -564,11 +617,11 @@ const AnalyticsPanel = () => {
           {/* ── Funnel + customers ── */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             <Card title="Conversion funnel" desc="Where sessions drop off between landing and purchase">
-              <Funnel stages={data.funnel} />
+              <Funnel stages={data.funnel} conversionRate={data.sales.conversion_rate} />
               <div className="mt-4 pt-4 border-t border-border grid grid-cols-3 gap-3">
                 <div>
                   <p className="font-sans text-lg font-semibold text-foreground">{fmtInt(data.abandoned.abandoned_sessions)}</p>
-                  <p className="font-sans text-xs text-muted-foreground">Abandoned checkouts</p>
+                  <p className="font-sans text-xs text-muted-foreground">Abandoned at payment</p>
                 </div>
                 <div>
                   <p className="font-sans text-lg font-semibold text-foreground">
@@ -578,9 +631,15 @@ const AnalyticsPanel = () => {
                 </div>
                 <div>
                   <p className="font-sans text-lg font-semibold text-foreground">{fmtEur(data.abandoned.lost_revenue)}</p>
-                  <p className="font-sans text-xs text-muted-foreground">Value left in baskets</p>
+                  <p className="font-sans text-xs text-muted-foreground">Value left at payment</p>
                 </div>
               </div>
+              {/* Named precisely: the event fires when the shopper commits to pay,
+                  so this is not "reached the checkout page and left". */}
+              <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                Counted from the moment a shopper submits the checkout form to pay — earlier drop-off
+                on the checkout page shows up as the gap between “Added to cart” and “Reached payment”.
+              </p>
             </Card>
 
             <Card title="Customers" desc="Lifetime customer base and what happened this period">
@@ -613,12 +672,16 @@ const AnalyticsPanel = () => {
 
           {/* ── Top products / sources ── */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <Card title="Top products" desc="By revenue from paid orders, with add-to-cart demand">
+            <Card title="Top products" desc="Revenue after discount, excluding shipping — with add-to-cart demand">
               <DataTable
-                cols={[{ label: "Product" }, { label: "Units", align: "right" }, { label: "Revenue", align: "right" }, { label: "Adds to cart", align: "right" }]}
+                cols={[{ label: "Product" }, { label: "Units", align: "right" }, { label: "Revenue", align: "right" }, { label: "Sessions adding", align: "right" }]}
                 rows={data.top_products.map(p => [p.name, fmtInt(p.units), fmtEur(p.revenue), fmtInt(p.add_to_carts)])}
-                empty="No paid orders in this period yet."
+                empty="No paid orders or cart activity in this period yet."
               />
+              <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                Each order's discount is shared across its lines, so these add up to Revenue minus shipping.
+                Products with carts but no sales are listed too — that's where demand is leaking.
+              </p>
             </Card>
 
             <Card title="Attribution" desc="Where sessions came from, and the revenue each produced">
@@ -656,8 +719,12 @@ const AnalyticsPanel = () => {
             </Card>
 
             <div className="space-y-4">
-              <Card title="Devices" desc="Session share by device class">
+              <Card title="Devices" desc="Session share by the device the browser reports">
                 <DeviceSplit devices={data.devices} />
+                <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                  Read from each visit's browser identification, not the window size — a desktop
+                  browser in a narrow window is a desktop.
+                </p>
               </Card>
               <Card title="Audience" desc="Visitor mix in this period">
                 <div className="flex items-center gap-6">
@@ -670,6 +737,16 @@ const AnalyticsPanel = () => {
                     <p className="font-sans text-xs text-muted-foreground">Returning visitors</p>
                   </div>
                 </div>
+                {/* Without this, "Returning visitors" reads as a complete count.
+                    It isn't: visitors who didn't accept the cookie banner get an
+                    id that dies with the tab, so they return as "new" forever. */}
+                {data.traffic.identified_visitor_pct !== null && data.traffic.identified_visitor_pct < 100 && (
+                  <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                    Only {data.traffic.identified_visitor_pct}% of visitors accepted cookies and can be
+                    recognised on a later visit. The rest count as new every time, so “returning” is a
+                    floor and “new” is an over-count.
+                  </p>
+                )}
               </Card>
             </div>
           </div>

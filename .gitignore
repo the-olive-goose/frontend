@@ -60,4 +60,5 @@ backend/uploads/
 
 # e2e isolated Postgres data
 .e2e-pgdata/
+.analytics-pgdata/
 playwright-report/
