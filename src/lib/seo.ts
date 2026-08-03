@@ -5,7 +5,10 @@
 
 export const SITE_URL = "https://theolivegoose.ie";
 export const SITE_NAME = "The Olive Goose";
-export const DEFAULT_OG_IMAGE = `${SITE_URL}/og-image.jpg`;
+// Must stay in step with the static og:image in index.html — that tag is what
+// social crawlers read, this one is what SeoManager writes for pages without an
+// image of their own.
+export const DEFAULT_OG_IMAGE = `${SITE_URL}/og-share.jpg`;
 
 export interface RouteMeta {
   /** SEO title, ≤60 chars, primary keyword + brand */

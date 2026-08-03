@@ -8,7 +8,7 @@
       ]
     },
     {
-      "source": "/(favicon.png|og-image.jpg|placeholder.svg)",
+      "source": "/(favicon.png|og-share.jpg|og-image.jpg|placeholder.svg)",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=86400, stale-while-revalidate=604800" }
       ]

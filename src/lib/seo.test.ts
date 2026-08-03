@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   applyBranding,
@@ -5,9 +6,11 @@ import {
   isRouteLevelMetaCurrent,
   metaForPath,
   setSeoSettings,
+  DEFAULT_OG_IMAGE,
   DEFAULT_SEO,
   ROUTE_META,
   SITE_NAME,
+  SITE_URL,
   type SeoSettings,
 } from "@/lib/seo";
 
@@ -53,6 +56,46 @@ describe("applyMeta", () => {
 
     applyMeta({ title: "Matcha Hour", description: "A candle.", path: "/products/x" });
     expect(isRouteLevelMetaCurrent()).toBe(false);
+  });
+});
+
+// Social crawlers (Facebook, WhatsApp, iMessage) never run the JS that calls
+// applyMeta, so the only copy they ever see is the static markup in index.html.
+// That made it silently rot: the share card advertised discontinued scents long
+// after ROUTE_META["/"] had been rewritten. These tests are the link between the
+// two — if you change the homepage copy or the share image, change index.html too.
+describe("index.html static social tags", () => {
+  // vitest runs from the project root, and import.meta.url is a jsdom http URL.
+  const html = readFileSync(`${process.cwd()}/index.html`, "utf8");
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const tag = (selector: string) =>
+    doc.head.querySelector<HTMLMetaElement>(selector)?.getAttribute("content");
+
+  const home = ROUTE_META["/"];
+
+  it("carries the homepage title", () => {
+    expect(doc.title).toBe(home.title);
+    expect(tag('meta[property="og:title"]')).toBe(home.title);
+    expect(tag('meta[name="twitter:title"]')).toBe(home.title);
+  });
+
+  it("carries the homepage description", () => {
+    expect(tag('meta[name="description"]')).toBe(home.description);
+    expect(tag('meta[property="og:description"]')).toBe(home.description);
+    expect(tag('meta[name="twitter:description"]')).toBe(home.description);
+  });
+
+  it("points at the default share image, declared at the size crawlers expect", () => {
+    expect(tag('meta[property="og:image"]')).toBe(DEFAULT_OG_IMAGE);
+    expect(tag('meta[name="twitter:image"]')).toBe(DEFAULT_OG_IMAGE);
+    expect(tag('meta[property="og:image:width"]')).toBe("1200");
+    expect(tag('meta[property="og:image:height"]')).toBe("630");
+  });
+
+  it("uses absolute URLs — a relative og:image is dropped by every crawler", () => {
+    for (const selector of ['meta[property="og:image"]', 'meta[name="twitter:image"]']) {
+      expect(tag(selector)?.startsWith(`${SITE_URL}/`)).toBe(true);
+    }
   });
 });
 
