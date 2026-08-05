@@ -1,7 +1,13 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AnalyticsPanel from "./AnalyticsPanel";
-import type { AnalyticsOverview } from "@/lib/api";
+import { installMemoryStorage } from "@/test/memoryStorage";
+import type { AnalyticsOverview, AnalyticsInternal } from "@/lib/api";
+
+// The panel reads and writes the storefront's visitor id. Without a real store
+// those calls return null and the exclusion controls would render as if nothing
+// could ever be marked — passing for the wrong reason.
+installMemoryStorage();
 
 /**
  * What the panel is allowed to say.
@@ -20,10 +26,19 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     getAdminAnalytics: vi.fn(),
     getAdminAnalyticsLive: vi.fn().mockResolvedValue({ active_sessions: 0, active_visitors: 0, top_pages: [] }),
+    getAnalyticsInternal: vi.fn(),
+    saveAnalyticsInternal: vi.fn(),
+    setAnalyticsInternalBrowser: vi.fn().mockResolvedValue(undefined),
   };
 });
 
-const { getAdminAnalytics } = await import("@/lib/api");
+const { getAdminAnalytics, getAnalyticsInternal, saveAnalyticsInternal } = await import("@/lib/api");
+
+const internal = (o: Partial<AnalyticsInternal> = {}): AnalyticsInternal => ({
+  emails: [], networks: [], current_ip: "203.0.113.7", current_ip_excluded: false,
+  excluded_visitors: [], counted_origins: ["https://theolivegoose.ie"], origins_seen: [],
+  ...o,
+});
 
 const overview = (o: Partial<AnalyticsOverview> = {}): AnalyticsOverview => ({
   start: "2026-07-01", end: "2026-07-30", days: 30, timezone: "Europe/Dublin",
@@ -65,14 +80,20 @@ const overview = (o: Partial<AnalyticsOverview> = {}): AnalyticsOverview => ({
   top_pages: [{ path: "/shop", views: 4, sessions: 3 }],
   sources: [{ source: "google", sessions: 3, orders: 1, revenue: 100 }],
   devices: [{ device: "desktop", sessions: 4 }, { device: "mobile", sessions: 2 }],
+  locations: [{ city: "Dublin", country: "IE", sessions: 4, orders: 2, revenue: 120 }],
   web_vitals: [{ metric: "LCP", p75: 2100, samples: 40 }],
+  web_vitals_by_page: [],
   ...o,
 });
 
 const mocked = vi.mocked(getAdminAnalytics);
 
 describe("AnalyticsPanel", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getAnalyticsInternal).mockResolvedValue(internal());
+    localStorage.clear();
+  });
 
   it("warns when orders are missing a tracked session, naming the exact gap", async () => {
     mocked.mockResolvedValue(overview());
@@ -183,10 +204,15 @@ describe("AnalyticsPanel", () => {
     }));
     render(<AnalyticsPanel />);
 
-    // Visitors who declined cookies get a tab-scoped id and come back as "new"
-    // forever, so "returning" is a floor. Saying nothing would present it as a
-    // complete count.
-    expect(await screen.findByText(/Only 62\.5% of visitors accepted cookies/i)).toBeInTheDocument();
+    // A browser that won't keep an id — private mode, storage-blocking
+    // extensions — makes the same person "new" on every visit, so "returning" is
+    // a floor. Saying nothing would present it as a complete count.
+    //
+    // The caveat is deliberately NOT about the cookie banner any more: the
+    // visitor id is persistent for everyone, because first-party audience
+    // measurement doesn't depend on consent. Naming cookies here told the owner
+    // to fix a consent rate that has nothing to do with the gap.
+    expect(await screen.findByText(/Only 62\.5% of visitors' browsers kept an id/i)).toBeInTheDocument();
   });
 
   it("stays quiet about identity when every visitor is recognisable", async () => {
@@ -260,5 +286,150 @@ describe("AnalyticsPanel", () => {
     // 0% would read as "everyone who looked rejected it" — a very different
     // message from "nobody looked".
     expect(screen.queryByText("0%")).not.toBeInTheDocument();
+  });
+
+  // ── Core Web Vitals ───────────────────────────────────────────────────────
+  // These are the numbers Google grades the shop on, so the card's job is to be
+  // actionable and to never overstate its own coverage: a metric nobody is
+  // measuring must not look like a metric that is passing, and a failing score
+  // must say which page to go and fix.
+  describe("core web vitals", () => {
+    it("says a metric is unmeasured rather than leaving a gap", async () => {
+      mocked.mockResolvedValue(overview({
+        locations: [{ city: "Dublin", country: "IE", sessions: 4, orders: 2, revenue: 120 }],
+  web_vitals: [{ metric: "LCP", p75: 2100, samples: 40 }],
+      }));
+      render(<AnalyticsPanel />);
+
+      // CLS reports nothing when a page is perfectly stable, so its tile used to
+      // disappear — and a missing tile is indistinguishable at a glance from a
+      // passing one. "We aren't measuring this" is the more urgent of the two.
+      await screen.findByText("Site performance");
+      expect(screen.getByText("CLS")).toBeInTheDocument();
+      expect(screen.getAllByText("Not measured in this period").length).toBeGreaterThan(0);
+    });
+
+    it("names the pages behind a failing score, worst first", async () => {
+      mocked.mockResolvedValue(overview({
+        web_vitals: [{ metric: "LCP", p75: 3100, samples: 40 }],
+        web_vitals_by_page: [
+          { path: "/shop", metric: "LCP", p75: 4300, samples: 12 },
+          { path: "/basket", metric: "LCP", p75: 2900, samples: 9 },
+        ],
+      }));
+      render(<AnalyticsPanel />);
+
+      // "LCP 3.1s" says something is slow without saying what. One heavy page
+      // routinely carries the whole site's grade.
+      // Scoped to this block: /shop also appears in the Top pages table, and a
+      // page-wide query would silently pass on the wrong element.
+      const block = (await screen.findByText("Where it's coming from")).parentElement!;
+      const rows = within(block).getAllByText(/^\//).map(el => el.textContent);
+      expect(rows).toEqual(["/shop", "/basket"]);
+    });
+
+    it("stays silent about pages when the metric already passes", async () => {
+      mocked.mockResolvedValue(overview({
+        web_vitals: [{ metric: "LCP", p75: 1800, samples: 40 }],
+        web_vitals_by_page: [{ path: "/shop", metric: "LCP", p75: 2100, samples: 12 }],
+      }));
+      render(<AnalyticsPanel />);
+
+      // A list of pages under a green score is noise that buries the one under a
+      // red score when it eventually appears.
+      await screen.findByText("Site performance");
+      expect(screen.queryByText("Where it's coming from")).not.toBeInTheDocument();
+    });
+
+    it("grades a page against the same thresholds as the site total", async () => {
+      mocked.mockResolvedValue(overview({
+        web_vitals: [{ metric: "CLS", p75: 0.15, samples: 40 }],
+        web_vitals_by_page: [
+          { path: "/products/candle", metric: "CLS", p75: 0.30, samples: 8 },
+          { path: "/shop", metric: "CLS", p75: 0.05, samples: 8 },
+        ],
+      }));
+      render(<AnalyticsPanel />);
+
+      // 0.30 is Poor and 0.05 is Good — the passing page must not be listed as a
+      // culprit just because the site total is failing.
+      const block = (await screen.findByText("Where it's coming from")).parentElement!;
+      expect(within(block).getByText("/products/candle")).toBeInTheDocument();
+      expect(within(block).queryByText("/shop")).not.toBeInTheDocument();
+    });
+  });
+
+  // ── Whose visits count ────────────────────────────────────────────────────
+  // The panel's answer to "it says 6 visitors and it was only me". A visitor is
+  // an id in a browser's localStorage, so the owner's own testing — new device,
+  // private window, cleared site data — arrives as several strangers. These
+  // controls are the way to say "that was us", and the copy around them is the
+  // only thing telling the owner what each one actually reaches.
+  describe("internal traffic", () => {
+    it("offers the network the admin is on, by address", async () => {
+      render(<AnalyticsPanel />);
+      // Await the loaded address, not the static heading — the heading renders
+      // before the request resolves, so asserting on it races the fetch.
+      expect(await screen.findByText("203.0.113.7")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /don't count this network/i })).toBeInTheDocument();
+    });
+
+    it("promises only what a network exclusion can deliver", async () => {
+      render(<AnalyticsPanel />);
+      await screen.findByText("203.0.113.7");
+      // No visitor's IP is stored, so this cannot retire yesterday's rows for a
+      // device that hasn't been back. Saying it did would be the same species of
+      // wrong as the count that started this.
+      expect(screen.getByText(/next time it loads the shop/i)).toBeInTheDocument();
+      expect(screen.getByText(/No visitor's IP address is ever stored/i)).toBeInTheDocument();
+    });
+
+    it("sends this browser's visitor id when excluding the network", async () => {
+      vi.mocked(saveAnalyticsInternal).mockResolvedValue({ emails: [], networks: ["203.0.113.7"] });
+      render(<AnalyticsPanel />);
+      await screen.findByText("203.0.113.7");
+
+      fireEvent.click(screen.getByRole("button", { name: /don't count this network/i }));
+
+      // Without the id the owner sees no change at all until some device on the
+      // wifi happens to reload the shop — which reads as the setting not working.
+      await waitFor(() => expect(saveAnalyticsInternal).toHaveBeenCalledWith(
+        expect.objectContaining({ networks: ["203.0.113.7"], visitor_id: expect.any(String) })
+      ));
+    });
+
+    it("says a network is already covered rather than offering it twice", async () => {
+      vi.mocked(getAnalyticsInternal).mockResolvedValue(
+        internal({ networks: ["203.0.113.7"], current_ip_excluded: true })
+      );
+      render(<AnalyticsPanel />);
+      expect(await screen.findByText(/already excluded/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /count this network again/i })).toBeInTheDocument();
+    });
+
+    it("names the other hostnames that were minting duplicate visitors", async () => {
+      vi.mocked(getAnalyticsInternal).mockResolvedValue(internal({
+        origins_seen: [
+          { origin: "https://theolivegoose.ie", visitors: 40, events: 900 },
+          { origin: "https://frontend-production-a1bd.up.railway.app", visitors: 3, events: 20 },
+        ],
+      }));
+      render(<AnalyticsPanel />);
+
+      // The second hostname serves the same shop from a different origin, so
+      // everyone who used it got a second visitor id. Naming it is what turns an
+      // inexplicable count into an explicable one.
+      expect(await screen.findByText(/frontend-production-a1bd/)).toBeInTheDocument();
+      expect(screen.queryByText(/^https:\/\/theolivegoose\.ie —/)).not.toBeInTheDocument();
+    });
+
+    it("stays quiet about hostnames when only the real shop has reported in", async () => {
+      vi.mocked(getAnalyticsInternal).mockResolvedValue(internal({
+        origins_seen: [{ origin: "https://theolivegoose.ie", visitors: 40, events: 900 }],
+      }));
+      render(<AnalyticsPanel />);
+      await screen.findByText("203.0.113.7");
+      expect(screen.queryByText("Other addresses seen")).not.toBeInTheDocument();
+    });
   });
 });

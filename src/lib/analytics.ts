@@ -26,6 +26,10 @@ const VISITOR_KEY = 'og_analytics_vid';
 const SESSION_KEY = 'og_analytics_sid';
 const SESSION_LAST_SEEN_KEY = 'og_analytics_last';
 const UTM_KEY = 'og_analytics_utm';
+// Set from Admin → Analytics to mark this browser as the shop's own, so a
+// morning spent checking the homepage on a phone doesn't arrive as shopper
+// traffic. See INTERNAL_KEY's use in payload().
+const INTERNAL_KEY = 'og_analytics_internal';
 // Consent (and whether it is still current) lives in lib/cookieConsent.
 
 const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min idle
@@ -248,10 +252,40 @@ const queue: QueuedEvent[] = [];
 // rather than the large chunk of traffic it used to be.
 const visitorScope = () => (canPersist() ? 'persistent' : 'session');
 
+// ── The shop's own browsing ────────────────────────────────────────────────────
+// A "visitor" is an id in this browser's localStorage, which makes the owner's
+// own testing indistinguishable from a customer's visit — and worse than
+// indistinguishable, because testing means clearing storage, opening private
+// windows and switching devices, each of which mints another visitor. An hour of
+// that reads as a small rush of shoppers.
+//
+// Marking the browser is the only signal that survives all of it, so the flag is
+// carried on every batch rather than used to silence the client: the backend
+// needs the visitor id to exclude what this browser already sent, not just what
+// it sends next.
+
+/**
+ * Whether this browser has been marked as the shop's own in Admin → Analytics.
+ * Checks both stores: a browser that refuses localStorage still gets to exclude
+ * itself for the life of the tab rather than not at all.
+ */
+export const isInternalBrowser = (): boolean =>
+  readStore('local', INTERNAL_KEY) === '1' || readStore('session', INTERNAL_KEY) === '1';
+
+/** Mark or release this browser. Returns false if storage refused the change. */
+export const setInternalBrowser = (internal: boolean): boolean => {
+  if (!internal) {
+    clearBothStores(INTERNAL_KEY);
+    return true;
+  }
+  return writeStore('local', INTERNAL_KEY, '1') || writeStore('session', INTERNAL_KEY, '1');
+};
+
 const payload = () => JSON.stringify({
   visitor_id: getVisitorId(),
   session_id: getSessionId(),
   visitor_scope: visitorScope(),
+  internal: isInternalBrowser(),
   events: queue.splice(0, MAX_BATCH),
 });
 
@@ -274,13 +308,21 @@ const flush = (useBeacon = false) => {
   }).catch(() => { /* analytics must never surface errors to the shopper */ });
 };
 
-/** Record an event. Safe to call anywhere — never throws, never blocks. */
-export const track = (type: EventType, props: Record<string, unknown> = {}) => {
+/**
+ * Record an event. Safe to call anywhere — never throws, never blocks.
+ *
+ * `path` overrides the current URL, and exists for measurements that describe a
+ * moment other than the one they are reported in — see reportWebVitals, where a
+ * page's load speed must be filed under the page that loaded, not whichever page
+ * the shopper had wandered to by the time the tab closed.
+ */
+export const track = (type: EventType, props: Record<string, unknown> = {}, path?: string) => {
   try {
-    if (window.location.pathname.startsWith('/admin')) return; // don't count ourselves
+    const at = path ?? window.location.pathname;
+    if (at.startsWith('/admin')) return; // don't count ourselves
     queue.push({
       type,
-      path: window.location.pathname,
+      path: at,
       referrer: getReferrer(),
       ...getUtm(),
       device: getDeviceHint(),
@@ -299,10 +341,76 @@ export const trackPageView = (path: string) => {
 // Minimal native capture (no web-vitals dependency): LCP, CLS and INP via
 // PerformanceObserver, TTFB from navigation timing. Each reports once per page
 // load, when the page is first hidden.
+//
+// These are Google's definitions or they are nothing: the whole value of LCP,
+// CLS and INP is that a number here means the same as the number in Search
+// Console, PageSpeed Insights and every guide the owner will ever read. An
+// approximation that drifts from the standard is worse than no metric, because
+// it still gets acted on.
+
+/** The fields of a `layout-shift` entry that CLS is computed from. */
+export interface LayoutShift {
+  value: number;
+  startTime: number;
+  hadRecentInput: boolean;
+}
+
+/**
+ * CLS, to Google's definition: the worst *session window* of shifting, not the
+ * total amount of it. A window groups shifts that are less than 1s apart and
+ * spans at most 5s; the score is the largest window's sum.
+ *
+ * This replaces a plain running total, which on a single-page storefront meant
+ * the score climbed for as long as someone kept browsing — the life of the
+ * "page" is the whole visit here, so twenty individually harmless shifts over
+ * twenty minutes added up to a "Poor" grade nobody could have perceived. The
+ * metric was measuring how long a visit lasted more than how stable it looked.
+ *
+ * Exported for its own tests: this is the arithmetic that decides a pass or a
+ * fail against Google's threshold, and it is invisible in the browser.
+ */
+export const newClsWindows = () => {
+  let sessionValue = 0;
+  let sessionStart = 0;
+  let sessionLast = 0;
+  let worst = 0;
+  return {
+    /** Folds in a batch of entries and returns the score so far. */
+    add(entries: LayoutShift[]): number {
+      for (const e of entries) {
+        // A shift within 500ms of a real interaction is one the shopper asked
+        // for — opening a menu, expanding a section — and the browser flags it
+        // so it can be excluded. Counting those would penalise the site for
+        // doing what it was told.
+        if (e.hadRecentInput) continue;
+        const continues = sessionValue !== 0
+          && e.startTime - sessionLast < 1000
+          && e.startTime - sessionStart < 5000;
+        if (continues) {
+          sessionValue += e.value;
+        } else {
+          sessionValue = e.value;
+          sessionStart = e.startTime;
+        }
+        sessionLast = e.startTime;
+        if (sessionValue > worst) worst = sessionValue;
+      }
+      return +worst.toFixed(4);
+    },
+  };
+};
 
 const observeWebVitals = () => {
   if (typeof PerformanceObserver === 'undefined') return;
   const vitals: Record<string, number> = {};
+
+  // The page whose load this describes. Captured NOW, at the start of the page
+  // load, because the report fires when the tab is hidden — by which point a
+  // shopper who landed on a slow /shop and browsed to /basket would file /shop's
+  // paint time under /basket. That is how the slowest page in the field data
+  // came to be /checkout: not because checkout paints slowly, but because it is
+  // where people stop. Per-page vitals are unusable without this.
+  const landingPath = window.location.pathname;
 
   try {
     new PerformanceObserver(list => {
@@ -313,15 +421,27 @@ const observeWebVitals = () => {
   } catch { /* unsupported */ }
 
   try {
-    let cls = 0;
+    // CLS is the largest burst of shifting, not the total amount of it: the
+    // score is the worst "session window" — shifts no more than 1s apart, span
+    // capped at 5s — and that is what Google grades and what PageSpeed reports.
+    //
+    // This used to sum every shift for the life of the page. On a storefront
+    // that is a single-page app, the life of the page is the whole visit, so the
+    // longer someone browsed the worse their CLS looked, and a visit spread over
+    // twenty minutes could be graded "Poor" on twenty separate, individually
+    // harmless shifts. The number rose with engagement rather than with anything
+    // a shopper would notice.
+    const windows = newClsWindows();
+    // Reported even when nothing shifts. Absent CLS was being read as "no data",
+    // so the p75 was computed only over page loads that DID shift — the good
+    // ones were silently excluded from their own average.
+    vitals.CLS = 0;
     new PerformanceObserver(list => {
-      for (const entry of list.getEntries() as PerformanceEntry[]) {
-        const e = entry as unknown as { value: number; hadRecentInput: boolean };
-        if (!e.hadRecentInput) cls += e.value;
-      }
-      vitals.CLS = +cls.toFixed(4);
+      vitals.CLS = windows.add(list.getEntries() as unknown as LayoutShift[]);
     }).observe({ type: 'layout-shift', buffered: true });
-  } catch { /* unsupported */ }
+  } catch { /* unsupported — leave CLS unreported rather than claiming a 0 */
+    delete vitals.CLS;
+  }
 
   try {
     let maxInp = 0;
@@ -331,6 +451,11 @@ const observeWebVitals = () => {
         // 'event' stream also carries non-interactive events whose durations are
         // not INP candidates — counting those inflated p75 and graded healthy
         // pages "Poor".
+        //
+        // The worst single interaction is INP itself while a visit stays under
+        // ~50 interactions, which every visit to a shop this size does; above
+        // that Google starts discarding outliers, and this would read slightly
+        // high. Erring high on responsiveness is the safe direction.
         const e = entry as unknown as { duration: number; interactionId?: number };
         if (!e.interactionId) continue;
         if (e.duration > maxInp) { maxInp = e.duration; vitals.INP = Math.round(maxInp); }
@@ -340,7 +465,13 @@ const observeWebVitals = () => {
 
   try {
     const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-    if (nav) vitals.TTFB = Math.round(nav.responseStart);
+    // activationStart is non-zero only on a prerendered page, where the clock
+    // starts before the shopper asked for anything; without it a prerender that
+    // did its work early reports a TTFB of several seconds it never cost anyone.
+    if (nav) {
+      const activation = (nav as PerformanceNavigationTiming & { activationStart?: number }).activationStart ?? 0;
+      vitals.TTFB = Math.max(0, Math.round(nav.responseStart - activation));
+    }
   } catch { /* unsupported */ }
 
   let reported = false;
@@ -348,7 +479,7 @@ const observeWebVitals = () => {
     if (reported) return;
     reported = true;
     for (const [metric, value] of Object.entries(vitals)) {
-      track('web_vital', { metric, value });
+      track('web_vital', { metric, value }, landingPath);
     }
   };
   document.addEventListener('visibilitychange', () => {

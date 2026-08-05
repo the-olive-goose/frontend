@@ -25,6 +25,7 @@
 // test:e2e`, and never reads backend/.env — DATABASE_URL is always the
 // throwaway instance.
 import { spawn, spawnSync } from "child_process";
+import { createHmac } from "crypto";
 import net from "net";
 import path from "path";
 import { rmSync } from "fs";
@@ -42,6 +43,17 @@ const API = `http://localhost:${PORT}`;
 const ADMIN = { email: "analytics-check@test.local", password: "E2eAdmin123!" };
 const ADMIN_HASH = "$2a$10$r.uiYaq6WeUsL5yheEzQ1Oup06Vq8wafTH/mlYWV88UPAEahfCpZi";
 const TZ = "Europe/Dublin";
+const COUNTED_ORIGIN = "https://shop.test"; // stands in for the live storefront
+
+// The session cookie the backend issues, minted here rather than driving a real
+// login — the assertions below are about what ingestion does with a signed-in
+// visitor, not about how the visitor signed in. HS256 by hand keeps this file
+// free of the backend's node_modules.
+const sessionCookie = (userId) => {
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const data = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ userId, exp: Math.floor(Date.now() / 1000) + 3600 })}`;
+  return `og_session=${data}.${createHmac("sha256", "check-secret").update(data).digest("base64url")}`;
+};
 
 const kids = [];
 let pg;
@@ -238,8 +250,11 @@ async function main() {
     env: {
       ...process.env, PORT: String(PORT), DATABASE_URL: DB, JWT_SECRET: "check-secret",
       ADMIN_EMAIL: ADMIN.email, ADMIN_PASSWORD_HASH: ADMIN_HASH, RESEND_API_KEY: "",
-      STRIPE_SECRET_KEY: "", FRONTEND_URL: "http://localhost:8081", ANALYTICS_TZ: TZ,
+      STRIPE_SECRET_KEY: "", FRONTEND_URL: `http://localhost:8081,${COUNTED_ORIGIN}`, ANALYTICS_TZ: TZ,
       API_RATE_LIMIT_MAX: "100000", AUTH_RATE_LIMIT_MAX: "100000",
+      // Stands in for theolivegoose.ie, so the origin gate is exercised against a
+      // fixed value rather than whatever the live domain happens to be.
+      ANALYTICS_ORIGINS: COUNTED_ORIGIN,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -505,6 +520,262 @@ async function main() {
   eq("no sign-in gate block without gate events", X.signin_wall, null);
   eq("that window's funnel is still monotonic",
     X.funnel.every((f, i) => i === 0 || f.sessions <= X.funnel[i - 1].sessions), true);
+
+  // ── Whose visits count ──────────────────────────────────────────────────────
+  // The reported symptom: one person testing the shop for an hour arrived as six
+  // visitors. Nothing was miscounted — a "visitor" is an id in a browser's
+  // localStorage, and localStorage is per-origin, so the shop answering to four
+  // hostnames (the domain, the Railway service that serves the same SPA, deploy
+  // previews, and a developer's localhost pointed at this same database) minted
+  // a fresh visitor on each. The owner's own testing then did the rest.
+  console.log("\n\x1b[1mwhose visits count\x1b[0m");
+
+  const rowsFor = async (visitor) =>
+    (await pool.query(`SELECT COUNT(*)::int AS n FROM analytics_events WHERE visitor_id = $1`, [visitor])).rows[0].n;
+
+  const send = async (visitor, origin, extraHeaders = {}) => {
+    const r = await fetch(`${API}/api/analytics/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}), ...extraHeaders },
+      body: JSON.stringify({
+        visitor_id: visitor, session_id: visitor, visitor_scope: "persistent",
+        events: [{ type: "page_view", path: "/" }],
+      }),
+    });
+    // 403 is the CORS layer refusing an origin the shop doesn't serve, which is
+    // the earlier of the two ways a stray hostname is turned away. Both end in
+    // no row, and no row is what these checks are actually about.
+    if (![204, 403].includes(r.status)) throw new Error(`ingest ${r.status}`);
+    return rowsFor(visitor);
+  };
+
+  eq("the real storefront is counted", await send("origin-real", COUNTED_ORIGIN), 1);
+  eq("localhost pointed at this database is not", await send("origin-localhost", "http://localhost:8080"), 0);
+  eq("the Railway hostname serving the same SPA is not", await send("origin-railway", "https://frontend-production-a1bd.up.railway.app"), 0);
+  eq("a deploy preview is not", await send("origin-preview", "https://deploy-preview-12--og.netlify.app"), 0);
+  // Fails open on purpose: if a proxy ever stops forwarding the header the shop
+  // must keep measuring itself rather than silently report zero traffic.
+  eq("an unreadable origin is kept, not dropped", await send("origin-absent", null), 1);
+  eq("…and the origin is stored, so this stays answerable",
+    (await pool.query(`SELECT origin FROM analytics_events WHERE visitor_id = 'origin-real'`)).rows[0].origin,
+    COUNTED_ORIGIN);
+
+  const visitors = async () => (await get()).traffic.visitors;
+  const baseline = await visitors();
+
+  // A browser the owner marks in Admin → Analytics. The exclusion keys on the
+  // visitor, so it has to retire what that browser already sent — marking it
+  // only from now on would leave the inflated number on screen.
+  await send("owner-phone", COUNTED_ORIGIN);
+  eq("an unmarked browser is a visitor", await visitors(), baseline + 1);
+  const mark = await fetch(`${API}/api/admin/analytics/internal/browser`, {
+    method: "POST", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ visitor_id: "owner-phone" }),
+  });
+  eq("marking the browser succeeds", mark.status, 200);
+  eq("…and takes its whole history with it", await visitors(), baseline);
+  eq("…and it stops being recorded at all", await send("owner-phone", COUNTED_ORIGIN), 1);
+
+  // The account route. It matters that this reaches BACKWARDS: a test checkout
+  // is anonymous browsing followed by a sign-in, and only the sign-in identifies
+  // it — so the page views before it are just as much the shop's own traffic.
+  const ownerId = (await pool.query(
+    `INSERT INTO users (email, full_name) VALUES ('owner@test.local','Owner') RETURNING id`
+  )).rows[0].id;
+  await send("owner-laptop", COUNTED_ORIGIN);
+  await send("owner-laptop", COUNTED_ORIGIN);
+  const withOwner = await visitors();
+  const saved = await fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ emails: ["owner@test.local", "not-an-email", "OTHER@Test.Local"] }),
+  });
+  eq("the account list saves, normalised and validated",
+    (await saved.json()).emails, ["owner@test.local", "other@test.local"]);
+  await send("owner-laptop", COUNTED_ORIGIN, { Cookie: sessionCookie(ownerId) });
+  eq("signing in as an internal account retires that browser's earlier browsing too",
+    await visitors(), withOwner - 1);
+  eq("…and nothing new is stored for it", await rowsFor("owner-laptop"), 2);
+
+  // A customer who happens to be signed in is still a customer.
+  const shopper = (await pool.query(`SELECT id FROM users WHERE email = 'c1@test.local'`)).rows[0].id;
+  const after = await visitors();
+  await send("real-shopper", COUNTED_ORIGIN, { Cookie: sessionCookie(shopper) });
+  eq("a signed-in customer is not excluded", await visitors(), after + 1);
+
+  // ── Where visitors are ──────────────────────────────────────────────────────
+  // City and country arrive as headers from Netlify's edge, which resolved them
+  // to route the request. No IP is looked up or stored to produce this, so the
+  // headers ARE the measurement — and anything that can reach this route without
+  // passing through Netlify can set them freely, which makes sanitising them the
+  // whole security story rather than a nicety.
+  console.log("\n\x1b[1mwhere visitors are\x1b[0m");
+
+  const fromCity = (visitor, city, countryCode) =>
+    send(visitor, COUNTED_ORIGIN, {
+      ...(city === null ? {} : { "X-Og-Geo-City": encodeURIComponent(city) }),
+      ...(countryCode === null ? {} : { "X-Og-Geo-Country": countryCode }),
+    });
+
+  const geoOf = async (visitor) =>
+    (await pool.query(`SELECT geo_city, geo_country FROM analytics_events WHERE visitor_id = $1 LIMIT 1`, [visitor])).rows[0];
+
+  await fromCity("geo-dublin", "Dublin", "IE");
+  eq("a city from the edge is stored", await geoOf("geo-dublin"), { geo_city: "Dublin", geo_country: "IE" });
+
+  // Header values are Latin-1; the edge percent-encodes so accented names survive.
+  await fromCity("geo-munich", "München", "de");
+  eq("an accented city survives the trip, and the country is normalised",
+    await geoOf("geo-munich"), { geo_city: "München", geo_country: "DE" });
+
+  // A city with no country is ambiguous to the point of misleading — there is a
+  // Dublin in Ohio — so the pair travels together or not at all.
+  await fromCity("geo-orphan", "Springfield", null);
+  eq("a city with no country is discarded rather than guessed at",
+    await geoOf("geo-orphan"), { geo_city: "", geo_country: "" });
+
+  // Junk must never reach a GROUP BY key.
+  await fromCity("geo-injection", "Dublin'); DROP TABLE analytics_events;--", "IE");
+  eq("a city that isn't a place name is refused",
+    (await geoOf("geo-injection")).geo_city, "");
+  await fromCity("geo-longcountry", "Dublin", "IRELAND");
+  eq("a country that isn't a two-letter code is refused",
+    await geoOf("geo-longcountry"), { geo_city: "", geo_country: "" });
+
+  // Every visit before this shipped, and every visit that reaches the backend
+  // without passing through Netlify, has no location at all.
+  await fromCity("geo-none", null, null);
+  eq("no headers means no location, not a guess", await geoOf("geo-none"), { geo_city: "", geo_country: "" });
+
+  const geoView = await (await fetch(
+    `${API}/api/admin/analytics?start=${start}&end=${today}`, { headers: auth }
+  )).json();
+  const dublin = geoView.locations.find(l => l.city === "Dublin" && l.country === "IE");
+  eq("the dashboard groups sessions by place", dublin?.sessions, 1);
+  // A location table that silently omits the unlocated invites the reader to
+  // treat the rest as the whole picture.
+  eq("visits with no location are shown as Unknown, not dropped",
+    geoView.locations.some(l => l.city === "Unknown"), true);
+  // The seeded journeys carry no geo headers, so every located order in this
+  // window is Unknown's — which makes this the check that the order join works
+  // at all. Revenue is what the owner acts on here ("advertise where the money
+  // is"), and a location table whose money column is quietly zero is worse than
+  // no table.
+  //
+  // It is measured against the SOURCES table, not against total revenue: both
+  // group the same session-attributed money by a different dimension, so they
+  // must agree with each other. Total revenue is deliberately larger — it
+  // includes orders with no browsing session behind them, which no dimension can
+  // place, and which the panel already warns about at the top of the page.
+  const locRevenue = geoView.locations.reduce((n, l) => n + l.revenue, 0);
+  const srcRevenue = geoView.sources.reduce((n, s) => n + s.revenue, 0);
+  eq("revenue follows the session to its location", locRevenue, srcRevenue);
+  eq("…and stays under the total, which includes unattributable orders",
+    locRevenue < geoView.sales.revenue, true);
+
+  // ── Core Web Vitals ─────────────────────────────────────────────────────────
+  // The metrics Google grades the shop on. The site-wide p75 says something is
+  // slow; only the per-page breakdown says what to fix, and a breakdown built on
+  // too few samples sends the owner after an unlucky phone on a train.
+  console.log("\n\x1b[1mcore web vitals\x1b[0m");
+
+  const vital = (sid, metric, value, path, offset) =>
+    pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, created_at)
+       VALUES ($1,$1,'web_vital',$2,$3,$4)`,
+      [sid, path, JSON.stringify({ metric, value }), at(1, 9, offset)]
+    );
+
+  // /slow-page: six samples, clearly failing. /rare: three samples, worse — but
+  // three visits is not a measurement.
+  for (let i = 0; i < 6; i++) await vital(`vit-slow-${i}`, "LCP", 4200 + i, "/slow-page", i);
+  for (let i = 0; i < 3; i++) await vital(`vit-rare-${i}`, "LCP", 9000 + i, "/rare", i);
+  for (let i = 0; i < 6; i++) await vital(`vit-fast-${i}`, "LCP", 900 + i, "/fast-page", i);
+
+  const vitalsWindow = await (await fetch(
+    `${API}/api/admin/analytics?start=${start}&end=${today}`, { headers: auth }
+  )).json();
+  const byPage = vitalsWindow.web_vitals_by_page.filter(r => r.metric === "LCP");
+
+  eq("a page with enough samples is broken out", byPage.find(r => r.path === "/slow-page")?.samples, 6);
+  // 4200…4205 → percentile_cont interpolates at index 0.75×(6−1)=3.75, i.e.
+  // three-quarters of the way from 4203 to 4204.
+  eq("…at its own p75, not the site's", byPage.find(r => r.path === "/slow-page").p75, 4203.75);
+  // Three visits is one bad phone, and chasing it costs the time the real
+  // offender deserves.
+  eq("a page with too few samples is left out", byPage.some(r => r.path === "/rare"), false);
+  eq("a fast page is still reported, so the card can rank them", byPage.some(r => r.path === "/fast-page"), true);
+  // The site-wide figure is unchanged by the breakdown existing.
+  eq("the site-wide LCP still covers every sample including the rare page",
+    vitalsWindow.web_vitals.find(v => v.metric === "LCP").samples, 15);
+
+  // ── The household network ───────────────────────────────────────────────────
+  // The signal that covers people who never sign in: a home connection is one
+  // address for every device on it. `trust proxy` is on, so an X-Forwarded-For
+  // sent to a test server on localhost is exactly what a real proxied visit
+  // looks like from the route's point of view.
+  const fromIp = (visitor, ip) => send(visitor, COUNTED_ORIGIN, { "X-Forwarded-For": ip });
+
+  await fromIp("home-laptop", "203.0.113.7");   // the browser doing the excluding
+  await fromIp("home-phone", "203.0.113.7");    // someone else in the house
+  const beforeHome = await visitors();
+  await fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ networks: ["203.0.113.7"], visitor_id: "home-laptop" }),
+  });
+  // Excluding a network can't reach backwards by itself — no visitor's IP is
+  // stored, so there is nothing to match old rows against. What it CAN do is
+  // clear the browser that did the excluding, so the number moves immediately
+  // instead of leaving the owner wondering whether the setting took.
+  eq("the excluding browser's own history goes at once", await visitors(), beforeHome - 1);
+  eq("…and nothing more is stored from it", await fromIp("home-laptop", "203.0.113.7"), 1);
+  // The whole point: a second person on the same wifi, never signed in. Their
+  // earlier visit clears on their next one, which is the honest guarantee.
+  eq("…and a different device on the same wifi records nothing new", await fromIp("home-phone", "203.0.113.7"), 1);
+  eq("…and that visit takes its earlier ones out of the count too", await visitors(), beforeHome - 2);
+  eq("a visitor somewhere else is untouched", await fromIp("someone-else", "198.51.100.9"), 1);
+
+  // Saving one list must not silently blank the other — they are separate
+  // controls on the same card, and losing the accounts by editing networks would
+  // be invisible until the numbers moved.
+  const both = await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json();
+  eq("saving networks kept the account list", both.emails, ["owner@test.local", "other@test.local"]);
+
+  // IPv6: every device on a home connection — and every privacy-extension
+  // rotation on one device — gets a different address inside the same /64, so
+  // matching the whole address would exclude nobody.
+  await fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ networks: ["2001:db8:abcd:1::1"] }),
+  });
+  eq("an IPv6 device in the same /64 is the same household",
+    await fromIp("v6-other-device", "2001:db8:abcd:1:f0e1:d2c3:b4a5:9687"), 0);
+  eq("a different /64 is a different household",
+    await fromIp("v6-elsewhere", "2001:db8:abcd:2::5"), 1);
+
+  // CIDR, for a connection that moves around inside a block.
+  await fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ networks: ["203.0.113.0/24"] }),
+  });
+  eq("a CIDR block covers the addresses inside it", await fromIp("cidr-inside", "203.0.113.44"), 0);
+  eq("…and nothing outside it", await fromIp("cidr-outside", "203.0.114.44"), 1);
+
+  // An entry that can't be matched would sit on screen looking like protection.
+  const junk = await (await fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ networks: ["203.0.113.0/24", "not-an-address", "999.1.1.1"] }),
+  })).json();
+  eq("unmatchable entries are refused, not stored", junk.networks, ["203.0.113.0/24"]);
+
+  // Undoing the exclusion has to give the traffic back, or a mis-click is
+  // permanent data loss dressed up as a setting.
+  await fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ networks: [] }),
+  });
+  const released = await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json();
+  eq("removing every network releases the visitors it hid",
+    released.excluded_visitors.some(v => v.reason === "own network"), false);
 
   // ── Measurement changes are declared, not hidden ────────────────────────────
   // A window spanning the day a metric's definition moved is comparing two

@@ -740,7 +740,15 @@ export interface AnalyticsOverview {
   top_pages: Array<{ path: string; views: number; sessions: number }>;
   sources: Array<{ source: string; sessions: number; orders: number; revenue: number }>;
   devices: Array<{ device: string; sessions: number }>;
+  /**
+   * Roughly where visitors were, resolved once per session from its landing
+   * event. `city` is "Unknown" when we never learned it; `country` is an ISO
+   * two-letter code, or '' alongside an unknown city.
+   */
+  locations: Array<{ city: string; country: string; sessions: number; orders: number; revenue: number }>;
   web_vitals: Array<{ metric: string; p75: number; samples: number }>;
+  /** The same metrics per page, so a bad site-wide score can be traced to a page. */
+  web_vitals_by_page: Array<{ path: string; metric: string; p75: number; samples: number }>;
 }
 
 export interface AnalyticsQuery {
@@ -773,6 +781,50 @@ export const getAdminAnalyticsLive = async (): Promise<AnalyticsLive> => {
   const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics/live`, { headers: authHeaders(true) }));
   if (!res.ok) throw new Error('Failed to load live analytics');
   return res.json();
+};
+
+// ── Internal traffic (admin) ────────────────────────────────────────────────────
+// Which browsing is the shop's own rather than a customer's, and which hostnames
+// have been sending events — the two things that decide whether "Visitors" is a
+// count of people or a count of browser storage.
+export interface AnalyticsInternal {
+  emails: string[];
+  networks: string[];
+  /** The address this admin request came from — offered so the owner can exclude it. */
+  current_ip: string;
+  current_ip_excluded: boolean;
+  excluded_visitors: Array<{ visitor_id: string; reason: string; created_at: string }>;
+  counted_origins: string[];
+  origins_seen: Array<{ origin: string; visitors: number; events: number }>;
+}
+
+export const getAnalyticsInternal = async (): Promise<AnalyticsInternal> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics/internal`, { headers: authHeaders(true) }));
+  if (!res.ok) throw new Error('Failed to load internal-traffic settings');
+  return res.json();
+};
+
+// Send only the list being changed — the backend keeps the other one as it is, so
+// the two controls can't wipe each other.
+export const saveAnalyticsInternal = async (
+  patch: { emails?: string[]; networks?: string[]; visitor_id?: string }
+): Promise<{ emails: string[]; networks: string[] }> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics/internal`, {
+    method: 'PUT',
+    headers: { ...authHeaders(true), 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }));
+  if (!res.ok) throw new Error('Failed to save');
+  return res.json();
+};
+
+export const setAnalyticsInternalBrowser = async (visitorId: string, enabled: boolean): Promise<void> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics/internal/browser`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId, enabled }),
+  }));
+  if (!res.ok) throw new Error('Failed to update this browser');
 };
 
 // ── Returns (admin) ─────────────────────────────────────────────────────────────

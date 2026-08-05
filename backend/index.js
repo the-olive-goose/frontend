@@ -3690,6 +3690,171 @@ const userIdFromSessionCookie = (req) => {
 
 const OBVIOUS_BOT_RE = /bot|crawler|spider|scraper|headless|lighthouse|pingdom/i;
 
+// ── Which origins count as "the shop" ─────────────────────────────────────────
+// A visitor id lives in localStorage, and localStorage is scoped to an ORIGIN —
+// so the same person is a different visitor on every hostname the shop answers
+// to, with nothing to reconcile them by. This app answers to several:
+//
+//   • theolivegoose.ie — Netlify, the real storefront;
+//   • frontend-production-*.up.railway.app — this very service, which serves the
+//     identical SPA from its catch-all at the bottom of this file;
+//   • deploy-preview-*.netlify.app — every preview build;
+//   • localhost:8080 — a developer's machine, which backend/.env points at this
+//     same PRODUCTION database, so each reload wrote a fresh visitor into the
+//     live numbers.
+//
+// Only the first is a customer. The rest are the shop looking at itself, and
+// counting them is how one person testing for an hour became "6 visitors".
+//
+// Override with ANALYTICS_ORIGINS (comma-separated) for a domain change or a
+// second storefront; the default is the canonical domain and its www alias.
+const countedOrigins = (() => {
+  const configured = String(process.env.ANALYTICS_ORIGINS || '').split(',').map(toOrigin).filter(Boolean);
+  return configured.length ? configured : ['https://theolivegoose.ie', 'https://www.theolivegoose.ie'];
+})();
+
+// The origin a batch was sent from. Fetch requires an Origin header on every
+// non-GET/HEAD request, and ingestion is always a POST (including sendBeacon's),
+// so real browsers always identify themselves here; Referer is a fallback.
+const requestOrigin = (req) => toOrigin(req.headers.origin) || toOrigin(req.headers.referer) || '';
+
+// ── Where the visitor is ──────────────────────────────────────────────────────
+// City and country as resolved by Netlify's edge, which knew them already in
+// order to route the request (see netlify/edge-functions/analytics-geo.ts). No
+// IP address is looked up, sent anywhere or stored to produce this — the shop
+// receives a city name and nothing else, which is what keeps this inside the
+// same first-party, no-personal-data-retained design as the rest of the
+// analytics.
+//
+// Treated strictly as a hint from our own proxy and sanitised accordingly: the
+// edge function strips any inbound copy of these headers, but a request that
+// reaches the backend without passing through Netlify — the Railway hostname
+// direct, curl — can still set them freely, and a GROUP BY key must never be
+// attacker-shaped. Absent or unusable means 'unknown', never a guess.
+const GEO_CITY_RE = /^[\p{L}\p{M}\s'.\-()]{1,80}$/u;
+const geoFromHeaders = (req) => {
+  let city = '';
+  try {
+    // The edge percent-encodes it: header values are Latin-1 and "München" is not.
+    const raw = decodeURIComponent(String(req.headers['x-og-geo-city'] || '')).trim();
+    if (GEO_CITY_RE.test(raw)) city = raw.slice(0, 80);
+  } catch { /* malformed encoding — no city rather than a mangled one */ }
+
+  const country = /^[A-Za-z]{2}$/.test(String(req.headers['x-og-geo-country'] || '').trim())
+    ? String(req.headers['x-og-geo-country']).trim().toUpperCase()
+    : '';
+
+  // A city without its country is ambiguous to the point of being misleading —
+  // there is a Dublin in Ohio — so the pair travels together or not at all.
+  return country ? { city, country } : { city: '', country: '' };
+};
+
+// Deliberately fails OPEN. An origin we cannot read is recorded rather than
+// dropped, so if Netlify's proxy ever stops forwarding the header the shop keeps
+// measuring itself instead of silently reporting zero traffic. The origins this
+// exists to exclude — localhost, the Railway hostname, preview builds — are all
+// real browser POSTs that do send the header, so they are still excluded.
+const originCounts = (origin) => !origin || countedOrigins.includes(origin);
+
+// ── The shop's own browsing ───────────────────────────────────────────────────
+// Accounts and networks listed here are the shop's, not customers'. Read on
+// every ingest batch and changed about once a year, so it's cached; a failed
+// refresh keeps the last known set rather than briefly counting internal traffic
+// as real.
+let internalUserIds = new Set();
+let internalNetworks = [];
+let internalLoadedAt = 0;
+const INTERNAL_TTL_MS = 60_000;
+
+// A home network is one address for every device on it — the owner's laptop, a
+// spouse's phone, a tablet — which is the only signal that covers people who
+// never sign in and never touch the admin panel.
+//
+// NO VISITOR'S IP IS EVER STORED. The address is compared in memory against this
+// list and then discarded; what gets written down is only that a visitor id
+// belongs to the shop. That matters beyond tidiness: this site's exemption from
+// the consent banner rests on it being plain first-party audience measurement
+// with no personal data retained, and an IP column would be exactly that.
+//
+// IPv6 is matched on its /64 prefix, because a home connection hands every
+// device — and every privacy-extension rotation — a different address inside one
+// prefix. IPv4 is matched whole, or as a CIDR block if one is given.
+const normaliseIp = (raw) => {
+  const s = String(raw || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  // ::ffff:192.0.2.1 — an IPv4 client arriving on a dual-stack socket.
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  return mapped ? mapped[1] : s.replace(/%.*$/, '').replace(/:\d+$/, (m) => (s.includes('.') ? '' : m));
+};
+
+/** The /64 an IPv6 address sits in, or null for anything else. */
+const ipv6Prefix = (ip) => {
+  if (!ip.includes(':')) return null;
+  const [head, tail = ''] = ip.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const gap = 8 - left.length - right.length;
+  const groups = ip.includes('::') ? [...left, ...Array(Math.max(gap, 0)).fill('0'), ...right] : left;
+  if (groups.length < 4) return null;
+  return groups.slice(0, 4).map((g) => parseInt(g || '0', 16).toString(16)).join(':');
+};
+
+/** IPv4 as a 32-bit integer, or null if it isn't one. */
+const ipv4Int = (ip) => {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const p of parts) {
+    const v = Number(p);
+    if (!/^\d{1,3}$/.test(p) || v > 255) return null;
+    n = n * 256 + v;
+  }
+  return n;
+};
+
+/** True when `ip` is on one of the shop's own networks. */
+const ipIsInternal = (ip, networks) => {
+  const addr = normaliseIp(ip);
+  if (!addr) return false;
+  const prefix = ipv6Prefix(addr);
+  const asInt = ipv4Int(addr);
+  return networks.some((entry) => {
+    const [base, bitsRaw] = String(entry).split('/');
+    const target = normaliseIp(base);
+    if (!target) return false;
+    if (asInt !== null) {
+      const targetInt = ipv4Int(target);
+      if (targetInt === null) return false;
+      const bits = bitsRaw ? Math.min(Math.max(parseInt(bitsRaw, 10) || 32, 0), 32) : 32;
+      // >>> 0 keeps the mask unsigned; a /0 shift by 32 is undefined in JS, so it
+      // is spelled out rather than computed.
+      const mask = bits === 0 ? 0 : (-1 << (32 - bits)) >>> 0;
+      return ((asInt & mask) >>> 0) === ((targetInt & mask) >>> 0);
+    }
+    return !!prefix && prefix === ipv6Prefix(target);
+  });
+};
+
+const getInternalConfig = async () => {
+  if (internalLoadedAt && Date.now() - internalLoadedAt < INTERNAL_TTL_MS) {
+    return { userIds: internalUserIds, networks: internalNetworks };
+  }
+  try {
+    const { rows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'analytics_internal'`);
+    const emails = (Array.isArray(rows[0]?.value?.emails) ? rows[0].value.emails : [])
+      .map((e) => String(e).toLowerCase().trim()).filter(Boolean);
+    const ids = emails.length
+      ? (await pool.query(`SELECT id FROM users WHERE LOWER(email) = ANY($1::text[])`, [emails])).rows.map((r) => r.id)
+      : [];
+    internalUserIds = new Set(ids);
+    internalNetworks = (Array.isArray(rows[0]?.value?.networks) ? rows[0].value.networks : [])
+      .map((n) => String(n).trim()).filter(Boolean);
+    internalLoadedAt = Date.now();
+  } catch (err) {
+    console.error('Could not refresh internal analytics config:', err.message);
+  }
+  return { userIds: internalUserIds, networks: internalNetworks };
+};
+
 // Device class from the User-Agent the browser sent with this request, with the
 // client's capability hint as a tie-breaker.
 //
@@ -3739,6 +3904,19 @@ const MEASUREMENT_CHANGES = [
 // a phantom visitor to traffic, so it's excluded from every session/visitor count.
 const NO_SESSION = 'server';
 
+// What the dashboard reads instead of the raw table: the same rows, minus every
+// visitor known to be the shop testing itself (see analytics_internal_visitors).
+//
+// It is a drop-in for `analytics_events` — aliased back to that name at each use
+// site — precisely so the exclusion cannot be forgotten in one of the twenty-odd
+// queries below and leave two figures on the same screen disagreeing about who
+// counts. The filter is by visitor, so marking a browser retroactively removes
+// its whole history, not just what it does next.
+const EXCLUDE_INTERNAL = `
+  SELECT * FROM analytics_events ae
+   WHERE NOT EXISTS (SELECT 1 FROM analytics_internal_visitors iv WHERE iv.visitor_id = ae.visitor_id)`;
+const EVENTS = `(${EXCLUDE_INTERNAL})`;
+
 // ── POST /api/analytics/events — batched ingestion from the storefront ────────
 // Accepts application/json (normal batched fetch) and text/plain (sendBeacon's
 // CORS-safelisted content type, used for the final flush on page hide).
@@ -3753,7 +3931,48 @@ app.post('/api/analytics/events', analyticsLimiter, express.text({ type: 'text/p
   if (!visitorId || !sessionId || !events.length) return res.status(400).json({ error: 'Invalid payload' });
   if (OBVIOUS_BOT_RE.test(req.headers['user-agent'] || '')) return res.status(204).end();
 
+  // Preview builds, the raw Railway hostname and localhost are the shop looking
+  // at itself on a different origin — each with its own localStorage, so each
+  // inventing visitors that never existed. 204 so the browser never retries.
+  const origin = requestOrigin(req);
+  if (!originCounts(origin)) return res.status(204).end();
+
+  const { city, country } = geoFromHeaders(req);
+
   const userId = userIdFromSessionCookie(req);
+
+  // The owner's own browsing, by either route: signed in as an internal account,
+  // or a browser they've explicitly marked in Admin → Analytics.
+  //
+  // What's remembered is the VISITOR, not the moment. The same browser was
+  // testing anonymously before the sign-in and will be again after the sign-out,
+  // and those events are just as much the shop's own traffic — so once a visitor
+  // id is known to be internal, everything it ever did is excluded, backwards as
+  // well as forwards (see EVENTS in the dashboard query below).
+  const { userIds, networks } = await getInternalConfig();
+  const flaggedByBrowser = body?.internal === true;
+  const isInternalAccount = !!userId && userIds.has(userId);
+  // Compared and discarded — see ipIsInternal. The address is never written down.
+  const isInternalNetwork = ipIsInternal(requestIp(req), networks);
+  const reason = isInternalNetwork ? 'own network'
+    : isInternalAccount ? 'internal account'
+    : 'browser marked in admin';
+  try {
+    if (flaggedByBrowser || isInternalAccount || isInternalNetwork) {
+      await pool.query(
+        `INSERT INTO analytics_internal_visitors (visitor_id, reason) VALUES ($1, $2)
+         ON CONFLICT (visitor_id) DO NOTHING`,
+        [visitorId, reason]
+      );
+      return res.status(204).end();
+    }
+    const known = await pool.query(`SELECT 1 FROM analytics_internal_visitors WHERE visitor_id = $1`, [visitorId]);
+    if (known.rowCount) return res.status(204).end();
+  } catch (err) {
+    // Never let the exclusion lookup cost us a real customer's events — an
+    // over-count is recoverable at query time, a dropped event is not.
+    console.error('Internal-visitor check failed, recording event anyway:', err.message);
+  }
   // Classified once per batch from this request's own User-Agent — never from
   // the browser's viewport, which is what made narrow desktop windows "tablets".
   const device = classifyDevice(req.headers['user-agent'], clip(body?.events?.[0]?.device, 20));
@@ -3769,15 +3988,15 @@ app.post('/api/analytics/events', analyticsLimiter, express.text({ type: 'text/p
       visitorId, sessionId, userId, e.type,
       clip(e.path, 200), clip(e.referrer, 500),
       clip(e.utm_source, 100), clip(e.utm_medium, 100), clip(e.utm_campaign, 100),
-      device, props, scope,
+      device, props, scope, clip(origin, 200), city, country,
     );
-    values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12})`);
+    values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15})`);
   }
   if (!values.length) return res.status(204).end();
 
   try {
     await pool.query(
-      `INSERT INTO analytics_events (visitor_id, session_id, user_id, event_type, path, referrer, utm_source, utm_medium, utm_campaign, device, props, visitor_scope)
+      `INSERT INTO analytics_events (visitor_id, session_id, user_id, event_type, path, referrer, utm_source, utm_medium, utm_campaign, device, props, visitor_scope, origin, geo_city, geo_country)
        VALUES ${values.join(',')}`,
       params
     );
@@ -3876,7 +4095,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
     SELECT DISTINCT ON (session_id) session_id,
            COALESCE(NULLIF(device, ''), 'unknown') AS device,
            ${SRC_EXPR} AS source
-    FROM analytics_events
+    FROM ${EVENTS} analytics_events
     WHERE created_at >= ${T3} AND created_at < ${T2}
       AND event_type NOT IN ('purchase', 'web_vital')
       AND session_id <> '${NO_SESSION}'
@@ -3898,7 +4117,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   // filtered figure is always a true subset of the unfiltered one.
   const ORDER_ATTR = (idCol) =>
     filtered
-      ? ` AND ${idCol}::text IN (SELECT props->>'order_id' FROM analytics_events
+      ? ` AND ${idCol}::text IN (SELECT props->>'order_id' FROM ${EVENTS} analytics_events
            WHERE event_type = 'purchase' AND created_at >= ${T3}${SF()})`
       : '';
 
@@ -3917,7 +4136,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   // the window start onward — deliberately *not* capped at the window end. A
   // checkout at 23:55 that pays at 00:03 is a sale, not an abandonment.
   const CONVERTED = `
-    SELECT DISTINCT session_id FROM analytics_events
+    SELECT DISTINCT session_id FROM ${EVENTS} analytics_events
     WHERE event_type = 'purchase' AND created_at >= ${T1} AND session_id <> '${NO_SESSION}'`;
 
   try {
@@ -3926,7 +4145,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
     const PC = filtered ? [...w, ...filterParams] : [start, endExcl];
     const PW = [...w, ...filterParams];
 
-    const [traffic, newVsReturning, funnel, daily, sales, customers, topProducts, topPages, sources, devices, vitals, abandoned, signinWall] = await Promise.all([
+    const [traffic, newVsReturning, funnel, daily, sales, customers, topProducts, topPages, sources, devices, vitals, locations, vitalsByPage, abandoned, signinWall] = await Promise.all([
 
       // Traffic KPIs — current window vs the previous window of the same length.
       pool.query(
@@ -3937,7 +4156,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            COUNT(DISTINCT visitor_id) FILTER (WHERE created_at < ${T1})::int AS prev_visitors,
            COUNT(DISTINCT session_id) FILTER (WHERE created_at < ${T1})::int AS prev_sessions,
            COUNT(*) FILTER (WHERE event_type = 'page_view' AND created_at < ${T1})::int AS prev_pageviews
-         FROM analytics_events
+         FROM ${EVENTS} analytics_events
          WHERE created_at >= ${T3} AND created_at < ${T2}
            AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}`,
         PW
@@ -3952,11 +4171,11 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // to cart from a single product page as a bounce is a false positive.
       pool.query(
         `WITH scoped AS (
-           SELECT visitor_id, session_id, event_type, visitor_scope FROM analytics_events
+           SELECT visitor_id, session_id, event_type, visitor_scope FROM ${EVENTS} analytics_events
            WHERE created_at >= ${T1} AND created_at < ${T2}
              AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}
          ), first_seen AS (
-           SELECT visitor_id, MIN(created_at) AS first_at FROM analytics_events
+           SELECT visitor_id, MIN(created_at) AS first_at FROM ${EVENTS} analytics_events
            WHERE visitor_id IN (SELECT visitor_id FROM scoped) GROUP BY visitor_id
          ), sess AS (
            SELECT session_id,
@@ -4025,7 +4244,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // conversion figure and the Session conversion tile always agree.
       pool.query(
         `WITH scoped AS (
-           SELECT session_id, event_type, path FROM analytics_events
+           SELECT session_id, event_type, path FROM ${EVENTS} analytics_events
            WHERE created_at >= ${T1} AND created_at < ${T2}
              AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}
          ), converted AS (${CONVERTED}
@@ -4087,7 +4306,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            SELECT ${DAY('created_at')} AS d, COUNT(DISTINCT visitor_id)::int AS visitors,
                   COUNT(DISTINCT session_id)::int AS sessions,
                   COUNT(*) FILTER (WHERE event_type = 'page_view')::int AS pageviews
-           FROM analytics_events
+           FROM ${EVENTS} analytics_events
            WHERE created_at >= ${T1} AND created_at < ${T2}
              AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY 1
@@ -4121,7 +4340,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
          FROM (
            SELECT o.created_at, ${NET_TOTAL} AS net,
                   o.id::text IN (
-                    SELECT props->>'order_id' FROM analytics_events
+                    SELECT props->>'order_id' FROM ${EVENTS} analytics_events
                     WHERE event_type = 'purchase' AND created_at >= ${T3} AND session_id <> '${NO_SESSION}'
                   ) AS attributed
            FROM orders o
@@ -4183,7 +4402,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
          ), carts AS (
            SELECT props->>'product_id' AS product_id, MAX(props->>'name') AS name,
                   COUNT(DISTINCT session_id)::int AS add_to_carts
-           FROM analytics_events
+           FROM ${EVENTS} analytics_events
            WHERE event_type = 'add_to_cart' AND created_at >= ${T1} AND created_at < ${T2}
              AND props->>'product_id' IS NOT NULL AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY 1
@@ -4196,7 +4415,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            -- page doesn't dilute the rate.
            SELECT props->>'product_id' AS product_id, MAX(props->>'name') AS name,
                   COUNT(DISTINCT session_id)::int AS views
-           FROM analytics_events
+           FROM ${EVENTS} analytics_events
            WHERE event_type = 'view_item' AND created_at >= ${T1} AND created_at < ${T2}
              AND props->>'product_id' IS NOT NULL AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY 1
@@ -4222,7 +4441,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // Top pages by views + unique sessions.
       pool.query(
         `SELECT path, COUNT(*)::int AS views, COUNT(DISTINCT session_id)::int AS sessions
-         FROM analytics_events
+         FROM ${EVENTS} analytics_events
          WHERE event_type = 'page_view' AND created_at >= ${T1} AND created_at < ${T2}
            AND session_id <> '${NO_SESSION}'${SF()}
          GROUP BY path ORDER BY views DESC LIMIT 10`,
@@ -4241,13 +4460,13 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       pool.query(
         `WITH landing AS (
            SELECT DISTINCT ON (session_id) session_id, ${ATTR_EXPRS[attr]} AS source
-           FROM analytics_events
+           FROM ${EVENTS} analytics_events
            WHERE created_at >= ${T1} AND created_at < ${T2}
              AND event_type NOT IN ('web_vital', 'purchase') AND session_id <> '${NO_SESSION}'${SF()}
            ORDER BY session_id, created_at ASC, id ASC
          ), purchases AS (
            SELECT e.session_id, COUNT(*)::int AS orders, SUM(${NET_TOTAL}) AS revenue
-           FROM analytics_events e
+           FROM ${EVENTS} e
            JOIN orders o ON o.id::text = e.props->>'order_id' AND ${PAID}
            WHERE e.event_type = 'purchase' AND e.created_at >= ${T1} AND e.created_at < ${T2}
              AND NOT (${FULLY_RETURNED})
@@ -4277,7 +4496,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // device, so the shares summed past 100%.
       pool.query(
         `SELECT COALESCE(sd.device, 'unknown') AS device, COUNT(DISTINCT e.session_id)::int AS sessions
-         FROM analytics_events e
+         FROM ${EVENTS} e
          LEFT JOIN (${SESSION_DIMS}) sd USING (session_id)
          WHERE e.created_at >= ${T1} AND e.created_at < ${T2}
            AND e.event_type <> 'web_vital' AND e.session_id <> '${NO_SESSION}'${SF('e.session_id')}
@@ -4290,10 +4509,75 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
         `SELECT props->>'metric' AS metric,
                 ROUND(percentile_cont(0.75) WITHIN GROUP (ORDER BY (props->>'value')::numeric)::numeric, 4)::float AS p75,
                 COUNT(*)::int AS samples
-         FROM analytics_events
+         FROM ${EVENTS} analytics_events
          WHERE event_type = 'web_vital' AND created_at >= ${T1} AND created_at < ${T2}
            AND props->>'value' ~ '^[0-9.]+$'${SF()}
          GROUP BY 1`,
+        PC
+      ),
+
+      // Where visitors are, by session and by what they spent.
+      //
+      // Resolved once per session from its landing event, for the same reason
+      // device and source are (see SESSION_DIMS): a purchase row is written
+      // server-side with no geo at all, so counting rows would report every
+      // paying session as "Unknown" and make the location table useless exactly
+      // where it matters most. DISTINCT ON picks the session's first browsing
+      // event and the whole session — orders included — is credited to it.
+      //
+      // '' is reported as Unknown rather than dropped: a location table that
+      // silently omits a third of the traffic invites the reader to treat the
+      // rest as the whole picture.
+      pool.query(
+        `WITH sess_geo AS (
+           SELECT DISTINCT ON (session_id) session_id,
+                  COALESCE(NULLIF(geo_city, ''), 'Unknown') AS city,
+                  COALESCE(NULLIF(geo_country, ''), '') AS country
+           FROM ${EVENTS} analytics_events
+           WHERE created_at >= ${T1} AND created_at < ${T2}
+             AND event_type NOT IN ('purchase', 'web_vital')
+             AND session_id <> '${NO_SESSION}'${SF()}
+           ORDER BY session_id, created_at ASC, id ASC
+         ), sess_orders AS (
+           SELECT DISTINCT ON (e.session_id) e.session_id, o.id AS order_id, ${NET_TOTAL} AS net
+           FROM ${EVENTS} e
+           JOIN orders o ON o.id::text = e.props->>'order_id'
+           WHERE e.event_type = 'purchase' AND e.created_at >= ${T1}
+             AND e.session_id <> '${NO_SESSION}' AND ${PAID} AND NOT (${FULLY_RETURNED})
+           ORDER BY e.session_id, e.created_at ASC
+         )
+         SELECT g.city, g.country,
+                COUNT(*)::int AS sessions,
+                COUNT(so.order_id)::int AS orders,
+                COALESCE(ROUND(SUM(so.net)::numeric, 2), 0)::float AS revenue
+         FROM sess_geo g LEFT JOIN sess_orders so USING (session_id)
+         GROUP BY 1, 2
+         ORDER BY sessions DESC, revenue DESC
+         LIMIT 15`,
+        PC
+      ),
+
+      // The same metrics per page. A single site-wide "LCP 3.1s" says something
+      // is slow but never which thing, and the answer is rarely uniform — one
+      // heavy page can carry the whole site's grade. This is what turns the
+      // number into an instruction.
+      //
+      // Pages with only a handful of samples are excluded: a p75 over three
+      // visits is one unlucky phone on a train, and chasing it wastes the time
+      // the real offender deserves.
+      pool.query(
+        `SELECT path,
+                props->>'metric' AS metric,
+                ROUND(percentile_cont(0.75) WITHIN GROUP (ORDER BY (props->>'value')::numeric)::numeric, 4)::float AS p75,
+                COUNT(*)::int AS samples
+         FROM ${EVENTS} analytics_events
+         WHERE event_type = 'web_vital' AND created_at >= ${T1} AND created_at < ${T2}
+           AND props->>'metric' IN ('LCP', 'INP', 'CLS')
+           AND props->>'value' ~ '^[0-9.]+$'
+           AND path <> ''${SF()}
+         GROUP BY 1, 2
+        HAVING COUNT(*) >= 5
+         ORDER BY 2, 3 DESC`,
         PC
       ),
 
@@ -4312,7 +4596,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       pool.query(
         `WITH checkout AS (
            SELECT session_id, MAX(${PROPS_TOTAL}) AS basket
-           FROM analytics_events
+           FROM ${EVENTS} analytics_events
            WHERE (event_type IN ('begin_checkout', 'add_shipping_info', 'add_payment_info')
                   OR (event_type = 'page_view' AND path LIKE '/checkout%'))
              AND created_at >= ${T1} AND created_at < ${T2}
@@ -4330,7 +4614,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            UNION
            SELECT session_id, NULL::numeric FROM converted
            WHERE session_id IN (
-             SELECT session_id FROM analytics_events
+             SELECT session_id FROM ${EVENTS} analytics_events
              WHERE created_at >= ${T1} AND created_at < ${T2}
                AND session_id <> '${NO_SESSION}'${SF()}
            )
@@ -4359,13 +4643,13 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            SELECT session_id,
                   BOOL_OR(props->>'outcome' = 'signin_required') AS walled,
                   MAX(${PROPS_TOTAL}) AS basket
-           FROM analytics_events
+           FROM ${EVENTS} analytics_events
            WHERE event_type = 'checkout_gate'
              AND created_at >= ${T1} AND created_at < ${T2}
              AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY session_id
          ), reached AS (
-           SELECT DISTINCT session_id FROM analytics_events
+           SELECT DISTINCT session_id FROM ${EVENTS} analytics_events
            WHERE (event_type = 'begin_checkout' OR (event_type = 'page_view' AND path LIKE '/checkout%'))
              AND created_at >= ${T1} AND created_at < ${T2} AND session_id <> '${NO_SESSION}'
          ), converted AS (${CONVERTED}
@@ -4463,7 +4747,9 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       top_pages: topPages.rows,
       sources: sources.rows.map(({ ord, ...row }) => row),
       devices: devices.rows,
+      locations: locations.rows,
       web_vitals: vitals.rows,
+      web_vitals_by_page: vitalsByPage.rows,
     });
   } catch (err) {
     sendServerError(res, err);
@@ -4478,14 +4764,14 @@ app.get('/api/admin/analytics/live', requireAuth, async (_req, res) => {
       pool.query(
         `SELECT COUNT(DISTINCT session_id)::int AS active_sessions,
                 COUNT(DISTINCT visitor_id)::int AS active_visitors
-         FROM analytics_events
+         FROM ${EVENTS} analytics_events
          WHERE created_at > NOW() - INTERVAL '5 minutes'
            AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'`
       ),
       // Where each active session currently is — its most recent page view.
       pool.query(
         `SELECT path, COUNT(*)::int AS sessions FROM (
-           SELECT DISTINCT ON (session_id) session_id, path FROM analytics_events
+           SELECT DISTINCT ON (session_id) session_id, path FROM ${EVENTS} analytics_events
            WHERE created_at > NOW() - INTERVAL '5 minutes' AND event_type = 'page_view'
            ORDER BY session_id, created_at DESC
          ) t GROUP BY path ORDER BY sessions DESC LIMIT 5`
@@ -4495,6 +4781,128 @@ app.get('/api/admin/analytics/live', requireAuth, async (_req, res) => {
   } catch (err) {
     sendServerError(res, err);
   }
+});
+
+// ── Internal traffic — keeping the shop's own browsing out of the numbers ──────
+// Two mechanisms, because neither covers the other's gap:
+//
+//   • ACCOUNTS survive a storage wipe but only catch the part of a visit that
+//     happened after signing in — though because the exclusion is keyed on the
+//     visitor, one sign-in retroactively clears that browser's whole history.
+//   • A MARKED BROWSER catches purely anonymous testing (the common case: the
+//     owner checking the homepage on a phone), but is a localStorage flag, so
+//     clearing site data forgets it and it must be set again.
+//
+// Also reports which origins have been sending events, because the single most
+// confusing way to invent visitors is to open the shop on two hostnames.
+app.get('/api/admin/analytics/internal', requireAuth, async (req, res) => {
+  try {
+    const [setting, visitors, origins] = await Promise.all([
+      pool.query(`SELECT value FROM site_settings WHERE key = 'analytics_internal'`),
+      pool.query(`SELECT visitor_id, reason, created_at FROM analytics_internal_visitors ORDER BY created_at DESC LIMIT 200`),
+      pool.query(
+        `SELECT COALESCE(NULLIF(origin, ''), '(not recorded)') AS origin,
+                COUNT(DISTINCT visitor_id)::int AS visitors, COUNT(*)::int AS events
+           FROM analytics_events
+          WHERE created_at >= NOW() - INTERVAL '90 days'
+          GROUP BY 1 ORDER BY events DESC LIMIT 20`
+      ),
+    ]);
+    const value = setting.rows[0]?.value || {};
+    const networks = Array.isArray(value.networks) ? value.networks : [];
+    const ip = normaliseIp(requestIp(req));
+    res.json({
+      emails: Array.isArray(value.emails) ? value.emails : [],
+      networks,
+      // So the owner can add the network they're on without having to go and
+      // look it up, and can see at a glance whether it's already covered.
+      current_ip: ip,
+      current_ip_excluded: ipIsInternal(ip, networks),
+      excluded_visitors: visitors.rows,
+      counted_origins: countedOrigins,
+      origins_seen: origins.rows,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// Saves the account list, the network list, or both — whichever the body carries,
+// so the two controls in the panel can't wipe each other by omission.
+app.put('/api/admin/analytics/internal', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'analytics_internal'`);
+    const current = rows[0]?.value || {};
+
+    const emails = Array.isArray(req.body?.emails)
+      ? req.body.emails.map((e) => String(e).toLowerCase().trim())
+          .filter((e) => e.includes('@') && e.length <= 200).slice(0, 50)
+      : (Array.isArray(current.emails) ? current.emails : []);
+
+    // An entry has to be an address this code can actually match, or it is a
+    // silent no-op that reads as "excluded" on screen.
+    const networks = Array.isArray(req.body?.networks)
+      ? req.body.networks.map((n) => String(n).trim().toLowerCase())
+          .filter((n) => {
+            const [base] = n.split('/');
+            const addr = normaliseIp(base);
+            return !!addr && (ipv4Int(addr) !== null || ipv6Prefix(addr) !== null);
+          }).slice(0, 50)
+      : (Array.isArray(current.networks) ? current.networks : []);
+
+    await pool.query(
+      `INSERT INTO site_settings (key, value) VALUES ('analytics_internal', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+      [JSON.stringify({ emails, networks })]
+    );
+
+    // Adding a network cannot reach backwards on its own: no visitor's IP is
+    // stored, so there is nothing to match yesterday's rows against. Each device
+    // on the network clears its own history the next time it loads the shop, and
+    // the browser doing the excluding — which is on that network, by definition —
+    // clears its own straight away, so the owner sees the number move now rather
+    // than wondering whether the setting took.
+    const visitorId = analyticsId(req.body?.visitor_id);
+    if (visitorId && networks.length > (Array.isArray(current.networks) ? current.networks.length : 0)) {
+      await pool.query(
+        `INSERT INTO analytics_internal_visitors (visitor_id, reason) VALUES ($1, 'own network')
+         ON CONFLICT (visitor_id) DO NOTHING`,
+        [visitorId]
+      );
+    }
+
+    // Visitors excluded by a network that has just been removed are released
+    // again — an exclusion the owner has undone must not keep hiding real
+    // traffic. Marks made any other way are left alone.
+    const droppedNetwork = (Array.isArray(current.networks) ? current.networks : [])
+      .some((n) => !networks.includes(n));
+    if (droppedNetwork && !networks.length) {
+      await pool.query(`DELETE FROM analytics_internal_visitors WHERE reason = 'own network'`);
+    }
+
+    // The ingest cache would otherwise serve the old list for up to a minute,
+    // which reads as "I saved it and it did nothing".
+    internalLoadedAt = 0;
+    res.json({ success: true, emails, networks });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// Mark (or release) one browser. The id comes from the admin's own browser,
+// which is the same visitor id it uses to shop — the admin panel is served from
+// the storefront's origin, so there is exactly one id per browser.
+app.post('/api/admin/analytics/internal/browser', requireAuth, async (req, res) => {
+  const visitorId = analyticsId(req.body?.visitor_id);
+  if (!visitorId) return res.status(400).json({ error: 'Invalid visitor id' });
+  try {
+    if (req.body?.enabled === false) {
+      await pool.query(`DELETE FROM analytics_internal_visitors WHERE visitor_id = $1`, [visitorId]);
+      return res.json({ success: true, enabled: false });
+    }
+    await pool.query(
+      `INSERT INTO analytics_internal_visitors (visitor_id, reason) VALUES ($1, 'browser marked in admin')
+       ON CONFLICT (visitor_id) DO NOTHING`,
+      [visitorId]
+    );
+    res.json({ success: true, enabled: true });
+  } catch (err) { sendServerError(res, err); }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -5530,11 +5938,37 @@ async function initDb() {
     -- Without this the dashboard cannot say how far "Visitors" and "New vs
     -- returning" can be trusted. '' on rows written before this column existed.
     ALTER TABLE analytics_events ADD COLUMN IF NOT EXISTS visitor_scope TEXT NOT NULL DEFAULT '';
+    -- The origin the batch was sent from. A visitor id is localStorage, and
+    -- localStorage is per-origin: the same person on theolivegoose.ie and on the
+    -- Railway hostname that serves the identical SPA is two unreconcilable
+    -- visitors. Ingestion now refuses everything but the real storefront (see
+    -- countedOrigins), and this column is what makes that auditable rather than
+    -- a matter of belief. '' on rows written before it existed.
+    ALTER TABLE analytics_events ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT '';
+    -- Roughly where the visitor was, as Netlify's edge had already resolved it in
+    -- order to route the request. No IP is looked up, transmitted or stored to
+    -- get this: see netlify/edge-functions/analytics-geo.ts and geoFromHeaders.
+    -- '' means we never learned it — a request that did not come through Netlify,
+    -- or a header that failed validation — and is reported as "Unknown" rather
+    -- than guessed at.
+    ALTER TABLE analytics_events ADD COLUMN IF NOT EXISTS geo_city    TEXT NOT NULL DEFAULT '';
+    ALTER TABLE analytics_events ADD COLUMN IF NOT EXISTS geo_country TEXT NOT NULL DEFAULT '';
 
     CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events (created_at);
     CREATE INDEX IF NOT EXISTS idx_analytics_events_type    ON analytics_events (event_type, created_at);
     CREATE INDEX IF NOT EXISTS idx_analytics_events_session ON analytics_events (session_id);
     CREATE INDEX IF NOT EXISTS idx_analytics_events_visitor ON analytics_events (visitor_id, created_at);
+
+    -- Browsers whose events are the shop testing itself, not a customer
+    -- shopping. Populated at ingest — from a session signed in as an internal
+    -- account, or from a browser the owner marked in Admin → Analytics — and
+    -- applied to the WHOLE history of each visitor id, so a checkout rehearsal
+    -- stops counting from its first anonymous page view, not from the sign-in.
+    CREATE TABLE IF NOT EXISTS analytics_internal_visitors (
+      visitor_id TEXT        PRIMARY KEY,
+      reason     TEXT        NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
 
     -- Reset tokens are single-use, short-lived, and stored as a SHA-256 digest
     -- (not bcrypt) so they can be looked up by an indexed equality match — the
@@ -5596,6 +6030,27 @@ async function initDb() {
        SET email_verified = (provider IN ('email', 'google'))
      WHERE email_verified IS DISTINCT FROM (provider IN ('email', 'google'))
   `));
+
+  // Seed the "this is us, not a customer" account list so the exclusion is live on
+  // the deploy that ships it rather than after someone remembers to configure it.
+  // Two sources: every admin login (whoever can open the dashboard is the shop),
+  // plus the owner's shopper accounts, which are ordinary customer records and so
+  // appear nowhere else. Once-only — the list is editable in Admin → Analytics and
+  // a re-run would keep resurrecting entries the owner deleted.
+  await runOnce('seed_analytics_internal_accounts', async (client) => {
+    const { rows } = await client.query(`SELECT LOWER(email) AS email FROM admins`);
+    const emails = [...new Set([
+      ...rows.map((r) => r.email),
+      'akash.rocks73@gmail.com',
+      'bhardwajakash166@gmail.com',
+    ].filter(Boolean))];
+    await client.query(
+      `INSERT INTO site_settings (key, value) VALUES ('analytics_internal', $1)
+       ON CONFLICT (key) DO NOTHING`,
+      [JSON.stringify({ emails })]
+    );
+    console.log(`   analytics excludes ${emails.length} internal account(s)`);
+  });
 
   // Fill canonical_email for welcome codes issued before the column existed, so the
   // "one per mailbox" rule applies to the existing subscriber base too and isn't

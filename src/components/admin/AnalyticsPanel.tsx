@@ -3,7 +3,12 @@ import {
   ResponsiveContainer, AreaChart, Area, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
-import { getAdminAnalytics, getAdminAnalyticsLive, type AnalyticsOverview, type AnalyticsLive } from "@/lib/api";
+import {
+  getAdminAnalytics, getAdminAnalyticsLive,
+  getAnalyticsInternal, saveAnalyticsInternal, setAnalyticsInternalBrowser,
+  type AnalyticsOverview, type AnalyticsLive, type AnalyticsInternal,
+} from "@/lib/api";
+import { getVisitorId, isInternalBrowser, setInternalBrowser } from "@/lib/analytics";
 
 // ── Chart colors ────────────────────────────────────────────────────────────────
 // Validated with the dataviz palette checker against the admin card surface
@@ -249,29 +254,101 @@ const VITAL_META: Record<string, { name: string; good: number; poor: number; fmt
   TTFB: { name: "Time to First Byte",        good: 800, poor: 1800, fmt: v => `${Math.round(v)}ms` },
 };
 
-const WebVitals = ({ vitals }: { vitals: AnalyticsOverview["web_vitals"] }) => {
+const rateVital = (key: string, p75: number) => {
+  const meta = VITAL_META[key];
+  const rating = p75 <= meta.good ? "Good" : p75 <= meta.poor ? "Needs work" : "Poor";
+  return {
+    rating,
+    color: rating === "Good" ? STATUS.good : rating === "Needs work" ? STATUS.serious : STATUS.critical,
+    icon: rating === "Good" ? "✓" : rating === "Needs work" ? "△" : "✕",
+  };
+};
+
+// The metrics Google grades the site on, and — when one of them is failing — the
+// pages responsible. A site-wide p75 alone says something is slow without ever
+// saying what, and the answer is almost never spread evenly: one heavy page
+// routinely drags the whole grade down while everything else is fine.
+const WebVitals = ({ vitals, byPage }: {
+  vitals: AnalyticsOverview["web_vitals"];
+  byPage: AnalyticsOverview["web_vitals_by_page"];
+}) => {
   const known = vitals.filter(v => VITAL_META[v.metric]);
   if (!known.length) return <p className="font-sans text-xs text-muted-foreground">No performance samples yet — vitals are collected as real visitors browse.</p>;
+
+  // Worst first, and only for metrics that aren't already passing: a list of
+  // pages under a green score is noise that buries the one under a red one.
+  const culprits = ["LCP", "INP", "CLS"].flatMap(key => {
+    const site = known.find(v => v.metric === key);
+    if (!site || rateVital(key, site.p75).rating === "Good") return [];
+    const pages = (byPage ?? [])
+      .filter(p => p.metric === key && rateVital(key, p.p75).rating !== "Good")
+      .sort((a, b) => b.p75 - a.p75)
+      .slice(0, 5);
+    return pages.length ? [{ key, pages }] : [];
+  });
+
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      {["LCP", "CLS", "INP", "TTFB"].map(key => {
-        const v = known.find(x => x.metric === key);
-        if (!v) return null;
-        const meta = VITAL_META[key];
-        const rating = v.p75 <= meta.good ? "Good" : v.p75 <= meta.poor ? "Needs work" : "Poor";
-        const color = rating === "Good" ? STATUS.good : rating === "Needs work" ? STATUS.serious : STATUS.critical;
-        const icon = rating === "Good" ? "✓" : rating === "Needs work" ? "△" : "✕";
-        return (
-          <div key={key} className="rounded-lg border border-border p-3">
-            <p className="font-sans text-xs text-muted-foreground" title={meta.name}>{key}</p>
-            <p className="font-sans text-lg font-semibold text-foreground">{meta.fmt(v.p75)}</p>
-            <p className="font-sans text-[11px] text-muted-foreground">
-              <span style={{ color }}>{icon} {rating}</span> · p75 of {fmtInt(v.samples)} samples
-            </p>
+    <>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {["LCP", "CLS", "INP", "TTFB"].map(key => {
+          const v = known.find(x => x.metric === key);
+          const meta = VITAL_META[key];
+          // A metric with no samples gets a tile saying so rather than vanishing.
+          // A missing tile is indistinguishable from a passing one at a glance,
+          // and "we are not measuring this" is the more urgent of the two.
+          if (!v) {
+            return (
+              <div key={key} className="rounded-lg border border-border border-dashed p-3">
+                <p className="font-sans text-xs text-muted-foreground" title={meta.name}>{key}</p>
+                <p className="font-sans text-lg font-semibold text-muted-foreground">—</p>
+                <p className="font-sans text-[11px] text-muted-foreground">Not measured in this period</p>
+              </div>
+            );
+          }
+          const { rating, color, icon } = rateVital(key, v.p75);
+          return (
+            <div key={key} className="rounded-lg border border-border p-3">
+              <p className="font-sans text-xs text-muted-foreground" title={meta.name}>{key}</p>
+              <p className="font-sans text-lg font-semibold text-foreground">{meta.fmt(v.p75)}</p>
+              <p className="font-sans text-[11px] text-muted-foreground">
+                <span style={{ color }}>{icon} {rating}</span> · p75 of {fmtInt(v.samples)} samples
+              </p>
+            </div>
+          );
+        })}
+      </div>
+
+      {!!culprits.length && (
+        <div className="mt-4 pt-4 border-t border-border">
+          <p className="font-sans text-xs font-semibold text-foreground">Where it's coming from</p>
+          <p className="font-sans text-[11px] text-muted-foreground mt-1 mb-3">
+            Pages scored on the visit that loaded them, worst first. Only pages with at least
+            five samples appear — a p75 over three visits is one unlucky phone, not a problem.
+          </p>
+          <div className="space-y-3">
+            {culprits.map(({ key, pages }) => (
+              <div key={key}>
+                <p className="font-sans text-[11px] text-muted-foreground mb-1">{VITAL_META[key].name}</p>
+                <ul className="space-y-1">
+                  {pages.map(p => {
+                    const { color, icon } = rateVital(key, p.p75);
+                    return (
+                      <li key={p.path} className="flex items-baseline justify-between gap-3">
+                        <span className="font-sans text-xs text-foreground truncate">{p.path}</span>
+                        <span className="font-sans text-xs shrink-0" style={{ color }}>
+                          {icon} {VITAL_META[key].fmt(p.p75)}
+                          <span className="text-muted-foreground"> · {fmtInt(p.samples)}</span>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
           </div>
-        );
-      })}
-    </div>
+        </div>
+      )}
+    </>
   );
 };
 
@@ -322,6 +399,212 @@ const buildPeriods = (): { pills: Period[]; calendar: Period[] } => {
 const fmtRange = (start: string, end: string) => {
   const f = (s: string) => new Date(`${s}T00:00:00`).toLocaleDateString("en-IE", { day: "numeric", month: "short", year: "numeric" });
   return `${f(start)} – ${f(end)}`;
+};
+
+// ── Whose visits count ──────────────────────────────────────────────────────────
+// The honest caveat on every visitor number: a "visitor" is an id in a browser's
+// localStorage, so the same person is a new visitor on a new device, in a private
+// window, or after clearing site data — and testing the shop means doing all
+// three. Without a way to say "that was me", an hour of the owner's own testing
+// reads as a small rush of shoppers.
+//
+// Both controls key on the visitor, so switching either on removes what that
+// browser or account already sent, not just what it sends next.
+const InternalTraffic = () => {
+  const [state, setState] = useState<AnalyticsInternal | null>(null);
+  const [thisBrowser, setThisBrowser] = useState(isInternalBrowser);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    getAnalyticsInternal().then(setState).catch(() => setNote("Couldn't load these settings."));
+  }, []);
+
+  const save = async (patch: { emails?: string[]; networks?: string[] }, message: string) => {
+    setBusy(true);
+    try {
+      const saved = await saveAnalyticsInternal(patch);
+      setState(s => (s ? {
+        ...s, emails: saved.emails, networks: saved.networks,
+        current_ip_excluded: saved.networks.includes(s.current_ip),
+      } : s));
+      setNote(message);
+    } catch {
+      setNote("Couldn't save that.");
+    } finally { setBusy(false); }
+  };
+
+  const saveEmails = (emails: string[]) =>
+    save({ emails }, "Saved. Reload to see the numbers without them.");
+
+  const toggleBrowser = async () => {
+    const next = !thisBrowser;
+    setBusy(true);
+    try {
+      // Server first: the flag below only stops FUTURE batches, while this is
+      // what retires the events this browser has already sent.
+      await setAnalyticsInternalBrowser(getVisitorId(), next);
+      setInternalBrowser(next);
+      setThisBrowser(next);
+      setNote(next
+        ? "This browser no longer counts as a shopper, including what it recorded before now."
+        : "This browser counts as a shopper again.");
+    } catch {
+      setNote("Couldn't update this browser.");
+    } finally { setBusy(false); }
+  };
+
+  const strayOrigins = (state?.origins_seen ?? []).filter(
+    o => o.origin !== "(not recorded)" && !state?.counted_origins.includes(o.origin)
+  );
+
+  return (
+    <Card title="Whose visits count" desc="Keep the shop's own testing out of the numbers">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="max-w-md">
+          <p className="font-sans text-sm font-semibold text-foreground">This browser</p>
+          <p className="font-sans text-[11px] text-muted-foreground mt-1">
+            {thisBrowser
+              ? "Not counted. Anything it browses is treated as your own testing."
+              : "Counted as a shopper. Turn this on for any browser you test the shop in."}
+            {" "}Clearing this browser's site data forgets the setting.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={toggleBrowser}
+          disabled={busy}
+          className="font-sans text-xs px-3 py-2 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 min-h-[44px]"
+        >
+          {thisBrowser ? "Count this browser again" : "Don't count this browser"}
+        </button>
+      </div>
+
+      {/* The broadest signal, and the only one that covers someone else in the
+          house: a home connection is one address for every device on it, so this
+          catches phones and tablets that never sign in and never open admin. */}
+      <div className="mt-5 pt-5 border-t border-border">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="max-w-md">
+            <p className="font-sans text-sm font-semibold text-foreground">Your network</p>
+            <p className="font-sans text-[11px] text-muted-foreground mt-1">
+              {state?.current_ip_excluded
+                ? <>You're on <span className="font-mono">{state.current_ip}</span>, which is already excluded — every device on it, for everyone in the house.</>
+                : <>You're on <span className="font-mono">{state?.current_ip || "…"}</span>. Excluding it covers every device on this wifi without anyone having to sign in. Each device drops out, and loses the visits it already recorded, the next time it loads the shop.</>}
+              {" "}Home broadband addresses change from time to time; if visits from home start counting again, add the new one here.
+            </p>
+          </div>
+          {state?.current_ip && (
+            <button
+              type="button"
+              disabled={busy}
+              // The visitor id goes with it so this browser's own past visits
+              // clear immediately; other devices on the wifi clear theirs the
+              // next time they load the shop.
+              onClick={() => (state.current_ip_excluded
+                ? save({ networks: state.networks.filter(n => n !== state.current_ip) }, "This network counts as shopper traffic again.")
+                : save({ networks: [...new Set([...state.networks, state.current_ip])], visitor_id: getVisitorId() },
+                       "Excluded. Other devices on this wifi drop out as each one next loads the shop."))}
+              className="font-sans text-xs px-3 py-2 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 min-h-[44px]"
+            >
+              {state.current_ip_excluded ? "Count this network again" : "Don't count this network"}
+            </button>
+          )}
+        </div>
+        {!!state?.networks.length && (
+          <ul className="mt-3 space-y-1">
+            {state.networks.map(net => (
+              <li key={net} className="flex items-center justify-between gap-3">
+                <span className="font-mono text-xs text-foreground break-all">
+                  {net}{net === state.current_ip && <span className="font-sans text-muted-foreground"> — you're on this one</span>}
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => save({ networks: state.networks.filter(n => n !== net) }, "Removed.")}
+                  className="font-sans text-[11px] text-muted-foreground hover:text-foreground underline shrink-0"
+                >
+                  remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="font-sans text-[11px] text-muted-foreground mt-2">
+          No visitor's IP address is ever stored — an address is checked against this list as
+          the visit arrives and then discarded.
+        </p>
+      </div>
+
+      <div className="mt-5 pt-5 border-t border-border">
+        <p className="font-sans text-sm font-semibold text-foreground">Your own accounts</p>
+        <p className="font-sans text-[11px] text-muted-foreground mt-1">
+          Signing in with one of these marks that browser as yours — which is why a test
+          checkout stops counting from its first page view, not from the sign-in.
+        </p>
+        <ul className="mt-3 space-y-1">
+          {(state?.emails ?? []).map(email => (
+            <li key={email} className="flex items-center justify-between gap-3">
+              <span className="font-sans text-xs text-foreground break-all">{email}</span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => saveEmails((state?.emails ?? []).filter(e => e !== email))}
+                className="font-sans text-[11px] text-muted-foreground hover:text-foreground underline shrink-0"
+              >
+                remove
+              </button>
+            </li>
+          ))}
+          {state && !state.emails.length && (
+            <li className="font-sans text-xs text-muted-foreground">No accounts excluded.</li>
+          )}
+        </ul>
+        <div className="flex gap-2 mt-3">
+          <input
+            type="email"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            placeholder="you@example.com"
+            className="flex-1 min-w-0 font-sans text-base sm:text-xs px-3 py-2 rounded-md border border-border bg-background"
+          />
+          <button
+            type="button"
+            disabled={busy || !draft.includes("@")}
+            onClick={() => { saveEmails([...new Set([...(state?.emails ?? []), draft.toLowerCase().trim()])]); setDraft(""); }}
+            className="font-sans text-xs px-3 py-2 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 shrink-0 min-h-[44px]"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
+      {/* The other way one person becomes several: localStorage is per-origin, so
+          the same shop on a second hostname mints a second visitor for everyone
+          who opens it. Ingestion already refuses those, but seeing them is what
+          explains a historic count that looks too high. */}
+      {!!strayOrigins.length && (
+        <div className="mt-5 pt-5 border-t border-border">
+          <p className="font-sans text-sm font-semibold text-foreground">Other addresses seen</p>
+          <p className="font-sans text-[11px] text-muted-foreground mt-1">
+            Events arrived from these in the last 90 days. They're no longer counted — only{" "}
+            {state?.counted_origins.join(" and ")} is. Each one gave every person who used it a
+            separate visitor id, so older totals include those duplicates.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {strayOrigins.map(o => (
+              <li key={o.origin} className="font-sans text-xs text-muted-foreground break-all">
+                {o.origin} — {fmtInt(o.visitors)} visitor{o.visitors === 1 ? "" : "s"}, {fmtInt(o.events)} events
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {note && <p className="font-sans text-[11px] text-muted-foreground mt-4">{note}</p>}
+    </Card>
+  );
 };
 
 // ── Panel ───────────────────────────────────────────────────────────────────────
@@ -437,6 +720,8 @@ const AnalyticsPanel = () => {
     );
     section(`Attribution by ${data.filters.attr}`, [data.filters.attr, "sessions", "orders", "revenue"], data.sources.map(s => [s.source, s.sessions, s.orders, s.revenue]));
     section("Top pages", ["path", "views", "sessions"], data.top_pages.map(p => [p.path, p.views, p.sessions]));
+    section("Locations", ["city", "country", "sessions", "orders", "revenue"],
+      data.locations.map(l => [l.city, l.country, l.sessions, l.orders, l.revenue]));
     section("Devices", ["device", "sessions"], data.devices.map(dv => [dv.device, dv.sessions]));
     section("Web vitals p75", ["metric", "p75", "samples"], data.web_vitals.map(v => [v.metric, v.p75, v.samples]));
     const a = document.createElement("a");
@@ -816,13 +1101,35 @@ const AnalyticsPanel = () => {
 
           {/* ── Pages + devices + audience ── */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <Card title="Top pages" desc="Most-viewed storefront pages">
-              <DataTable
-                cols={[{ label: "Page" }, { label: "Views", align: "right" }, { label: "Sessions", align: "right" }]}
-                rows={data.top_pages.map(p => [p.path || "/", fmtInt(p.views), fmtInt(p.sessions)])}
-                empty="No page views recorded in this period yet."
-              />
-            </Card>
+            <div className="space-y-4">
+              <Card title="Top pages" desc="Most-viewed storefront pages">
+                <DataTable
+                  cols={[{ label: "Page" }, { label: "Views", align: "right" }, { label: "Sessions", align: "right" }]}
+                  rows={data.top_pages.map(p => [p.path || "/", fmtInt(p.views), fmtInt(p.sessions)])}
+                  empty="No page views recorded in this period yet."
+                />
+              </Card>
+
+              {/* Where visitors are. Revenue sits beside sessions because the two
+                  rankings routinely disagree, and the interesting decisions —
+                  where to advertise, which delivery zones to add — hang on the
+                  difference between somewhere busy and somewhere that buys. */}
+              <Card title="Where visitors are" desc="Sessions and revenue by city">
+                <DataTable
+                  cols={[{ label: "Location" }, { label: "Sessions", align: "right" }, { label: "Orders", align: "right" }, { label: "Revenue", align: "right" }]}
+                  rows={data.locations.map(l => [
+                    l.city === "Unknown" ? "Unknown" : `${l.city}${l.country ? `, ${l.country}` : ""}`,
+                    fmtInt(l.sessions), fmtInt(l.orders), fmtEur(l.revenue),
+                  ])}
+                  empty="No locations recorded in this period yet."
+                />
+                <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                  Worked out at the edge of the network from the connection itself — no visitor's IP
+                  address is looked up, sent anywhere or stored. “Unknown” is a visit that reached the
+                  shop without passing through it, which includes anything before this was switched on.
+                </p>
+              </Card>
+            </div>
 
             <div className="space-y-4">
               <Card title="Devices" desc="Session share by the device the browser reports">
@@ -844,13 +1151,17 @@ const AnalyticsPanel = () => {
                   </div>
                 </div>
                 {/* Without this, "Returning visitors" reads as a complete count.
-                    It isn't: visitors who didn't accept the cookie banner get an
-                    id that dies with the tab, so they return as "new" forever. */}
+                    It isn't. Recognising someone means finding an id their
+                    browser kept, and a browser that refuses to keep one — private
+                    mode, storage-blocking extensions — makes the same person new
+                    on every visit. This no longer tracks the cookie answer: the
+                    id is persistent for everyone, because first-party audience
+                    measurement doesn't depend on consent. */}
                 {data.traffic.identified_visitor_pct !== null && data.traffic.identified_visitor_pct < 100 && (
                   <p className="font-sans text-[11px] text-muted-foreground mt-3">
-                    Only {data.traffic.identified_visitor_pct}% of visitors accepted cookies and can be
-                    recognised on a later visit. The rest count as new every time, so “returning” is a
-                    floor and “new” is an over-count.
+                    Only {data.traffic.identified_visitor_pct}% of visitors' browsers kept an id that
+                    survives the tab, so the rest count as new every time. “Returning” is a floor and
+                    “new” is an over-count.
                   </p>
                 )}
               </Card>
@@ -859,8 +1170,11 @@ const AnalyticsPanel = () => {
 
           {/* ── Web performance ── */}
           <Card title="Site performance" desc="Core Web Vitals measured on real visits (p75)">
-            <WebVitals vitals={data.web_vitals} />
+            <WebVitals vitals={data.web_vitals} byPage={data.web_vitals_by_page} />
           </Card>
+
+          {/* ── What these numbers are counting ── */}
+          <InternalTraffic />
         </div>
       )}
     </div>
