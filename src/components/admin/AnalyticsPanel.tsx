@@ -116,6 +116,24 @@ const axisProps = {
 // Ordered stages → single-hue ordinal ramp; widths scale to the first stage.
 // Values sit at the bar tip (never inside a too-small bar) and each stage shows
 // its conversion from the previous one.
+// The funnel has a variable number of stages — the API omits any whose events
+// didn't exist in the window — so colours are interpolated across the ramp
+// rather than indexed into it. FUNNEL_RAMP[i] returned undefined (an
+// invisible bar) for every stage past the fifth once the funnel grew past five.
+const rampColor = (i: number, count: number): string => {
+  if (count <= 1) return FUNNEL_RAMP[0];
+  const pos = (i / (count - 1)) * (FUNNEL_RAMP.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.min(lo + 1, FUNNEL_RAMP.length - 1);
+  const t = pos - lo;
+  const channel = (c: number) => {
+    const a = parseInt(FUNNEL_RAMP[lo].slice(1 + c * 2, 3 + c * 2), 16);
+    const b = parseInt(FUNNEL_RAMP[hi].slice(1 + c * 2, 3 + c * 2), 16);
+    return Math.round(a + (b - a) * t);
+  };
+  return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`;
+};
+
 const Funnel = ({ stages, conversionRate }: { stages: AnalyticsOverview["funnel"]; conversionRate: number }) => {
   const max = Math.max(stages[0]?.sessions ?? 0, 1);
   return (
@@ -125,7 +143,7 @@ const Funnel = ({ stages, conversionRate }: { stages: AnalyticsOverview["funnel"
         const prev = i > 0 ? stages[i - 1].sessions : 0;
         const stepRate = i > 0 && prev > 0 ? (s.sessions / prev) * 100 : null;
         return (
-          <div key={s.stage} className="grid grid-cols-[130px_1fr] items-center gap-3">
+          <div key={s.stage} className="grid grid-cols-[150px_1fr] items-center gap-3">
             <div>
               <p className="font-sans text-xs text-foreground">{s.stage}</p>
               {stepRate !== null && (
@@ -137,7 +155,7 @@ const Funnel = ({ stages, conversionRate }: { stages: AnalyticsOverview["funnel"
                 className="h-5"
                 style={{
                   width: `${widthPct}%`,
-                  background: FUNNEL_RAMP[i],
+                  background: rampColor(i, stages.length),
                   borderRadius: "0 4px 4px 0", // rounded data-end, square at the baseline
                 }}
               />
@@ -383,13 +401,24 @@ const AnalyticsPanel = () => {
         ["Page views", data.traffic.pageviews, data.traffic.prev.pageviews],
         ["Bounce rate %", data.traffic.bounce_rate, ""],
         ["New visitors", data.traffic.new_visitors, ""], ["Returning visitors", data.traffic.returning_visitors, ""],
-        ["Sessions reaching payment", data.abandoned.checkout_sessions, ""],
-        ["Abandoned at payment", data.abandoned.abandoned_sessions, ""],
+        ["Sessions reaching checkout", data.abandoned.checkout_sessions, ""],
+        ["Abandoned at checkout", data.abandoned.abandoned_sessions, ""],
         ["Abandoned basket value EUR", data.abandoned.lost_revenue, ""],
+        ...(data.signin_wall ? [
+          ["Asked to sign in at checkout", data.signin_wall.walled_sessions, ""],
+          ["…signed in and carried on", data.signin_wall.walled_continued, ""],
+          ["…and bought", data.signin_wall.walled_purchased, ""],
+          ["Basket value held up at sign-in EUR", data.signin_wall.blocked_basket_value, ""],
+          ["Pressed checkout already signed in", data.signin_wall.passed_sessions, ""],
+          ["…and bought", data.signin_wall.passed_purchased, ""],
+        ] : []),
         ["Total customers", data.customers.total_customers, ""], ["New customers", data.customers.new_customers, ""],
         ["Avg lifetime value EUR", data.customers.avg_lifetime_value, ""],
       ]
     );
+    for (const n of data.measurement_notes) {
+      section("Measurement change", ["date", "note"], [[n.date, n.note]]);
+    }
     if (data.sales.orders > data.sales.attributed_orders) {
       section("Caveat", ["note"], [[
         `${data.sales.orders - data.sales.attributed_orders} paid order(s) have no tracked session — funnel, session conversion and attribution cover ${data.sales.attributed_orders} of ${data.sales.orders} orders.`,
@@ -397,7 +426,15 @@ const AnalyticsPanel = () => {
     }
     section("Funnel", ["stage", "sessions"], data.funnel.map(f => [f.stage, f.sessions]));
     section("Daily", ["day", "visitors", "sessions", "pageviews", "orders", "revenue"], data.daily.map(r => [r.day, r.visitors, r.sessions, r.pageviews, r.orders, r.revenue]));
-    section("Top products (revenue after discount, excl. shipping)", ["product", "units", "revenue", "sessions_adding"], data.top_products.map(p => [p.name, p.units, p.revenue, p.add_to_carts]));
+    section(
+      "Top products (revenue after discount, excl. shipping)",
+      ["product", "views", "sessions_adding", "view_to_cart_pct", "cart_to_buy_pct", "units", "revenue"],
+      data.top_products.map(p => [
+        p.name, p.views, p.add_to_carts,
+        p.view_to_cart_pct ?? "", p.cart_to_buy_pct ?? "",
+        p.units, p.revenue,
+      ]),
+    );
     section(`Attribution by ${data.filters.attr}`, [data.filters.attr, "sessions", "orders", "revenue"], data.sources.map(s => [s.source, s.sessions, s.orders, s.revenue]));
     section("Top pages", ["path", "views", "sessions"], data.top_pages.map(p => [p.path, p.views, p.sessions]));
     section("Devices", ["device", "sessions"], data.devices.map(dv => [dv.device, dv.sessions]));
@@ -538,6 +575,21 @@ const AnalyticsPanel = () => {
         // no skeleton flash, no layout jump.
         <div className="space-y-6" style={{ opacity: loading ? 0.55 : 1, transition: "opacity 0.15s" }}>
 
+          {/* A metric whose definition moved mid-window is the one inaccuracy no
+              query can fix: the step reads as shopper behaviour when it is only
+              a change in what was being counted. Say it plainly, at the top. */}
+          {data.measurement_notes.map(n => (
+            <div key={n.date} className="rounded-xl border border-border bg-card p-4">
+              <p className="font-sans text-sm text-foreground">
+                ⓘ How something was measured changed on {n.date}, inside this date range.
+              </p>
+              <p className="font-sans text-xs text-muted-foreground mt-1">{n.note}</p>
+              <p className="font-sans text-xs text-muted-foreground mt-1">
+                Compare periods either side of that date with care — pick a range that starts after it for a like-for-like read.
+              </p>
+            </div>
+          ))}
+
           {/* Every session-derived number (funnel, conversion, attribution) can
               only see orders that carry a tracked session. When some don't, say
               so with the exact count — an ops lead must never read a tracking
@@ -621,7 +673,7 @@ const AnalyticsPanel = () => {
               <div className="mt-4 pt-4 border-t border-border grid grid-cols-3 gap-3">
                 <div>
                   <p className="font-sans text-lg font-semibold text-foreground">{fmtInt(data.abandoned.abandoned_sessions)}</p>
-                  <p className="font-sans text-xs text-muted-foreground">Abandoned at payment</p>
+                  <p className="font-sans text-xs text-muted-foreground">Abandoned at checkout</p>
                 </div>
                 <div>
                   <p className="font-sans text-lg font-semibold text-foreground">
@@ -631,15 +683,49 @@ const AnalyticsPanel = () => {
                 </div>
                 <div>
                   <p className="font-sans text-lg font-semibold text-foreground">{fmtEur(data.abandoned.lost_revenue)}</p>
-                  <p className="font-sans text-xs text-muted-foreground">Value left at payment</p>
+                  <p className="font-sans text-xs text-muted-foreground">Basket value walked away</p>
                 </div>
               </div>
-              {/* Named precisely: the event fires when the shopper commits to pay,
-                  so this is not "reached the checkout page and left". */}
+              {/* Counted from the same predicate as the funnel's "Reached
+                  checkout" stage, so the two can never disagree on screen. */}
               <p className="font-sans text-[11px] text-muted-foreground mt-3">
-                Counted from the moment a shopper submits the checkout form to pay — earlier drop-off
-                on the checkout page shows up as the gap between “Added to cart” and “Reached payment”.
+                Counted from everyone who reached the checkout page — the same sessions as “Reached checkout”
+                above. The stages below it show how far into checkout they got before leaving.
               </p>
+
+              {/* The cost of the one gate on the site. Shown only when sessions
+                  actually went through it, so a window predating the event shows
+                  nothing instead of a row of zeroes that reads as "no problem". */}
+              {data.signin_wall && data.signin_wall.walled_sessions > 0 && (
+                <div className="mt-4 pt-4 border-t border-border">
+                  <p className="font-sans text-xs font-semibold text-foreground mb-2">Sign-in gate</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <p className="font-sans text-lg font-semibold text-foreground">{fmtInt(data.signin_wall.walled_sessions)}</p>
+                      <p className="font-sans text-xs text-muted-foreground">Asked to sign in</p>
+                    </div>
+                    <div>
+                      <p className="font-sans text-lg font-semibold text-foreground">
+                        {`${((1 - data.signin_wall.walled_continued / data.signin_wall.walled_sessions) * 100).toFixed(1)}%`}
+                      </p>
+                      <p className="font-sans text-xs text-muted-foreground">Turned back there</p>
+                    </div>
+                    <div>
+                      <p className="font-sans text-lg font-semibold text-foreground">{fmtEur(data.signin_wall.blocked_basket_value)}</p>
+                      <p className="font-sans text-xs text-muted-foreground">Basket value held up</p>
+                    </div>
+                  </div>
+                  <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                    {fmtInt(data.signin_wall.walled_continued)} of {fmtInt(data.signin_wall.walled_sessions)} guests
+                    signed in and carried on; {fmtInt(data.signin_wall.walled_purchased)} bought.
+                    {data.signin_wall.passed_sessions > 0 && (
+                      <> Shoppers already signed in when they pressed checkout: {fmtInt(data.signin_wall.passed_sessions)},
+                      of whom {fmtInt(data.signin_wall.passed_purchased)} bought — the comparison that says whether the
+                      gate itself is the obstacle.</>
+                    )}
+                  </p>
+                </div>
+              )}
             </Card>
 
             <Card title="Customers" desc="Lifetime customer base and what happened this period">
@@ -672,15 +758,35 @@ const AnalyticsPanel = () => {
 
           {/* ── Top products / sources ── */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <Card title="Top products" desc="Revenue after discount, excluding shipping — with add-to-cart demand">
+            <Card title="Top products" desc="Views → cart → sale for each product, with revenue after discount">
               <DataTable
-                cols={[{ label: "Product" }, { label: "Units", align: "right" }, { label: "Revenue", align: "right" }, { label: "Sessions adding", align: "right" }]}
-                rows={data.top_products.map(p => [p.name, fmtInt(p.units), fmtEur(p.revenue), fmtInt(p.add_to_carts)])}
-                empty="No paid orders or cart activity in this period yet."
+                cols={[
+                  { label: "Product" },
+                  { label: "Views", align: "right" },
+                  { label: "Carts", align: "right" },
+                  { label: "View→cart", align: "right" },
+                  { label: "Cart→buy", align: "right" },
+                  { label: "Revenue", align: "right" },
+                ]}
+                rows={data.top_products.map(p => [
+                  p.name,
+                  fmtInt(p.views),
+                  fmtInt(p.add_to_carts),
+                  // A null rate means the stage below it had no traffic, so the
+                  // rate is unknown — shown as "—". Printing 0% instead would
+                  // read as "everyone who looked rejected it", which is a very
+                  // different message from "nobody looked".
+                  p.view_to_cart_pct == null ? "—" : `${p.view_to_cart_pct}%`,
+                  p.cart_to_buy_pct == null ? "—" : `${p.cart_to_buy_pct}%`,
+                  fmtEur(p.revenue),
+                ])}
+                empty="No product views, carts or paid orders in this period yet."
               />
               <p className="font-sans text-[11px] text-muted-foreground mt-3">
-                Each order's discount is shared across its lines, so these add up to Revenue minus shipping.
-                Products with carts but no sales are listed too — that's where demand is leaking.
+                View→cart is the share of sessions that saw the product page and added it; cart→buy is the share
+                of those that went on to pay. A low view→cart means the page isn't convincing; a healthy
+                view→cart with a low cart→buy means the loss is at checkout, not on the product.
+                Revenue shares each order's discount across its lines, so it adds up to Revenue minus shipping.
               </p>
             </Card>
 

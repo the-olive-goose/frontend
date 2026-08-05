@@ -560,20 +560,30 @@ test.describe("customers & feedback panels", () => {
     const email = `e2e-sub-${Date.now()}@test.local`;
     const sub = await request.post(`${API}/api/subscribers`, { data: { email } });
     expect(sub.status()).toBe(201);
-    const firstCode = (await sub.json()).discount?.code;
+    // The welcome code goes to the mailbox and nowhere else — never in the reply.
+    expect((await sub.json()).discount?.code, "the code must not reach the client").toBeUndefined();
+    const codesFor = async () => {
+      const { codes } = await (await admin.get(`/api/admin/discount-codes`, { headers: auth(TOKEN) })).json();
+      return codes.filter((c: { email: string | null; code: string }) => (c.email ?? "").toLowerCase() === email);
+    };
+    const [firstRow] = await codesFor();
+    expect(firstRow?.code).toBeTruthy();
 
     /*
      * Subscribing again is not an error while the welcome code is still unused:
      * someone who lost the email must be able to ask for it back (see the route —
      * it also backfills anyone who subscribed before the discount existed). So the
-     * answer is 200 and the SAME code, never a second one. That last part is the
-     * whole anti-abuse property: re-subscribing must not mint discounts.
+     * answer is 200 and the SAME code is re-sent, never a second one. That last
+     * part is the whole anti-abuse property: re-subscribing must not mint discounts.
      */
     const again = await request.post(`${API}/api/subscribers`, { data: { email } });
     expect(again.status()).toBe(200);
     const body = await again.json();
     expect(body.already_subscribed).toBe(true);
-    expect(body.discount?.code, "re-subscribing must re-issue, never mint").toBe(firstCode);
+    expect(body.discount?.code).toBeUndefined();
+    const rows = await codesFor();
+    expect(rows, "re-subscribing must re-send, never mint").toHaveLength(1);
+    expect(rows[0].code).toBe(firstRow.code);
 
     const list = await (await admin.get(`/api/subscribers`, { headers: auth(TOKEN) })).json();
     const row = list.find((s: any) => s.email === email);

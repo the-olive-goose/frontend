@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import type { Product } from "@/lib/defaults";
 import { productPath } from "@/lib/products";
 import { formatPrice } from "@/lib/cart";
-import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import AddToCartButton from "@/components/ui/AddToCartButton";
 import m1 from "@/assets/M1.png";
@@ -66,7 +65,6 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
   ({ product, idx, accent, buttonTextColor = "var(--btn-dark-text)", density = "regular", isDark = false }, ref) => {
     const img = product.image_url || FALLBACK_IMGS[idx % 2];
     const d = DENSITY[density];
-    const { user, openAuthModal } = useAuth();
     const { addToCart } = useCart();
 
     // undefined/null stock = "not tracked", always purchasable — only an explicit
@@ -82,10 +80,12 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
     const divider  = isDark ? "rgba(255,255,255,0.08)" : "var(--color-border)";
     const btnText  = isDark ? "#0a0a18" : buttonTextColor;
 
+    // No sign-in gate: the basket is the shopper's until checkout, where the
+    // account is actually needed. A guest's adds live in localStorage and merge
+    // into their account the moment they sign in.
     const handleAddToCart = (e: React.MouseEvent) => {
       e.stopPropagation();
       if (outOfStock) return;
-      if (!user) { openAuthModal(); return; }
       addToCart(product);
       toast.success(`${product.name} added to basket`, {
         description: formatPrice(product.price),
@@ -212,8 +212,8 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
               textColor={btnText}
               onClick={handleAddToCart}
               disabled={outOfStock}
-              title={outOfStock ? "Out of stock" : !user ? "Sign in to add to cart" : undefined}
-              label={outOfStock ? "Out of Stock" : user ? "Add to Cart" : "Buy Now"}
+              title={outOfStock ? "Out of stock" : undefined}
+              label={outOfStock ? "Out of Stock" : "Add to Cart"}
             />
           </div>
         </div>

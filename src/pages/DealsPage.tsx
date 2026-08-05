@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, DEFAULT_PRODUCT_CARD_THEME, resolveCardAccent, type Product, type Bundle, type DealsContent, type ProductCardTheme } from "@/lib/defaults";
-import { useAuth } from "@/contexts/AuthContext";
 import useIsMobile from "@/hooks/useIsMobile";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
@@ -22,7 +21,6 @@ import m2 from "@/assets/M2.png";
 const FALLBACK_IMGS = [m1, m2];
 
 const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bundle: Bundle; allProducts: Product[]; idx: number; accent: string; buttonTextColor: string }) => {
-  const { user, openAuthModal } = useAuth();
   const { addToCart } = useCart();
   const [adding, setAdding] = useState(false);
   const isMobile = useIsMobile();
@@ -44,7 +42,6 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
   const bundlePrice = Math.max(0, originalTotal - discount);
 
   const handleAddBundle = async () => {
-    if (!user) { openAuthModal(); return; }
     setAdding(true);
     try {
       // Always add every product in the bundle (incrementing quantity if it is

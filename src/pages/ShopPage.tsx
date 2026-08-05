@@ -10,6 +10,7 @@ import {
   type ProductCardTheme,
 } from "@/lib/defaults";
 import { productPath } from "@/lib/products";
+import { track } from "@/lib/analytics";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import ProductCard from "@/components/ui/ProductCard";
@@ -70,6 +71,24 @@ const ShopPage = () => {
 
   const activeCat = categories.find(c => c.slug === activeSlug);
   const isAllView = !searchTerm && activeSlug === "all";
+
+  // view_item_list — the funnel stage that used to be guessed from the URL.
+  // A page_view on /shop only proves the route was entered; this fires when a
+  // grid of products was actually rendered, so an empty category or a search
+  // with no hits is correctly NOT counted as browsing the catalogue.
+  //
+  // Keyed on the list's identity rather than on visibleProducts, which is
+  // rebuilt on every render and would re-fire the event continuously. `loading`
+  // is in the key so the real list is recorded, not the empty pre-fetch state.
+  const listKey = `${activeSlug}|${searchTerm}`;
+  useEffect(() => {
+    if (loading || visibleProducts.length === 0) return;
+    track("view_item_list", {
+      list_id: searchTerm ? "search" : activeSlug,
+      list_name: searchTerm ? `Search: ${searchTerm}` : (activeCat?.name || "All candles"),
+      item_count: visibleProducts.length,
+    });
+  }, [listKey, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Categories are often saved with all their moods in one "• a • b • c" string.
   // Split those back out so each mood is its own pill instead of one long pill

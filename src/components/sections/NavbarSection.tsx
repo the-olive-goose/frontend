@@ -7,6 +7,7 @@ import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
+import { track } from "@/lib/analytics";
 import CartDrawer from "@/components/CartDrawer";
 import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 import RichText, { stripRichText } from "@/lib/richtext";
@@ -245,8 +246,15 @@ const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
-    navigate(`/shop?search=${encodeURIComponent(searchQuery.trim())}`);
+    const q = searchQuery.trim();
+    if (!q) return;
+    // Only the submitted term, never the live keystrokes above — a per-character
+    // event would bury the report in prefixes of real searches ("c", "ca",
+    // "caf") and make the popular-terms list meaningless. `results` records
+    // whether the shop could answer: searches that return nothing are the
+    // shopper telling you what to stock next.
+    track("search", { query: q.slice(0, 100), results: searchResults.length });
+    navigate(`/shop?search=${encodeURIComponent(q)}`);
     setMobileOpen(false);
   };
 
@@ -379,7 +387,7 @@ const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
 
           {/* Basket */}
           <button
-            onClick={() => { if (user) navigate("/basket"); else openAuthModal(); }}
+            onClick={() => navigate("/basket")}
             className="hidden sm:flex items-center gap-2 shrink-0 transition-opacity hover:opacity-80"
             style={{ color: "var(--color-white)" }}
           >
@@ -403,7 +411,7 @@ const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
               button above are all desktop-only, so this is the only way to
               reach the basket on small screens. */}
           <button
-            onClick={() => { if (user) navigate("/basket"); else openAuthModal(); }}
+            onClick={() => navigate("/basket")}
             className="sm:hidden relative shrink-0 ml-auto flex items-center justify-center"
             style={{ color: "var(--color-white)", minWidth: 44, minHeight: 44 }}
             aria-label={count > 0 ? `Basket, ${count} item${count === 1 ? "" : "s"}` : "Basket"}

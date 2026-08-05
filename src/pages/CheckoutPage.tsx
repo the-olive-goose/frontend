@@ -209,6 +209,26 @@ const CheckoutPage = () => {
   const addressComplete = Object.keys(addressErrors).length === 0;
   const selectedSaved = savedAddresses.find(a => a.id === selectedAddressId);
 
+  // begin_checkout — fires on ARRIVAL at checkout, not on pressing Pay.
+  //
+  // It used to fire inside handlePlaceOrder, after validation passed, which
+  // meant a shopper who reached this page and abandoned — mistyped address, got
+  // cold feet, saw the shipping cost — was never counted as having started
+  // checkout at all. The funnel's checkout stage therefore only ever contained
+  // people who were one redirect away from paying, so checkout→purchase looked
+  // near-perfect and the real abandonment was invisible. This is where the money
+  // actually leaks, so it has to be measured where it happens.
+  const checkoutStarted = useRef(false);
+  useEffect(() => {
+    if (checkoutStarted.current || items.length === 0) return;
+    checkoutStarted.current = true;
+    track("begin_checkout", {
+      total: +grandTotal.toFixed(2),
+      items: count,
+      fulfillment_type: fulfillment,
+    });
+  }, [items.length, count, grandTotal, fulfillment]);
+
   // An address saved before these rules existed can be junk ("4444", no county, an
   // undialable phone). It must not sail through just because it's on file — so a
   // failing saved address opens for editing on its own, with its errors showing,
@@ -308,7 +328,16 @@ const CheckoutPage = () => {
       return;
     }
     setPlacing(true);
-    track("begin_checkout", { total: +grandTotal.toFixed(2), items: count, fulfillment_type: fulfillment });
+    // Everything above this line has passed: a fulfillment choice, and either a
+    // valid delivery address or a pickup contact number. That is exactly what
+    // GA4 means by add_shipping_info, and it is the last checkpoint before the
+    // shopper leaves our site — the gap between this and add_payment_info is
+    // where a Stripe session failed to create.
+    track("add_shipping_info", {
+      total: +grandTotal.toFixed(2),
+      items: count,
+      fulfillment_type: fulfillment,
+    });
     try {
       // Persist the address-book side first, if the shopper opted in. Best-effort:
       // a save failure shouldn't block paying for the order.
@@ -330,6 +359,15 @@ const CheckoutPage = () => {
         contact_phone: isPickup ? contactPhone : undefined,
         discount_code: appliedCode?.code,
         analytics: getAnalyticsIds(),
+      });
+      // Stripe accepted the session and we are about to hand the shopper over.
+      // Sent before the redirect, and flushed by the pagehide beacon that the
+      // navigation itself triggers, so it is not lost on the way out. Anyone
+      // counted here but not in `purchase` abandoned on Stripe's own page.
+      track("add_payment_info", {
+        total: +grandTotal.toFixed(2),
+        items: count,
+        fulfillment_type: fulfillment,
       });
       window.location.href = url;
     } catch (err) {
@@ -362,6 +400,14 @@ const CheckoutPage = () => {
           {!authLoading && !user && (
             <div className="bg-white rounded-xl p-8 text-center" style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
               <h2 className="font-serif text-xl font-bold mb-2" style={{ color: "#0F1111" }}>Sign in to check out</h2>
+              {/* The one place the site asks — we need an account to take payment,
+                  send the confirmation and let them track the order. The basket
+                  they arrived with is merged in the moment they sign in. */}
+              <p className="font-sans text-sm mb-5" style={{ color: "#555" }}>
+                {count > 0
+                  ? `Your basket (${count} item${count === 1 ? "" : "s"}) is saved and will be waiting.`
+                  : "We need an account to send your order confirmation and let you track it."}
+              </p>
               <button onClick={openAuthModal}
                 className="font-sans text-sm font-bold px-6 py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95"
                 style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>

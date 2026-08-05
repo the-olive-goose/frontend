@@ -1,8 +1,8 @@
+import { Link } from "react-router-dom";
 import { HeroContent } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
 import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 import CountdownTimer from "@/components/CountdownTimer";
-import { useAuth } from "@/contexts/AuthContext";
 import heroBg from "@/assets/hero-bg.jpg";
 
 interface Props {
@@ -24,7 +24,20 @@ const HeroSection = ({ data, ready = true }: Props) => {
   const bgOpacity   = data.bg_opacity   ?? 1.0;
   const tintColor   = data.tint_color   ?? "#1e2918";
   const tintOpacity = data.tint_opacity ?? 0.45;
-  const { user, openAuthModal } = useAuth();
+
+  // Where the CTA points is the admin's call (Hero → CTA link). "/shop" and any
+  // other in-app path route client-side; "#anchor" and external URLs stay plain
+  // anchors so they behave exactly as written.
+  const ctaHref = data.cta_href || "/shop";
+  const isRoute = ctaHref.startsWith("/") && !ctaHref.startsWith("//");
+  const ctaClass = "inline-flex items-center gap-2 font-sans text-sm font-medium transition-all hover:opacity-90 hover:-translate-y-0.5";
+  const ctaStyle = {
+    background: "var(--btn-primary-bg)",
+    color: "var(--btn-primary-text)",
+    borderRadius: "var(--radius-pill)",
+    padding: "14px 36px",
+    letterSpacing: "var(--tracking-cta)",
+  };
 
   // The image starts exactly below the fixed navbar. It reads --nav-h — which
   // NavbarSection publishes from its own measurement — rather than measuring
@@ -146,38 +159,23 @@ const HeroSection = ({ data, ready = true }: Props) => {
             </div>
           )}
 
-          {/* CTA — single centered button */}
+          {/* CTA — single centered button. It is a plain link for everyone:
+              browsing the shop needs no account, and gating the hero's only CTA
+              behind the sign-in modal stopped first-time visitors at the door. */}
           <div className="animate-fade-up-delay-2">
             {!ready ? (
               <SkelBlock height="49px" width="196px" radius="var(--radius-pill)" style={{ color: "var(--text-on-dark)" }} />
-            ) : user ? (
-              <a
-                href={data.cta_href}
-                className="inline-flex items-center gap-2 font-sans text-sm font-medium transition-all hover:opacity-90 hover:-translate-y-0.5"
-                style={{
-                  background: "var(--btn-primary-bg)",
-                  color: "var(--btn-primary-text)",
-                  borderRadius: "var(--radius-pill)",
-                  padding: "14px 36px",
-                  letterSpacing: "var(--tracking-cta)",
-                }}
-              >
+            ) : isRoute ? (
+              // In-app path (e.g. "/shop") — route it client-side so the SPA
+              // doesn't do a full reload of the bundle to change page.
+              <Link to={ctaHref} className={ctaClass} style={ctaStyle}>
+                {data.cta_text} &nbsp;→
+              </Link>
+            ) : (
+              // Hash anchor or external URL, exactly as the admin wrote it.
+              <a href={ctaHref} className={ctaClass} style={ctaStyle}>
                 {data.cta_text} &nbsp;→
               </a>
-            ) : (
-              <button
-                onClick={openAuthModal}
-                className="inline-flex items-center gap-2 font-sans text-sm font-medium transition-all hover:opacity-90 hover:-translate-y-0.5"
-                style={{
-                  background: "var(--btn-primary-bg)",
-                  color: "var(--btn-primary-text)",
-                  borderRadius: "var(--radius-pill)",
-                  padding: "14px 36px",
-                  letterSpacing: "var(--tracking-cta)",
-                }}
-              >
-                {data.cta_text} &nbsp;→
-              </button>
             )}
           </div>
         </div>

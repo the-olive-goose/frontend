@@ -6,19 +6,22 @@ import { toast } from "sonner";
 import { getContent, getShopCategories, subscribe, AlreadySubscribedError, type ShopCategory } from "@/lib/api";
 import {
   DEFAULT_CONTENT, DEFAULT_DEALS,
-  type DealsContent, type Product, type ProductPageContent, type ProductsContent,
+  type DealsContent, type PickupSettingsContent, type Product, type ProductPageContent,
+  type ProductsContent, type ReturnPolicyContent, type SubscribePopupContent,
 } from "@/lib/defaults";
+import { resolveOfferValues } from "@/lib/offerTokens";
 import {
   bundlesForProduct, findProduct, isOutOfStock, productImages, productParagraphs,
   productPath, recommendationsFor, type BundlePricing,
 } from "@/lib/products";
-import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
+import { track } from "@/lib/analytics";
 import { formatPrice, MAX_CART_QTY } from "@/lib/cart";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { applyMeta, SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import FooterSection from "@/components/sections/FooterSection";
 import AddToCartButton from "@/components/ui/AddToCartButton";
+import BuyAssurances, { BuyAssurancesSkeleton } from "@/components/BuyAssurances";
 import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 import RichText, { stripRichText } from "@/lib/richtext";
 import m1 from "@/assets/M1.png";
@@ -298,9 +301,11 @@ const CircleSignup = ({ data }: { data: ProductPageContent["circle"] }) => {
       const result = await subscribe(email);
       setStatus("done");
       setEmail("");
+      // The code is never shown on the site — it goes to the mailbox, so claiming
+      // the offer means owning the address. Same rule as the signup modal.
       toast.success(data.success_text, {
-        description: result.discount?.code
-          ? `Your ${result.discount.discount_percent}% welcome code: ${result.discount.code}`
+        description: result.discount
+          ? `Your ${result.discount.discount_percent}% welcome code is on its way to ${email} — check your inbox and spam.`
           : "You'll hear from us when something new is poured.",
       });
     } catch (err: unknown) {
@@ -418,7 +423,6 @@ const RecommendationCard = ({ product }: { product: Product }) => (
 
 const ProductDetailPage = () => {
   const { slug } = useParams<{ slug: string }>();
-  const { user, requireAuth } = useAuth();
   const { addToCart } = useCart();
 
   const [products, setProducts]     = useState<Product[]>([]);
@@ -426,6 +430,12 @@ const ProductDetailPage = () => {
   const [deals, setDeals]           = useState<DealsContent>(DEFAULT_DEALS);
   const [categories, setCategories] = useState<ShopCategory[]>([]);
   const [loading, setLoading]       = useState(true);
+  // The buy-box assurance lines quote the shipping rate, the free-shipping bar
+  // and the returns window via tokens, so the page needs the three settings
+  // sections that own those figures.
+  const [offer, setOffer]           = useState(() =>
+    resolveOfferValues(
+      DEFAULT_CONTENT.pickupSettings, DEFAULT_CONTENT.subscribePopup, DEFAULT_CONTENT.returnPolicy));
 
   const [quantity, setQuantity]   = useState(1);
   const [adding, setAdding]       = useState(false);
@@ -436,16 +446,21 @@ const ProductDetailPage = () => {
       getContent<ProductsContent>("products", DEFAULT_CONTENT.products),
       getContent<ProductPageContent>("productPage", DEFAULT_CONTENT.productPage),
       getContent<DealsContent>("deals", DEFAULT_DEALS),
+      getContent<PickupSettingsContent>("pickupSettings", DEFAULT_CONTENT.pickupSettings),
+      getContent<SubscribePopupContent>("subscribePopup", DEFAULT_CONTENT.subscribePopup),
+      getContent<ReturnPolicyContent>("returnPolicy", DEFAULT_CONTENT.returnPolicy),
       getShopCategories(),
-    ]).then(([productsData, productPage, dealsData, cats]) => {
+    ]).then(([productsData, productPage, dealsData, pickup, popup, returnPolicy, cats]) => {
       setProducts(productsData?.items ?? []);
       // Merge over defaults so a partially-saved section can't blank the page.
       setPageCopy({
         ...DEFAULT_CONTENT.productPage,
         ...(productPage ?? {}),
+        assurances: { ...DEFAULT_CONTENT.productPage.assurances, ...(productPage?.assurances ?? {}) },
         circle: { ...DEFAULT_CONTENT.productPage.circle, ...(productPage?.circle ?? {}) },
       });
       setDeals(dealsData ?? DEFAULT_DEALS);
+      setOffer(resolveOfferValues(pickup, popup, returnPolicy));
       setCategories(cats);
     }).finally(() => setLoading(false));
   }, []);
@@ -454,6 +469,27 @@ const ProductDetailPage = () => {
 
   // New product → reset the buy box.
   useEffect(() => { setQuantity(1); }, [slug]);
+
+  // view_item — the funnel stage between browsing a grid and adding to the
+  // basket, and the denominator for this product's view→cart→purchase rate.
+  //
+  // Waits for `product` rather than firing on mount: the catalogue is fetched
+  // after the first render, so a mount-time event would record a view of a
+  // product we hadn't resolved yet, with no id on it. Keyed on product.id so a
+  // re-render (quantity, image carousel, a bundle loading in) can't inflate the
+  // count — one view per product actually shown.
+  useEffect(() => {
+    if (!product) return;
+    // A product has no category of its own — categories own a product_ids list —
+    // so it is resolved by lookup. Categories arrive in the same Promise.all as
+    // the catalogue, so they are loaded by the time a product resolves.
+    track("view_item", {
+      product_id: product.id,
+      name: product.name,
+      price: product.price,
+      category: categories.find(c => c.product_ids?.includes(product.id))?.name || "",
+    });
+  }, [product?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const outOfStock = product ? isOutOfStock(product) : false;
   const maxQty = product?.stock != null ? Math.min(Number(product.stock), MAX_CART_QTY) : MAX_CART_QTY;
@@ -526,41 +562,38 @@ const ProductDetailPage = () => {
       : null,
   );
 
-  // Same rule as every other buy button on the site: signed out → the sign-in
-  // modal opens and the add replays once sign-in succeeds.
+  // Same rule as every other buy button on the site: no sign-in to add. The
+  // account is asked for once, at checkout, and the basket follows the shopper
+  // into it.
   const handleAddToCart = () => {
     if (!product || outOfStock) return;
-    requireAuth(() => {
-      setAdding(true);
-      addToCart(product, quantity)
-        .then(() => {
-          toast.success(`${product.name} added to basket`, {
-            description: `${quantity} × ${formatPrice(product.price)}`,
-            duration: 2500,
-          });
-        })
-        .catch(() => toast.error("Couldn't add to basket", { description: "Please try again." }))
-        .finally(() => setAdding(false));
-    });
+    setAdding(true);
+    addToCart(product, quantity)
+      .then(() => {
+        toast.success(`${product.name} added to basket`, {
+          description: `${quantity} × ${formatPrice(product.price)}`,
+          duration: 2500,
+        });
+      })
+      .catch(() => toast.error("Couldn't add to basket", { description: "Please try again." }))
+      .finally(() => setAdding(false));
   };
 
-  const handleAddBundle = (deal: BundlePricing) => {
-    requireAuth(async () => {
-      setAddingBundle(deal.bundle.id);
-      try {
-        for (const p of deal.products) {
-          await addToCart(p, 1);
-        }
-        toast.success(`${deal.bundle.name} added to basket!`, {
-          description: `You save ${euro(deal.discount)}`,
-          duration: 3000,
-        });
-      } catch {
-        toast.error("Couldn't add the bundle", { description: "Please try again." });
-      } finally {
-        setAddingBundle(null);
+  const handleAddBundle = async (deal: BundlePricing) => {
+    setAddingBundle(deal.bundle.id);
+    try {
+      for (const p of deal.products) {
+        await addToCart(p, 1);
       }
-    });
+      toast.success(`${deal.bundle.name} added to basket!`, {
+        description: `You save ${euro(deal.discount)}`,
+        duration: 3000,
+      });
+    } catch {
+      toast.error("Couldn't add the bundle", { description: "Please try again." });
+    } finally {
+      setAddingBundle(null);
+    }
   };
 
   // Placeholders in the page's own shape rather than a spinner, so the candle
@@ -597,6 +630,9 @@ const ProductDetailPage = () => {
               <SkelText width="30%" style={{ fontSize: "1.6rem" }} />
               <SkelText lines={4} lineHeight={1.6} />
               <SkelBlock height="48px" width="220px" radius="var(--radius-pill)" />
+              {/* The shipping / delivery / returns box, at the height its own
+                  copy needs on this viewport, so nothing jumps when it lands. */}
+              <BuyAssurancesSkeleton />
             </div>
           </div>
         </div>
@@ -700,22 +736,20 @@ const ProductDetailPage = () => {
               </p>
             )}
 
-            {/* Buy button — label and behaviour follow the site's auth rule */}
+            {/* Buy button — same label signed in or out; the basket is the shopper's
+                either way and only checkout needs an account. */}
             <AddToCartButton
               className="mt-5"
               size="lg"
               fullWidth
               onClick={handleAddToCart}
               disabled={outOfStock || adding}
-              title={outOfStock ? "Out of stock" : !user ? "Sign in to buy" : undefined}
-              label={outOfStock ? "Out of Stock" : adding ? "Adding…" : user ? "Add to Cart" : "Buy Now"}
+              title={outOfStock ? "Out of stock" : undefined}
+              label={outOfStock ? "Out of Stock" : adding ? "Adding…" : "Add to Cart"}
             />
 
-            {!user && !outOfStock && (
-              <p className="text-center font-sans text-xs mt-2" style={{ color: "var(--text-muted)" }}>
-                You'll be asked to sign in first — we'll pick right back up here.
-              </p>
-            )}
+            {/* What it costs to get here, when it lands, and how to send it back */}
+            <BuyAssurances data={pageCopy.assurances} offer={offer} />
 
             {/* Bundle deal — pulled from Today's Deals */}
             {bundles.length > 0 && (

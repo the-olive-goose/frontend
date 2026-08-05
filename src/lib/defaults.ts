@@ -190,12 +190,39 @@ export interface ProductCircleContent {
   success_text: string;
 }
 
+/**
+ * The three reassurance lines under the buy button: what delivery costs, how
+ * long it takes, and how returns work — the questions a shopper asks in the
+ * second before they commit.
+ *
+ * All three are admin copy. `shipping_text` defaults to the `{shipping_cost}`
+ * token rather than a typed-out figure so the rate and the free-shipping bar it
+ * quotes are always the ones checkout charges (see lib/offerTokens); delivery
+ * time and the returns window have no setting behind them, so they are plain
+ * text the admin owns outright.
+ */
+export interface ProductAssurancesContent {
+  enabled: boolean;
+  shipping_text: string;
+  delivery_text: string;
+  returns_text: string;
+  /**
+   * Second line for each row, revealed when a shopper taps it. Optional by
+   * design: a blank one renders its row as plain text rather than as a control
+   * that opens nothing.
+   */
+  shipping_detail: string;
+  delivery_detail: string;
+  returns_detail: string;
+}
+
 export interface ProductPageContent {
   quantity_label: string;
   bundle_label: string;
   recommendations_headline: string;
   /** How many "You may also like" cards to show (auto-picked unless overridden). */
   recommendations_count: number;
+  assurances: ProductAssurancesContent;
   circle: ProductCircleContent;
 }
 
@@ -398,7 +425,9 @@ export interface ReturnPolicySection {
   body: string;
 }
 
-export interface ReturnPolicyContent {
+// Privacy policy, terms of service, and shipping policy are all simple
+// heading + intro + sections pages, so they share this shape.
+export interface LegalPageContent {
   heading: string;
   /** Tail of the banner headline shown in gold — see src/lib/pageTitle.ts. */
   heading_gold: string;
@@ -407,9 +436,18 @@ export interface ReturnPolicyContent {
   contact_email: string;
 }
 
-// Privacy policy, terms of service, and shipping policy are all simple
-// heading + intro + sections pages, so they share the return policy's shape.
-export type LegalPageContent = ReturnPolicyContent;
+export interface ReturnPolicyContent extends LegalPageContent {
+  /**
+   * How many days a shopper has to start a return — the one place that number
+   * is configured.
+   *
+   * The policy page and the product page both used to spell it out in their own
+   * free text, so changing "30 days" on the policy page left the buy button
+   * still promising 30-day returns. Both now quote `{returns_window}`, which
+   * resolves against this (see src/lib/offerTokens).
+   */
+  window_days: number;
+}
 
 export interface GiftCardsContent {
   heading: string;
@@ -680,6 +718,15 @@ export const DEFAULT_CONTENT: SiteContent = {
     bundle_label: "BUNDLE DEAL",
     recommendations_headline: "You may also like",
     recommendations_count: 4,
+    assurances: {
+      enabled: true,
+      shipping_text: "{shipping_cost}",
+      shipping_detail: "shown at checkout before you pay — zero surprise fees 🫶",
+      delivery_text: "at your door in 3–7 days",
+      delivery_detail: "hand-poured in Dublin and packed the day it's ready 🕯️",
+      returns_text: "returns within {returns_window}, no drama",
+      returns_detail: "changed your mind? send it back unused and we'll sort you out 💌",
+    },
     circle: {
       enabled: true,
       headline: "Join the Olive Goose Circle",
@@ -834,7 +881,7 @@ export const DEFAULT_CONTENT: SiteContent = {
       },
       {
         title: "Return window",
-        body: "You can request a return within 30 days of delivery, as long as the candle is unused and in its original packaging.",
+        body: "You can request a return within {returns_window} of delivery, as long as the candle is unused and in its original packaging.",
       },
       {
         title: "How refunds work",
@@ -846,6 +893,7 @@ export const DEFAULT_CONTENT: SiteContent = {
       },
     ],
     contact_email: "hello@theolivegoose.com",
+    window_days: 30,
   },
 
   giftCards: {

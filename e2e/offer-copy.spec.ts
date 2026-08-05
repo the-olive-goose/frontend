@@ -36,6 +36,8 @@ let originalPickup:   Record<string, unknown> = {};
 let originalPopup:    Record<string, unknown> = {};
 let originalBar:      Record<string, unknown> = {};
 let originalShipping: Record<string, unknown> = {};
+let originalProductPage: Record<string, unknown> = {};
+let originalReturnPolicy: Record<string, unknown> = {};
 
 async function put(section: string, data: unknown) {
   const res = await admin.put(`/api/content/${section}`, { headers: auth(TOKEN), data });
@@ -81,6 +83,8 @@ test.beforeAll(async () => {
   originalPopup    = (await (await admin.get(`/api/content/subscribePopup`)).json())  ?? {};
   originalBar      = (await (await admin.get(`/api/content/announcementBar`)).json()) ?? {};
   originalShipping = (await (await admin.get(`/api/content/shippingPolicy`)).json())  ?? {};
+  originalProductPage = (await (await admin.get(`/api/content/productPage`)).json())  ?? {};
+  originalReturnPolicy = (await (await admin.get(`/api/content/returnPolicy`)).json()) ?? {};
 });
 
 test.afterAll(async () => {
@@ -90,6 +94,8 @@ test.afterAll(async () => {
   if (Object.keys(originalPickup).length)   await put("pickupSettings", originalPickup);
   if (Object.keys(originalPopup).length)    await put("subscribePopup", originalPopup);
   if (Object.keys(originalShipping).length) await put("shippingPolicy", originalShipping);
+  if (Object.keys(originalProductPage).length) await put("productPage", originalProductPage);
+  if (Object.keys(originalReturnPolicy).length) await put("returnPolicy", originalReturnPolicy);
   await admin.dispose();
 });
 
@@ -139,6 +145,93 @@ test.describe("Announcement bar follows the configured offer", () => {
     const text = await barText(page);
     expect(text).toMatch(/free shipping on all orders/i);
     expect(text).not.toMatch(/over €0/i);
+  });
+});
+
+// The lines under the buy button are the last thing read before adding to the
+// basket — the most expensive place on the site for a stale shipping figure.
+test.describe("Product page assurances follow the same settings", () => {
+  const assurancesWith = (shipping: string) => ({
+    ...originalProductPage,
+    assurances: {
+      enabled: true,
+      shipping_text: shipping,
+      shipping_detail: "no surprise fees at checkout",
+      delivery_text: "Delivered in 3–7 business days",
+      delivery_detail: "packed in Dublin the day it's ready",
+      returns_text: "returns within {returns_window}, no drama",
+      returns_detail: "",
+    },
+  });
+
+  /** Open the first product in the shop and return its buy-box copy. */
+  async function buyBoxText(page: Page): Promise<string> {
+    await page.goto(`${BASE}/shop`);
+    const card = page.locator("a[href^='/products/']").first();
+    await expect(card).toBeVisible({ timeout: 15_000 });
+    await card.click();
+    const line = page.getByText(/business days/i).first();
+    await expect(line).toBeVisible({ timeout: 15_000 });
+    return (await page.locator("body").innerText()).replace(/\s+/g, " ");
+  }
+
+  test("quotes the live flat rate and free-shipping bar", async ({ page }) => {
+    await setOffer(75, 5);
+    await setBarMessage("🕯️ New collection dropping soon");
+    await put("productPage", assurancesWith("{shipping_cost}"));
+
+    const body = await buyBoxText(page);
+    expect(body).toMatch(/€4\.99 shipping — free on orders over €75/i);
+    expect(body).toMatch(/Delivered in 3–7 business days/i);
+    expect(body).not.toMatch(/\{shipping_cost/);
+  });
+
+  // The mismatch a shop owner hit: the returns window was changed on the policy
+  // page and the buy button carried on promising the old one.
+  test("the returns line follows the window set on the Return Policy page", async ({ page }) => {
+    await setOffer(75, 5);
+    await setBarMessage("🕯️ New collection dropping soon");
+    await put("productPage", assurancesWith("{shipping_cost}"));
+    await put("returnPolicy", { ...originalReturnPolicy, window_days: 14 });
+
+    const body = await buyBoxText(page);
+    expect(body).toMatch(/returns within 14 days/i);
+    expect(body, "the old window must not survive anywhere on the page")
+      .not.toMatch(/30 days|\{returns_window/);
+
+    // …and the policy page itself quotes the same number.
+    await page.goto(`${BASE}/returns`);
+    const policy = (await page.locator("body").innerText()).replace(/\s+/g, " ");
+    expect(policy).toMatch(/within 14 days of delivery/i);
+  });
+
+  test("says everything ships free when the threshold is 0", async ({ page }) => {
+    await setOffer(0, 5);
+    await setBarMessage("🕯️ New collection dropping soon");
+    await put("productPage", assurancesWith("{shipping_cost}"));
+
+    const body = await buyBoxText(page);
+    expect(body).toMatch(/free shipping on all orders/i);
+    expect(body, "a shop that charges nothing must not quote a rate")
+      .not.toMatch(/€4\.99 shipping/i);
+  });
+
+  // A row with a second line opens on tap; one without stays plain text rather
+  // than becoming a control that does nothing.
+  test("a row's detail opens on tap, and a detail-less row is not a button", async ({ page }) => {
+    await setOffer(75, 5);
+    await setBarMessage("🕯️ New collection dropping soon");
+    await put("productPage", assurancesWith("{shipping_cost}"));
+    await buyBoxText(page);
+
+    await expect(page.getByText(/packed in Dublin the day it's ready/i)).toBeHidden();
+
+    const delivery = page.getByRole("button", { name: /Delivered in 3–7 business days/i });
+    await delivery.click();
+    await expect(page.getByText(/packed in Dublin the day it's ready/i)).toBeVisible();
+    await expect(delivery).toHaveAttribute("aria-expanded", "true");
+
+    await expect(page.getByRole("button", { name: /Easy 30-day returns/i })).toHaveCount(0);
   });
 });
 

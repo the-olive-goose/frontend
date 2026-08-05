@@ -532,7 +532,15 @@ const OurStoryPageEditor = ({
                 ) : diaryMediaKind(photo.image_url) === "image" ? (
                   <img src={photo.image_url} alt="Diary preview" className="h-full w-full object-cover" />
                 ) : diaryMediaKind(photo.image_url) === "video" ? (
-                  <video src={toEmbedUrl(photo.image_url)} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+                  // A thumbnail is not worth pulling a video for — an unoptimised
+                  // phone capture is tens of megabytes, and this list shows ten of
+                  // them. Cloudinary's first-frame still is ~40 KB; anything else
+                  // gets metadata, which is all the browser needs for one frame.
+                  buildPosterUrl(photo.image_url) ? (
+                    <img src={buildPosterUrl(photo.image_url)} alt="Diary preview" className="h-full w-full object-cover" />
+                  ) : (
+                    <video src={toEmbedUrl(photo.image_url)} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+                  )
                 ) : (
                   <div className="grid h-full place-items-center text-xl" title="Video link — previews on the site">🎬</div>
                 )}
@@ -548,6 +556,16 @@ const OurStoryPageEditor = ({
                   onChange={(image_url) => {
                     const photos = [...data.photos];
                     photos[index] = { ...photo, image_url };
+                    onChange({ ...data, photos });
+                  }}
+                />
+                {/* A diary video is a phone capture too, and the reel plays it at
+                    the width of a phone. Same rewrite as the home-page reels. */}
+                <CloudinaryOptimiser
+                  url={photo.image_url}
+                  onOptimise={(optimised) => {
+                    const photos = [...data.photos];
+                    photos[index] = { ...photo, image_url: optimised };
                     onChange({ ...data, photos });
                   }}
                 />
@@ -683,10 +701,13 @@ const OfferTokenHint = () => (
     <p className="font-medium text-foreground">Use a token instead of typing an offer figure</p>
     <p><code>{"{free_shipping}"}</code> → “on orders over €65”, or “on all orders” when the threshold is 0</p>
     <p><code>{"{free_shipping_threshold}"}</code> → just the amount, e.g. “€65”</p>
+    <p><code>{"{shipping_rate}"}</code> → the flat delivery charge, e.g. “€4.99”</p>
+    <p><code>{"{shipping_cost}"}</code> → “€4.99 shipping — free on orders over €65”, or “Free shipping on all orders”</p>
     <p><code>{"{discount}"}</code> → the signup discount percent, e.g. “5”</p>
+    <p><code>{"{returns_window}"}</code> → the return window, e.g. “30 days” (<code>{"{returns_days}"}</code> → just “30”)</p>
     <p>
-      Tokens read the live settings (Ops → Pickup &amp; Delivery, and Subscribers &amp; Signup Popup),
-      so copy can never promise a number that checkout won’t honour.
+      Tokens read the live settings (Ops → Pickup &amp; Delivery, Subscribers &amp; Signup Popup, and
+      the return window on Return Policy), so copy can never promise a number the shop won’t honour.
     </p>
   </div>
 );
@@ -1241,6 +1262,67 @@ const ProductPageEditor = ({
     </div>
 
     <SectionHeading
+      title="Shipping, Delivery & Returns"
+      desc="The three reassurance lines shown right under the Add to Cart button on every product page. Each has an optional second line that opens when a shopper taps the row — leave it empty and that row stays plain text."
+    />
+
+    <OfferTokenHint />
+
+    <label className="flex items-center gap-2 text-sm text-foreground">
+      <input
+        type="checkbox"
+        checked={data.assurances.enabled}
+        onChange={(e) => onChange({ ...data, assurances: { ...data.assurances, enabled: e.target.checked } })}
+      />
+      Show these lines under the buy button
+    </label>
+
+    <Field
+      label="🚚 Shipping cost line"
+      hint={`Leave the {shipping_cost} token in place and it always matches Ops → Pickup & Delivery — "€4.99 shipping — free on orders over €65", or "Free shipping on all orders" when nothing is charged.`}
+    >
+      <RichInput
+        value={data.assurances.shipping_text}
+        onChange={(e) => onChange({ ...data, assurances: { ...data.assurances, shipping_text: e.target.value } })}
+      />
+    </Field>
+    <Field label="…and what opens underneath it" hint={`e.g. "shown at checkout before you pay — zero surprise fees 🫶"`}>
+      <RichInput
+        value={data.assurances.shipping_detail}
+        onChange={(e) => onChange({ ...data, assurances: { ...data.assurances, shipping_detail: e.target.value } })}
+      />
+    </Field>
+
+    <Field label="⚡ Delivery time line" hint={`e.g. "at your door in 3–7 days". Leave empty to hide this row.`}>
+      <RichInput
+        value={data.assurances.delivery_text}
+        onChange={(e) => onChange({ ...data, assurances: { ...data.assurances, delivery_text: e.target.value } })}
+      />
+    </Field>
+    <Field label="…and what opens underneath it" hint={`e.g. "hand-poured in Dublin and packed the day it's ready 🕯️"`}>
+      <RichInput
+        value={data.assurances.delivery_detail}
+        onChange={(e) => onChange({ ...data, assurances: { ...data.assurances, delivery_detail: e.target.value } })}
+      />
+    </Field>
+
+    <Field
+      label="💅 Returns line"
+      hint={`Keep the {returns_window} token in place and this follows the return window set on Policy & Info → Return Policy — change 30 to 14 there and this line says "14 days" too. Leave empty to hide this row.`}
+    >
+      <RichInput
+        value={data.assurances.returns_text}
+        onChange={(e) => onChange({ ...data, assurances: { ...data.assurances, returns_text: e.target.value } })}
+      />
+    </Field>
+    <Field label="…and what opens underneath it" hint={`e.g. "changed your mind? send it back unused and we'll sort you out 💌"`}>
+      <RichInput
+        value={data.assurances.returns_detail}
+        onChange={(e) => onChange({ ...data, assurances: { ...data.assurances, returns_detail: e.target.value } })}
+      />
+    </Field>
+
+    <SectionHeading
       title="Join the Olive Goose Circle"
       desc="Signup block at the bottom of every product page. Emails land in the same Subscribers list as the newsletter and signup popup — including the welcome discount code, when that's switched on."
     />
@@ -1444,19 +1526,85 @@ const CandleCareEditor = ({
 );
 
 /**
- * The media half of a reel: where the video comes from, and the still shown on
- * the card while that reel is not the one playing.
+ * "Optimise for web" for any Cloudinary video URL, wherever one can be pasted.
  *
  * Cloudinary's upload URL points at the *original* file. Straight off a phone
- * that is a 2160x3840 capture of around 100 MB, and the home page shows six
- * reels — enough to exhaust a phone browser before the page has settled.
- * "Optimise for web" rewrites the URL to ask Cloudinary for a web-sized encode
- * of the same asset: no re-upload, and no visible quality change, because even
- * the smallest tier is sampled above what a phone can resolve in a 240px card.
+ * that is a 2160x3840 capture of 35–100 MB, and a page shows several of them at
+ * once — enough to exhaust a phone browser before the page has settled. This
+ * rewrites the URL to ask Cloudinary for a web-sized encode of the same asset:
+ * no re-upload, and no visible quality change, because even the smallest tier is
+ * sampled above what a phone can resolve at the size these actually play.
  *
  * The rewritten URL is written straight into the field. What is stored is what
  * ships — nothing rewrites it again at render time — so it stays yours to edit,
  * override, or replace with a transformation chain of your own.
+ */
+const CloudinaryOptimiser = ({ url, onOptimise }: {
+  url: string;
+  /** Given the rewritten URL for the chosen tier. */
+  onOptimise: (optimised: string, quality: VideoQuality) => void;
+}) => {
+  const [quality, setQuality] = useState<VideoQuality>(DEFAULT_QUALITY);
+
+  if (!isCloudinaryVideo(url)) return null;
+
+  const apply = () => onOptimise(buildOptimizedUrl(url, quality), quality);
+  const tiers = (
+    <select
+      value={quality}
+      onChange={(e) => setQuality(e.target.value as VideoQuality)}
+      className="px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40"
+    >
+      {(Object.keys(QUALITY_TIERS) as VideoQuality[]).map((key) => (
+        <option key={key} value={key}>{QUALITY_TIERS[key].label}</option>
+      ))}
+    </select>
+  );
+
+  if (isOptimizedUrl(url)) {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <p className="text-xs font-sans text-emerald-600 dark:text-emerald-400">
+          ✓ Optimised — Cloudinary will deliver a web-sized copy of this video.
+        </p>
+        {tiers}
+        <button
+          type="button"
+          onClick={apply}
+          className="px-2 py-1 rounded-md border border-border font-sans text-xs hover:bg-muted"
+        >
+          Re-apply
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
+      <p className="text-xs font-sans text-foreground">
+        <strong>This link points at the original upload.</strong> Phone footage is
+        usually 4K and can be 100&nbsp;MB or more, which is what makes the page
+        slow and can crash a mobile browser. Optimising asks Cloudinary for a
+        web-sized copy of the same video — no re-upload, no visible quality change.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        {tiers}
+        <button
+          type="button"
+          onClick={apply}
+          className="px-3 py-2 rounded-lg bg-primary text-primary-foreground font-sans text-xs font-medium hover:opacity-90"
+        >
+          Optimise for web
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground font-sans">{QUALITY_TIERS[quality].hint}</p>
+    </div>
+  );
+};
+
+/**
+ * The media half of a reel: where the video comes from, and the still shown on
+ * the card while that reel is not the one playing.
  */
 const ReelMediaFields = ({
   item,
@@ -1465,20 +1613,8 @@ const ReelMediaFields = ({
   item: VideoItem;
   onPatch: (patch: Partial<VideoItem>) => void;
 }) => {
-  const [quality, setQuality] = useState<VideoQuality>(DEFAULT_QUALITY);
-
   const url = item.video_url ?? "";
-  const cloudinary = isCloudinaryVideo(url);
-  const optimised = cloudinary && isOptimizedUrl(url);
-  const derivedPoster = cloudinary ? buildPosterUrl(url) : "";
-
-  const optimise = () => {
-    onPatch({
-      video_url: buildOptimizedUrl(url, quality),
-      // An explicit poster is the admin's; only fill a blank one.
-      poster_url: item.poster_url?.trim() ? item.poster_url : buildPosterUrl(url),
-    });
-  };
+  const derivedPoster = isCloudinaryVideo(url) ? buildPosterUrl(url) : "";
 
   return (
     <>
@@ -1492,59 +1628,14 @@ const ReelMediaFields = ({
           onChange={(e) => onPatch({ video_url: e.target.value })}
         />
 
-        {cloudinary && !optimised && (
-          <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
-            <p className="text-xs font-sans text-foreground">
-              <strong>This link points at the original upload.</strong> Phone footage is
-              usually 4K and can be 100&nbsp;MB or more, which is what makes the home page
-              slow and can crash a mobile browser. Optimising asks Cloudinary for a
-              web-sized copy of the same video — no re-upload, no visible quality change.
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={quality}
-                onChange={(e) => setQuality(e.target.value as VideoQuality)}
-                className="px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40"
-              >
-                {(Object.keys(QUALITY_TIERS) as VideoQuality[]).map((key) => (
-                  <option key={key} value={key}>{QUALITY_TIERS[key].label}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={optimise}
-                className="px-3 py-2 rounded-lg bg-primary text-primary-foreground font-sans text-xs font-medium hover:opacity-90"
-              >
-                Optimise for web
-              </button>
-            </div>
-            <p className="text-xs text-muted-foreground font-sans">{QUALITY_TIERS[quality].hint}</p>
-          </div>
-        )}
-
-        {optimised && (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <p className="text-xs font-sans text-emerald-600 dark:text-emerald-400">
-              ✓ Optimised — Cloudinary will deliver a web-sized copy of this video.
-            </p>
-            <select
-              value={quality}
-              onChange={(e) => setQuality(e.target.value as VideoQuality)}
-              className="px-2 py-1 rounded-md border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40"
-            >
-              {(Object.keys(QUALITY_TIERS) as VideoQuality[]).map((key) => (
-                <option key={key} value={key}>{QUALITY_TIERS[key].label}</option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={optimise}
-              className="px-2 py-1 rounded-md border border-border font-sans text-xs hover:bg-muted"
-            >
-              Re-apply
-            </button>
-          </div>
-        )}
+        <CloudinaryOptimiser
+          url={url}
+          onOptimise={(optimised) => onPatch({
+            video_url: optimised,
+            // An explicit poster is the admin's; only fill a blank one.
+            poster_url: item.poster_url?.trim() ? item.poster_url : buildPosterUrl(url),
+          })}
+        />
 
         {item.video_url && (
           <p className="text-xs text-muted-foreground truncate mt-1">✓ {item.video_url}</p>
@@ -2083,6 +2174,20 @@ const ReturnPolicyEditor = ({
 }) => (
   <div className="space-y-6">
     <SectionHeading title="Return Policy" desc="Content shown on the Returns & Refunds page, plus the return-request form." />
+
+    <Field
+      label="Return window (days)"
+      hint="The one place this number is set. Write {returns_window} in any copy — here, or the returns line under the buy button — and it renders as “30 days”, so changing it here changes it everywhere at once."
+    >
+      <Input
+        type="number" min={1} max={365}
+        value={data.window_days}
+        onChange={(e) => onChange({ ...data, window_days: Number(e.target.value) || 0 })}
+      />
+    </Field>
+
+    <OfferTokenHint />
+
     <div className="grid grid-cols-2 gap-4">
       <Field label="Heading (plain)" hint={`e.g. "Delivery &"`}>
         <RichInput value={data.heading} onChange={(e) => onChange({ ...data, heading: e.target.value })} />

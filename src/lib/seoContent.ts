@@ -167,7 +167,8 @@ function loadOffer(): Promise<OfferValues> {
   return Promise.all([
     getContent("pickupSettings", DEFAULT_CONTENT.pickupSettings),
     getContent("subscribePopup", DEFAULT_CONTENT.subscribePopup),
-  ]).then(([pickup, popup]) => resolveOfferValues(pickup, popup));
+    getContent("returnPolicy", DEFAULT_CONTENT.returnPolicy),
+  ]).then(([pickup, popup, returnPolicy]) => resolveOfferValues(pickup, popup, returnPolicy));
 }
 
 /** Test seam — clears the per-session content cache. */
@@ -202,7 +203,7 @@ export function previewMeta(routeKey: string, content: SiteContent, siteName: st
   const source = META_SOURCES[routeKey];
   const base = metaForPath(routeKey);
   if (!source) return base;
-  const offer = resolveOfferValues(content.pickupSettings, content.subscribePopup);
+  const offer = resolveOfferValues(content.pickupSettings, content.subscribePopup, content.returnPolicy);
   const sectionContent = (content as unknown as Record<string, unknown>)[source.section] ?? source.fallback;
   return buildMeta(base, source.pick(sectionContent), offer, siteName);
 }

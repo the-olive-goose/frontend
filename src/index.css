@@ -808,7 +808,10 @@
     inset: 0;
     z-index: 2;
   }
-  .og-diary-embed-wait {
+  /* A slide outside the preload window: nothing has been fetched for it yet, so
+     it holds the frame with a glyph rather than a black rectangle. */
+  .og-diary-embed-wait,
+  .og-diary-wait {
     position: absolute;
     inset: 0;
     display: grid;

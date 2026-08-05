@@ -11,7 +11,7 @@ import { ROUTE_META, SITE_NAME, type RouteMeta } from "@/lib/seo";
 import type { OfferValues } from "@/lib/offerTokens";
 
 const base: RouteMeta = { title: "Baseline title", description: "Baseline description." };
-const offer: OfferValues = { freeShippingThreshold: 50, welcomeDiscountPercent: 10 };
+const offer: OfferValues = { freeShippingThreshold: 50, flatShippingRate: 4.99, welcomeDiscountPercent: 10, returnsWindowDays: 30 };
 
 beforeEach(() => {
   resetSeoContentCache();

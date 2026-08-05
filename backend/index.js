@@ -32,8 +32,12 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 
 // ── Security headers ───────────────────────────────────────────────────────────
 // Applied to every response (API + the SPA this server also serves). Scripts are
-// locked to 'self' — the Vite bundle has no inline scripts — while inline styles
-// (React style props) and Google Fonts stay allowed so the site keeps rendering.
+// locked to 'self' and nothing else — the Vite bundle has no inline scripts and
+// the shop's analytics is first-party — while inline styles (React style props)
+// and Google Fonts stay allowed so the site keeps rendering.
+//
+// Must match the policy the CDN serves for the same SPA (public/_headers and
+// vercel.json); src/lib/csp.test.ts holds all three to each other.
 app.disable('x-powered-by');
 
 const CSP = [
@@ -44,6 +48,12 @@ const CSP = [
   "img-src 'self' data: blob: https:",
   "media-src 'self' blob: https:",
   "connect-src 'self' https:",
+  // Same explicit host list as public/_headers: this server also serves the SPA
+  // (the Railway origin, and any deploy where the CDN isn't in front), so without
+  // frame-src the studio rail's YouTube/Vimeo/Instagram embeds fall back to
+  // default-src 'self' and are blocked — the exact regression _headers already
+  // fixed on the Netlify half.
+  "frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com https://www.instagram.com",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -3653,9 +3663,15 @@ app.get('/api/admin/ops-overview', requireAuth, async (_req, res) => {
 // Events the browser is allowed to report. 'purchase' is deliberately absent —
 // it's written server-side in finalizeCheckoutSession from the Stripe-confirmed
 // order, so revenue/conversion numbers can't be inflated by hand-crafted requests.
+// Allowlist for ingest — anything not named here is dropped silently, so a new
+// client event MUST be added here or it never reaches the database. Mirrors
+// EventType in src/lib/analytics.ts; the names are GA4's so the shop dashboard
+// and GA4 can be read side by side.
 const CLIENT_EVENT_TYPES = new Set([
-  'page_view', 'add_to_cart', 'remove_from_cart', 'begin_checkout',
-  'newsletter_signup', 'signup', 'login', 'web_vital',
+  'page_view', 'view_item_list', 'select_item', 'view_item',
+  'add_to_cart', 'remove_from_cart', 'view_cart',
+  'checkout_gate', 'begin_checkout', 'add_shipping_info', 'add_payment_info',
+  'search', 'newsletter_signup', 'signup', 'login', 'web_vital',
 ]);
 
 // Client-generated opaque ids (crypto.randomUUID or similar) — anything else is
@@ -3705,6 +3721,17 @@ const classifyDevice = (ua, hint) => {
 const STORE_TZ = /^[A-Za-z]+\/[A-Za-z_+-]+$/.test(process.env.ANALYTICS_TZ || '')
   ? process.env.ANALYTICS_TZ
   : 'Europe/Dublin';
+
+// Dates on which a metric's DEFINITION changed, newest last. A window spanning
+// one of these is comparing two different measurements, and no amount of SQL can
+// reconcile that — so the dashboard says so instead of letting the step read as
+// a change in shopper behaviour. Append here whenever instrumentation moves.
+const MEASUREMENT_CHANGES = [
+  {
+    date: '2026-08-04',
+    note: 'Adding to the basket stopped requiring a sign-in. Before this date "Added to cart" counted signed-in shoppers only, so earlier figures under-report it — and the sign-in gate moved to "Proceed to Checkout", where it is now measured.',
+  },
+];
 
 // Purchase events written by finalizeCheckoutSession when the client never sent
 // its analytics ids land on this sentinel id. It is not a real browsing session:
@@ -3899,7 +3926,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
     const PC = filtered ? [...w, ...filterParams] : [start, endExcl];
     const PW = [...w, ...filterParams];
 
-    const [traffic, newVsReturning, funnel, daily, sales, customers, topProducts, topPages, sources, devices, vitals, abandoned] = await Promise.all([
+    const [traffic, newVsReturning, funnel, daily, sales, customers, topProducts, topPages, sources, devices, vitals, abandoned, signinWall] = await Promise.all([
 
       // Traffic KPIs — current window vs the previous window of the same length.
       pool.query(
@@ -3934,12 +3961,28 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
          ), sess AS (
            SELECT session_id,
                   COUNT(*) FILTER (WHERE event_type = 'page_view') AS pages,
-                  BOOL_OR(event_type IN ('add_to_cart', 'begin_checkout', 'purchase')) AS engaged
+                  -- A bounce is a session that arrived and DID nothing, so this
+                  -- list is deliberate actions only. The view_* events are
+                  -- deliberately absent: they fire automatically when a page
+                  -- renders, so counting them would mark every single-page
+                  -- landing as engaged and quietly drive the bounce rate to
+                  -- zero. Searching, clicking a product, or signing up are
+                  -- things the shopper chose to do, and were previously missed —
+                  -- only cart and checkout counted, which overstated bounces.
+                  BOOL_OR(event_type IN (
+                    'select_item', 'search',
+                    'add_to_cart', 'begin_checkout',
+                    'add_shipping_info', 'add_payment_info', 'purchase',
+                    'newsletter_signup', 'signup', 'login'
+                  )) AS engaged
            FROM scoped GROUP BY session_id
          ), vis AS (
-           -- A visitor is recognisable across visits only when the cookie banner
-           -- was accepted; otherwise the id lives in sessionStorage and the same
-           -- person returning tomorrow is counted as new. Tracking that share is
+           -- A visitor is recognisable across visits only when their id could be
+           -- persisted; otherwise it dies with the tab and the same person
+           -- returning tomorrow is counted as new. This no longer tracks the
+           -- cookie answer — first-party measurement doesn't depend on it — so
+           -- the remaining gap is browsers that refuse storage outright (Safari
+           -- private mode, storage-blocking extensions). Tracking that share is
            -- what lets the panel state how far these two numbers can be trusted.
            SELECT visitor_id, BOOL_OR(visitor_scope = 'persistent') AS persistent
            FROM scoped GROUP BY visitor_id
@@ -3954,11 +3997,30 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
         PC
       ),
 
-      // Conversion funnel. Each stage counts sessions that reached it *or any
-      // later stage*, so the funnel can never widen as it descends: someone who
-      // lands straight on /products/<slug> from Instagram and buys is credited
-      // with browsing too. Counting stages independently produced ">100% of
-      // previous" steps and understated overall conversion.
+      // Conversion funnel — the GA4 ecommerce funnel, session by session.
+      //
+      // Two rules make it watertight:
+      //
+      // 1. MONOTONIC. Each stage counts sessions that reached it *or any later
+      //    stage*, so the funnel can never widen as it descends: someone who
+      //    lands straight on /products/<slug> from Instagram and buys is
+      //    credited with browsing too. Counting stages independently produced
+      //    ">100% of previous" steps and understated overall conversion.
+      //
+      // 2. EVENT-DRIVEN, WITH A PATH FALLBACK FOR HISTORY. Each stage is a thing
+      //    the shopper did (view_item_list, view_item, view_cart…), not a guess
+      //    from the URL — a /shop page_view proves the route was entered, not
+      //    that any product was rendered, so an empty category used to count as
+      //    browsing. The old path predicates are kept OR'd in purely so windows
+      //    that predate the events still report: drop them and every historical
+      //    funnel collapses to zero.
+      //
+      // The checkout stage keys on the /checkout page_view rather than on
+      // begin_checkout alone, because begin_checkout changed meaning: it used to
+      // fire on pressing Pay (post-validation) and now fires on arrival. The
+      // page_view is the one signal that means the same thing on both sides of
+      // that deploy, so the stage stays comparable across the boundary.
+      //
       // Stage 1 uses the same predicate as the sessions KPI, so the funnel's
       // conversion figure and the Session conversion tile always agree.
       pool.query(
@@ -3969,19 +4031,44 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
          ), converted AS (${CONVERTED}
          ), sess AS (
            SELECT s.session_id,
-             BOOL_OR(s.event_type = 'page_view' AND (s.path LIKE '/shop%' OR s.path LIKE '/deals%' OR s.path LIKE '/products%')) AS browsed,
+             BOOL_OR(s.event_type = 'view_item_list'
+                     OR (s.event_type = 'page_view' AND (s.path LIKE '/shop%' OR s.path LIKE '/deals%'))) AS browsed,
+             BOOL_OR(s.event_type = 'view_item'
+                     OR (s.event_type = 'page_view' AND s.path LIKE '/products%')) AS viewed_item,
              BOOL_OR(s.event_type = 'add_to_cart') AS carted,
-             BOOL_OR(s.event_type = 'begin_checkout') AS checkout,
+             BOOL_OR(s.event_type = 'view_cart'
+                     OR (s.event_type = 'page_view' AND s.path LIKE '/basket%')) AS viewed_cart,
+             -- Pressed "Proceed to Checkout". Sits between the basket and the
+             -- checkout page because that is exactly where the sign-in gate
+             -- stands: the gap between this stage and the next one IS the cost
+             -- of demanding an account, and nothing else measures it.
+             BOOL_OR(s.event_type = 'checkout_gate') AS gate,
+             BOOL_OR(s.event_type = 'begin_checkout'
+                     OR (s.event_type = 'page_view' AND s.path LIKE '/checkout%')) AS checkout,
+             BOOL_OR(s.event_type = 'add_shipping_info') AS shipping,
+             BOOL_OR(s.event_type = 'add_payment_info') AS payment,
              BOOL_OR(c.session_id IS NOT NULL) AS purchased
            FROM scoped s LEFT JOIN converted c USING (session_id)
            GROUP BY s.session_id
          )
          SELECT
            COUNT(*)::int AS visited,
-           COUNT(*) FILTER (WHERE browsed OR carted OR checkout OR purchased)::int AS browsed,
-           COUNT(*) FILTER (WHERE carted OR checkout OR purchased)::int AS carted,
-           COUNT(*) FILTER (WHERE checkout OR purchased)::int AS checkout,
-           COUNT(*) FILTER (WHERE purchased)::int AS purchased
+           COUNT(*) FILTER (WHERE browsed OR viewed_item OR carted OR viewed_cart OR gate OR checkout OR shipping OR payment OR purchased)::int AS browsed,
+           COUNT(*) FILTER (WHERE viewed_item OR carted OR viewed_cart OR gate OR checkout OR shipping OR payment OR purchased)::int AS viewed_item,
+           COUNT(*) FILTER (WHERE carted OR viewed_cart OR gate OR checkout OR shipping OR payment OR purchased)::int AS carted,
+           COUNT(*) FILTER (WHERE viewed_cart OR gate OR checkout OR shipping OR payment OR purchased)::int AS viewed_cart,
+           COUNT(*) FILTER (WHERE gate OR checkout OR shipping OR payment OR purchased)::int AS gate,
+           COUNT(*) FILTER (WHERE checkout OR shipping OR payment OR purchased)::int AS checkout,
+           COUNT(*) FILTER (WHERE shipping OR payment OR purchased)::int AS shipping,
+           COUNT(*) FILTER (WHERE payment OR purchased)::int AS payment,
+           COUNT(*) FILTER (WHERE purchased)::int AS purchased,
+           -- Did the deeper checkout steps exist at all in this window? Without
+           -- this, a window from before they were instrumented shows a cliff
+           -- from "Reached checkout" to a handful of purchasers and reads as
+           -- catastrophic abandonment rather than as missing measurement.
+           COUNT(*) FILTER (WHERE shipping)::int AS shipping_raw,
+           COUNT(*) FILTER (WHERE payment)::int AS payment_raw,
+           COUNT(*) FILTER (WHERE gate)::int AS gate_raw
          FROM sess`,
         PC
       ),
@@ -4100,13 +4187,35 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            WHERE event_type = 'add_to_cart' AND created_at >= ${T1} AND created_at < ${T2}
              AND props->>'product_id' IS NOT NULL AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY 1
+         ), views AS (
+           -- Sessions that actually saw the product page. This is the
+           -- denominator that turns "12 add-to-carts" into "12 out of 400 people
+           -- who looked" — the difference between a product nobody finds and one
+           -- everybody rejects, which the units/revenue columns alone cannot
+           -- tell apart. Counted per session, not per event, so re-reading the
+           -- page doesn't dilute the rate.
+           SELECT props->>'product_id' AS product_id, MAX(props->>'name') AS name,
+                  COUNT(DISTINCT session_id)::int AS views
+           FROM analytics_events
+           WHERE event_type = 'view_item' AND created_at >= ${T1} AND created_at < ${T2}
+             AND props->>'product_id' IS NOT NULL AND session_id <> '${NO_SESSION}'${SF()}
+           GROUP BY 1
          )
-         SELECT COALESCE(s.name, c.name, 'Unknown') AS name,
+         SELECT COALESCE(s.name, c.name, v.name, 'Unknown') AS name,
                 COALESCE(s.units, 0)::int AS units,
                 COALESCE(s.revenue, 0)::float AS revenue,
-                COALESCE(c.add_to_carts, 0)::int AS add_to_carts
-         FROM sold s FULL JOIN carts c USING (product_id)
-         ORDER BY revenue DESC, add_to_carts DESC LIMIT 10`,
+                COALESCE(c.add_to_carts, 0)::int AS add_to_carts,
+                COALESCE(v.views, 0)::int AS views,
+                -- NULL, not 0, when nothing was viewed: no views means the rate
+                -- is unknown, and a 0% would read as "everyone rejected it".
+                CASE WHEN COALESCE(v.views, 0) > 0
+                     THEN ROUND(COALESCE(c.add_to_carts, 0)::numeric * 100 / v.views, 1)::float
+                END AS view_to_cart_pct,
+                CASE WHEN COALESCE(c.add_to_carts, 0) > 0
+                     THEN ROUND(LEAST(COALESCE(s.units, 0), c.add_to_carts)::numeric * 100 / c.add_to_carts, 1)::float
+                END AS cart_to_buy_pct
+         FROM sold s FULL JOIN carts c USING (product_id) FULL JOIN views v USING (product_id)
+         ORDER BY revenue DESC, add_to_carts DESC, views DESC LIMIT 10`,
         PC
       ),
 
@@ -4188,23 +4297,91 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
         PC
       ),
 
-      // Checkout abandonment — sessions that reached payment but never bought,
+      // Checkout abandonment — sessions that reached checkout but never bought,
       // with the basket value they walked away from. "Converted" is unbounded at
       // the top end (see CONVERTED): a payment started at 23:55 and confirmed at
       // 00:03 is a sale, and counting it as abandoned was a nightly false positive.
+      //
+      // Deliberately the SAME predicate as the funnel's checkout stage, so
+      // `checkout_sessions` here and "Reached checkout" there are always the
+      // same number. They were previously derived differently, which let the
+      // card and the funnel disagree on screen about how many people got that
+      // far. MAX(total) takes the basket at its largest — begin_checkout now
+      // fires on arrival, so a session that reached checkout without pressing
+      // Pay still carries the value it was about to spend.
       pool.query(
         `WITH checkout AS (
            SELECT session_id, MAX(${PROPS_TOTAL}) AS basket
            FROM analytics_events
-           WHERE event_type = 'begin_checkout' AND created_at >= ${T1} AND created_at < ${T2}
+           WHERE (event_type IN ('begin_checkout', 'add_shipping_info', 'add_payment_info')
+                  OR (event_type = 'page_view' AND path LIKE '/checkout%'))
+             AND created_at >= ${T1} AND created_at < ${T2}
              AND session_id <> '${NO_SESSION}'${SF()}
            GROUP BY session_id
          ), converted AS (${CONVERTED}
+         ), reached AS (
+           -- The funnel's checkout stage is monotonic: a session credited with a
+           -- deeper stage counts as having reached checkout even if the shallower
+           -- event never arrived (a dropped beacon, a hard reload mid-flush). This
+           -- card must use the SAME session set or the two disagree on screen —
+           -- which is precisely what the comment above used to promise and the
+           -- old begin_checkout-only predicate could not deliver.
+           SELECT session_id, basket FROM checkout
+           UNION
+           SELECT session_id, NULL::numeric FROM converted
+           WHERE session_id IN (
+             SELECT session_id FROM analytics_events
+             WHERE created_at >= ${T1} AND created_at < ${T2}
+               AND session_id <> '${NO_SESSION}'${SF()}
+           )
+         ), per_session AS (
+           SELECT session_id, MAX(basket) AS basket FROM reached GROUP BY session_id
          )
          SELECT COUNT(*)::int AS checkout_sessions,
                 COUNT(*) FILTER (WHERE c.session_id IS NULL)::int AS abandoned_sessions,
                 COALESCE(ROUND(SUM(k.basket) FILTER (WHERE c.session_id IS NULL), 2), 0)::float AS lost_revenue
-         FROM checkout k LEFT JOIN converted c USING (session_id)`,
+         FROM per_session k LEFT JOIN converted c USING (session_id)`,
+        PC
+      ),
+
+      // The sign-in wall — the storefront's only gate, and the one number that
+      // says what it costs. A session that pressed "Proceed to Checkout" as a
+      // guest was asked to sign in; whether it then reached checkout at all is
+      // the difference between a gate people walk through and a door they turn
+      // around at. `blocked_basket_value` is the money sitting in the baskets
+      // that never got past it — not a forecast, just what was in them.
+      //
+      // Signed-in presses are counted separately as the control group: if they
+      // convert far better than guests from the same stage, the wall is the
+      // difference, not the basket.
+      pool.query(
+        `WITH gate AS (
+           SELECT session_id,
+                  BOOL_OR(props->>'outcome' = 'signin_required') AS walled,
+                  MAX(${PROPS_TOTAL}) AS basket
+           FROM analytics_events
+           WHERE event_type = 'checkout_gate'
+             AND created_at >= ${T1} AND created_at < ${T2}
+             AND session_id <> '${NO_SESSION}'${SF()}
+           GROUP BY session_id
+         ), reached AS (
+           SELECT DISTINCT session_id FROM analytics_events
+           WHERE (event_type = 'begin_checkout' OR (event_type = 'page_view' AND path LIKE '/checkout%'))
+             AND created_at >= ${T1} AND created_at < ${T2} AND session_id <> '${NO_SESSION}'
+         ), converted AS (${CONVERTED}
+         )
+         SELECT
+           COUNT(*)::int AS gate_sessions,
+           COUNT(*) FILTER (WHERE g.walled)::int AS walled_sessions,
+           COUNT(*) FILTER (WHERE g.walled AND r.session_id IS NOT NULL)::int AS walled_continued,
+           COUNT(*) FILTER (WHERE g.walled AND c.session_id IS NOT NULL)::int AS walled_purchased,
+           COUNT(*) FILTER (WHERE NOT g.walled)::int AS passed_sessions,
+           COUNT(*) FILTER (WHERE NOT g.walled AND c.session_id IS NOT NULL)::int AS passed_purchased,
+           COALESCE(ROUND(SUM(g.basket) FILTER (WHERE g.walled AND r.session_id IS NULL), 2), 0)::float
+             AS blocked_basket_value
+         FROM gate g
+         LEFT JOIN reached r USING (session_id)
+         LEFT JOIN converted c USING (session_id)`,
         PC
       ),
     ]);
@@ -4227,6 +4404,17 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // cover only orders that could be tied back to a matching session.
       attributed: filtered,
       abandoned: abandoned.rows[0],
+      // Null when nothing in this window went through the gate — a window that
+      // predates the event must show nothing rather than a row of confident
+      // zeroes, same rule the funnel's optional stages follow.
+      signin_wall: signinWall.rows[0]?.gate_sessions > 0 ? signinWall.rows[0] : null,
+      // Instrumentation changes that fall inside the requested window. A number
+      // whose DEFINITION moved mid-window is the one kind of inaccuracy no query
+      // can fix, and comparing across the boundary silently reads the change as
+      // shopper behaviour. Surfacing them is the honest option.
+      measurement_notes: MEASUREMENT_CHANGES
+        .filter(c => c.date >= start && c.date <= end)
+        .map(({ date, note }) => ({ date, note })),
       traffic: {
         visitors: t.visitors, sessions: t.sessions, pageviews: t.pageviews,
         pages_per_session: t.sessions ? +(t.pageviews / t.sessions).toFixed(2) : 0,
@@ -4252,14 +4440,22 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
         prev: { revenue: s.prev_revenue, orders: s.prev_orders, aov: s.prev_aov },
       },
       customers: customers.rows[0],
+      // The GA4 ecommerce funnel. Stages whose events did not exist anywhere in
+      // this window are omitted entirely rather than reported as zero: a window
+      // predating the checkout-step instrumentation would otherwise show a
+      // cliff at "Added delivery details" that looks like every shopper
+      // abandoning, when it only means nothing was measuring there yet. An
+      // absent row is honest; a zero row is a lie the shop would act on.
       funnel: [
         { stage: 'Sessions', sessions: f.visited },
-        { stage: 'Browsed products', sessions: f.browsed },
+        { stage: 'Browsed a collection', sessions: f.browsed },
+        { stage: 'Viewed a product', sessions: f.viewed_item },
         { stage: 'Added to cart', sessions: f.carted },
-        // begin_checkout fires when the shopper commits to pay, not when the
-        // checkout page loads — so this stage and the abandonment card below
-        // measure the payment step specifically.
-        { stage: 'Reached payment', sessions: f.checkout },
+        { stage: 'Viewed basket', sessions: f.viewed_cart },
+        ...(f.gate_raw > 0 ? [{ stage: 'Pressed checkout', sessions: f.gate }] : []),
+        { stage: 'Reached checkout', sessions: f.checkout },
+        ...(f.shipping_raw > 0 ? [{ stage: 'Added delivery details', sessions: f.shipping }] : []),
+        ...(f.payment_raw > 0 ? [{ stage: 'Went to payment', sessions: f.payment }] : []),
         { stage: 'Purchased', sessions: f.purchased },
       ],
       daily: daily.rows,
@@ -4427,11 +4623,15 @@ app.post('/api/subscribers', publicWriteLimiter, async (req, res) => {
             console.error('[sendDiscountCodeEmail] delivery failed:', err?.message || err);
             return { delivered: false };
           });
-          // Always return the code so the signup card can show it right away — the
-          // email is a nice-to-have, but the customer must never be left without
-          // their discount just because mail delivery is flaky or misconfigured.
-          // (Single-use, per-email welcome code, so echoing it here is low-risk.)
-          discount = { discount_percent: Number(codeRow.discount_percent), email_delivered: delivered, code: codeRow.code };
+          // The code itself is NOT returned to the browser. Email is the only way
+          // to receive it, which is what makes the offer cost something to claim:
+          // echoing it in the response turned the signup card into a code
+          // dispenser — type any made-up address, read the code off the screen (or
+          // out of the network tab), repeat. Delivering it to the mailbox means a
+          // claimer has to own the mailbox. If delivery fails the shopper is told
+          // so and the code still exists server-side, so the admin can look it up
+          // under Ops → Discount codes and send it on.
+          discount = { discount_percent: Number(codeRow.discount_percent), email_delivered: delivered };
         }
       }
     } catch (err) {
@@ -4441,12 +4641,12 @@ app.post('/api/subscribers', publicWriteLimiter, async (req, res) => {
     // "This mailbox already spent its welcome discount" outranks "this exact
     // spelling is new to the list". A +tag alias of a redeemed address is a genuinely
     // new subscriber row, but answering 201-with-no-discount would show the signup
-    // card's success view with an empty space where the code belongs. Say plainly
-    // that the discount is gone — that's the part the shopper is asking about, and
-    // they stay subscribed either way.
+    // card's success view promising an email that is never coming. Say plainly that
+    // the discount is gone — that's the part the shopper is asking about, and they
+    // stay subscribed either way.
     if (alreadyUsed) return res.status(409).json({ error: 'already_subscribed', already_used: true });
     if (isNew) return res.status(201).json({ email, already_subscribed: false, discount });
-    // Already on the list. If there's still an unused code, hand it over (200);
+    // Already on the list. If there's still an unused code, re-send it (200);
     // otherwise there's genuinely nothing to give (offer switched off) → 409, and
     // the signup card invites them to try a different email.
     if (discount) return res.status(200).json({ email, already_subscribed: true, discount });

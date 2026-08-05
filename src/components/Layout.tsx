@@ -17,12 +17,13 @@ const Layout = () => {
   // figures — otherwise it would have to hardcode them and could drift.
   const pickup = useContent("pickupSettings", DEFAULT_CONTENT.pickupSettings);
   const popup  = useContent("subscribePopup", DEFAULT_CONTENT.subscribePopup);
-  const offer  = resolveOfferValues(pickup.data, popup.data);
+  const returns = useContent("returnPolicy", DEFAULT_CONTENT.returnPolicy);
+  const offer  = resolveOfferValues(pickup.data, popup.data, returns.data);
 
   // The bar is only allowed to paint once its copy AND the figures that copy
   // interpolates are both real — a message rendered against fallback settings
   // would quote a threshold the shop doesn't actually offer.
-  const ready = navbar.ready && announcement.ready && pickup.ready && popup.ready;
+  const ready = navbar.ready && announcement.ready && pickup.ready && popup.ready && returns.ready;
 
   return (
     <>

@@ -62,3 +62,8 @@ backend/uploads/
 .e2e-pgdata/
 .analytics-pgdata/
 playwright-report/
+
+# local dev scratch scripts
+.pg-up.mjs
+.q.mjs
+.seed-products.mjs

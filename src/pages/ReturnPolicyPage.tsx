@@ -3,6 +3,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { fetchOrders, submitReturn, fetchReturns, SessionExpiredError, type Order, type ReturnRequest } from "@/lib/userApi";
 import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { useContent } from "@/hooks/useContent";
+import { fillOfferTokens, resolveOfferValues } from "@/lib/offerTokens";
 import { SkelText } from "@/components/ui/ContentSkeleton";
 import PageSubNav, { ORDERS_NAV } from "@/components/PageSubNav";
 import PageHero from "@/components/PageHero";
@@ -28,6 +29,16 @@ const formatDate = (iso: string) =>
 const ReturnPolicyPage = () => {
   const { user, loading: authLoading, openAuthModal, requireAuth } = useAuth();
   const { data: policy, ready: policyReady } = useContent("returnPolicy", DEFAULT_CONTENT.returnPolicy);
+  // This page's copy quotes the returns window and the shipping offer through
+  // tokens, same as every other policy page (see lib/offerTokens) — so it needs
+  // the sections that own those figures, including its own window_days.
+  const pickup = useContent("pickupSettings", DEFAULT_CONTENT.pickupSettings);
+  const popup  = useContent("subscribePopup", DEFAULT_CONTENT.subscribePopup);
+  const fill   = (text: string) =>
+    fillOfferTokens(text, resolveOfferValues(pickup.data, popup.data, policy));
+  // The copy and the figures it quotes have to land together, or the page shows
+  // a window the shop no longer honours for a frame.
+  const ready  = policyReady && pickup.ready && popup.ready;
   const [orders, setOrders] = useState<Order[]>([]);
   const [returns, setReturns] = useState<ReturnRequest[]>([]);
   const [selection, setSelection] = useState("");
@@ -76,19 +87,19 @@ const ReturnPolicyPage = () => {
   return (
     <div className="w-full min-h-screen" style={{ background: "var(--bg-page)" }}>
       <div>
-        <PageHero eyebrow="Shipping & Returns" title={policy.heading} titleGold={policy.heading_gold} subtitle={policy.intro} ready={policyReady} />
+        <PageHero eyebrow="Shipping & Returns" title={policy.heading} titleGold={policy.heading_gold} subtitle={ready ? fill(policy.intro) : undefined} ready={ready} />
 
         <div className="max-w-3xl mx-auto px-6 sm:px-12 pt-[var(--page-body-pt)] pb-12 sm:pb-16 space-y-6">
           {user && <PageSubNav items={ORDERS_NAV} />}
 
           {/* Policy content — CMS managed */}
           <div className="bg-white rounded-2xl p-6 sm:p-8 space-y-6" style={{ border: "1px solid var(--color-border)" }}>
-            {policyReady ? (
+            {ready ? (
               <>
                 {policy.sections.map(section => (
                   <div key={section.title}>
-                    <h3 className="font-serif text-lg font-semibold mb-1" style={{ color: "var(--color-forest-dark)" }}><RichText text={section.title} /></h3>
-                    <p className="font-sans text-sm leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}><RichText text={section.body} /></p>
+                    <h3 className="font-serif text-lg font-semibold mb-1" style={{ color: "var(--color-forest-dark)" }}><RichText text={fill(section.title)} /></h3>
+                    <p className="font-sans text-sm leading-relaxed" style={{ color: "rgba(30,41,24,0.72)" }}><RichText text={fill(section.body)} /></p>
                   </div>
                 ))}
                 <p className="font-sans text-xs" style={{ color: "rgba(30,41,24,0.6)" }}>

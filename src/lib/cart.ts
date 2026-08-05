@@ -7,6 +7,11 @@ export const MAX_CART_QTY = 99;
 // Fallback used only until the admin-configured pickupSettings.free_shipping_threshold loads.
 export const DEFAULT_FREE_SHIPPING_THRESHOLD = 65;
 
+// Same role for the delivery charge — checkout falls back to this while
+// pickupSettings.flat_shipping_rate is unknown, so copy quoting the rate must
+// fall back to the identical figure or the two would disagree.
+export const DEFAULT_FLAT_SHIPPING_RATE = 4.99;
+
 // Mirrors MIN_CHARGE_EUR in backend/index.js — Stripe won't create a Checkout
 // Session below this total, so checkout says so up front rather than sending the
 // shopper to a payment page that can't exist. Most visible on pickup, which drops

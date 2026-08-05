@@ -33,6 +33,9 @@ const CheckoutSuccessPage = () => {
         const result = await getCheckoutSession(sessionId);
         if (cancelled) return;
         if ("id" in result) {
+          // No purchase event is sent from here: the 'purchase' event is written
+          // by the backend when Stripe confirms payment (finalizeCheckoutSession),
+          // so it can't be missed by a shopper who closes this tab early.
           await clearCart();
           navigate(`/orders/${result.id}`, { replace: true });
           return;

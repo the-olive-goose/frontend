@@ -1,5 +1,8 @@
-import { DEFAULT_FREE_SHIPPING_THRESHOLD } from "@/lib/cart";
-import type { PickupSettingsContent, SubscribePopupContent } from "@/lib/defaults";
+import { DEFAULT_FLAT_SHIPPING_RATE, DEFAULT_FREE_SHIPPING_THRESHOLD } from "@/lib/cart";
+import type { PickupSettingsContent, ReturnPolicyContent, SubscribePopupContent } from "@/lib/defaults";
+
+/** Fallback returns window, used only until the admin-set one loads. */
+export const DEFAULT_RETURNS_WINDOW_DAYS = 30;
 
 /**
  * Marketing copy that quotes an offer must never hardcode the number.
@@ -21,8 +24,12 @@ import type { PickupSettingsContent, SubscribePopupContent } from "@/lib/default
 export interface OfferValues {
   /** Admin-configured free-shipping threshold, in euro. 0 means everything ships free. */
   freeShippingThreshold: number;
+  /** Flat delivery charge below the threshold, in euro. 0 means delivery is always free. */
+  flatShippingRate: number;
   /** Percent off carried by a welcome/subscriber code. */
   welcomeDiscountPercent: number;
+  /** Days a shopper has to start a return, from Return Policy. */
+  returnsWindowDays: number;
 }
 
 /** "€50" for whole euro, "€49.99" when there are cents. */
@@ -38,14 +45,19 @@ const euro = (n: number): string => `€${Number.isInteger(n) ? n : n.toFixed(2)
  * threshold handling in backend/index.js.
  */
 export const resolveOfferValues = (
-  pickup?: Partial<Pick<PickupSettingsContent, "free_shipping_threshold">>,
+  pickup?: Partial<Pick<PickupSettingsContent, "free_shipping_threshold" | "flat_shipping_rate">>,
   popup?: Partial<Pick<SubscribePopupContent, "discount_percent">>,
+  returnPolicy?: Partial<Pick<ReturnPolicyContent, "window_days">>,
 ): OfferValues => {
   const threshold = Number(pickup?.free_shipping_threshold);
+  const rate = Number(pickup?.flat_shipping_rate);
   const percent = Number(popup?.discount_percent);
+  const days = Number(returnPolicy?.window_days);
   return {
     freeShippingThreshold: Number.isFinite(threshold) ? threshold : DEFAULT_FREE_SHIPPING_THRESHOLD,
+    flatShippingRate: Number.isFinite(rate) ? rate : DEFAULT_FLAT_SHIPPING_RATE,
     welcomeDiscountPercent: Number.isFinite(percent) ? percent : 0,
+    returnsWindowDays: Number.isFinite(days) ? days : DEFAULT_RETURNS_WINDOW_DAYS,
   };
 };
 
@@ -58,6 +70,24 @@ export const resolveOfferValues = (
  */
 export const freeShippingClause = (threshold: number): string =>
   threshold <= 0 ? "on all orders" : `on orders over ${euro(threshold)}`;
+
+/**
+ * What delivery actually costs, in one line, phrased for the settings in force.
+ *
+ * Both halves of the answer live in Ops → Pickup & Delivery: the flat rate is
+ * what checkout adds below the bar, the threshold is where it stops charging.
+ * Quoting only one of them is how a product page ends up saying "€4.99 shipping"
+ * on a shop that ships everything free. A rate of 0, or a threshold of 0, both
+ * mean nothing is ever charged — so they get the same wording, not a "€0.00".
+ */
+/** "30 days", "1 day" — the returns window, in words that agree with the number. */
+export const returnsWindowClause = (days: number): string =>
+  `${days} ${days === 1 ? "day" : "days"}`;
+
+export const shippingCostClause = (rate: number, threshold: number): string =>
+  rate <= 0 || threshold <= 0
+    ? "Free shipping on all orders"
+    : `${euro(rate)} shipping — free ${freeShippingClause(threshold)}`;
 
 /**
  * Substitute just `{discount}` → the welcome percent.
@@ -77,11 +107,23 @@ export const fillDiscountToken = (text: string | undefined, percent: number): st
  *   {discount}                  → "5"            (welcome discount percent)
  *   {free_shipping_threshold}   → "€50"          (formatted threshold)
  *   {free_shipping}             → "on orders over €50" / "on all orders"
+ *   {shipping_rate}             → "€4.99"        (flat delivery charge)
+ *   {shipping_cost}             → "€4.99 shipping — free on orders over €50"
+ *   {returns_days}              → "30"           (returns window, bare number)
+ *   {returns_window}            → "30 days"
  *
  * Unknown tokens are left untouched so a typo shows up as itself in the copy
  * rather than vanishing silently.
+ *
+ * `{free_shipping_threshold}` is replaced before `{free_shipping}` so the longer
+ * token wins; the same ordering applies to `{shipping_rate}` vs `{shipping_cost}`
+ * — they share no prefix, but keeping the pattern makes that fact deliberate.
  */
 export const fillOfferTokens = (text: string | undefined, values: OfferValues): string =>
   fillDiscountToken(text, values.welcomeDiscountPercent)
     .split("{free_shipping_threshold}").join(euro(values.freeShippingThreshold))
-    .split("{free_shipping}").join(freeShippingClause(values.freeShippingThreshold));
+    .split("{free_shipping}").join(freeShippingClause(values.freeShippingThreshold))
+    .split("{shipping_rate}").join(euro(values.flatShippingRate))
+    .split("{shipping_cost}").join(shippingCostClause(values.flatShippingRate, values.freeShippingThreshold))
+    .split("{returns_window}").join(returnsWindowClause(values.returnsWindowDays))
+    .split("{returns_days}").join(String(values.returnsWindowDays));

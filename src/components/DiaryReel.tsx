@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { diaryMediaKind, toEmbedUrl, type OurStoryPhoto } from "@/lib/defaults";
+import { buildPosterUrl } from "@/lib/cloudinaryVideo";
 import { tuneEmbed } from "@/components/sections/VideosSection";
 import RichText, { stripRichText } from "@/lib/richtext";
 import useBodyScrollLock from "@/hooks/useBodyScrollLock";
@@ -18,6 +19,20 @@ import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 // rail drives the inline stage and the full-screen viewer.
 
 const FALLBACK_CAPTION = "A little studio moment";
+
+/**
+ * How many slides either side of the one being read keep real media mounted.
+ *
+ * This is a load budget, not a nicety. A diary is a handful of untouched phone
+ * captures — the photos are 1–3 MB each and the Cloudinary videos are tens of
+ * megabytes apiece when their URL still points at the original upload. Mounting
+ * every slide at the moment the diary is revealed meant the whole diary started
+ * downloading at once, so the first photo (the only one anybody can see) queued
+ * behind everything else and the reveal stalled. One slide either side is
+ * enough: `active` is recomputed while the flick is still moving, so the next
+ * photo mounts before it arrives.
+ */
+const PRELOAD_RADIUS = 1;
 
 interface ReelChrome {
   photos: OurStoryPhoto[];
@@ -84,9 +99,16 @@ const useReelRail = (count: number, initialIndex = 0) => {
  * phone into a hand warmer. In the rail it plays as a moving photo: muted,
  * looping, no chrome. The viewer hands over controls and asks for sound, and
  * falls back to muted when the browser refuses autoplay-with-sound (most do).
+ *
+ * Only the slide being read is allowed to fetch anything: a neighbour sits on
+ * its poster until it is the one being read, because `preload="metadata"` on an
+ * untransformed phone capture is not the small request it sounds like — the
+ * index of a QuickTime recording can live at the end of the file, so asking for
+ * metadata can drag in most of the video.
  */
-const DiaryVideo = ({ src, label, active, interactive }: {
+const DiaryVideo = ({ src, poster, label, active, interactive }: {
   src: string;
+  poster: string;
   label: string;
   active: boolean;
   interactive: boolean;
@@ -108,53 +130,74 @@ const DiaryVideo = ({ src, label, active, interactive }: {
     <video
       ref={ref}
       src={src}
+      poster={poster || undefined}
       className="og-diary-photo"
       aria-label={label}
       loop
       playsInline
       muted={!interactive}
       controls={interactive}
-      preload={active ? "auto" : "metadata"}
+      preload={active ? "auto" : "none"}
     />
   );
 };
+
+/**
+ * A photo — or a video's first frame — in the reel's frame. Studio shots arrive
+ * portrait, square and landscape, and cropping them to a common frame beheads
+ * half of them, so the image is contained and its own blur fills whatever is
+ * left over: the same trick every reel app uses.
+ *
+ * The blur is a second `<img>` at the same URL, which the browser serves from
+ * the one decode — but only if it is never asked for a URL the frame in front
+ * of it doesn't need, which is why this only ever renders inside the preload
+ * window.
+ */
+const StillFrame = ({ src, label }: { src: string; label: string }) => (
+  <>
+    <img src={src} alt="" aria-hidden="true" className="og-diary-blur" decoding="async" />
+    <img src={src} alt={label} className="og-diary-photo" decoding="async" />
+  </>
+);
 
 const ReelSlides = ({ photos, handle, priority, interactive = false }: ReelSlidesProps) => (
   <>
     {photos.map((photo, index) => {
       const kind = diaryMediaKind(photo.image_url);
       const label = stripRichText(photo.caption) || `Founder diary ${kind === "image" ? "photo" : "video"} ${index + 1}`;
+      const active = index === priority;
+      // Neighbours are worth the bytes — the next flick must have something to
+      // show, and a diary opened on photo five must not start black. Anything
+      // further out stays unmounted until it is flicked towards.
+      const near = Math.abs(index - priority) <= PRELOAD_RADIUS;
       // In the rail, embeds a flick away are worth mounting: muted autoplay
       // means the next slide is already moving when it arrives. In the viewer
       // the player asks for sound, so only the slide being read may exist —
       // two YouTube frames talking over each other is not a diary.
-      const mounted = interactive ? index === priority : Math.abs(index - priority) <= 1;
+      const mounted = interactive ? active : near;
+      // A Cloudinary still of the first frame is ~40 KB, so an out-of-window
+      // video reads as a photo instead of a black rectangle. Non-Cloudinary
+      // videos have no still to derive; those get the placeholder.
+      const poster = kind === "video" ? buildPosterUrl(photo.image_url) : "";
       return (
         <figure key={photo.id || index} className="og-diary-slide">
-          {kind === "image" && (
-            <>
-              {/* Studio shots arrive portrait, square and landscape. Cropping them to
-                  a common frame beheads half of them, so the photo is contained and
-                  its own blur fills whatever is left over — the same trick every reel
-                  app uses. */}
-              <img src={photo.image_url} alt="" aria-hidden="true" className="og-diary-blur" decoding="async" />
-              <img
-                src={photo.image_url}
-                alt={label}
-                className="og-diary-photo"
-                loading={Math.abs(index - priority) <= 1 ? "eager" : "lazy"}
-                decoding="async"
-              />
-            </>
+          {kind === "image" && (near
+            ? <StillFrame src={photo.image_url} label={label} />
+            : <div className="og-diary-wait" aria-hidden="true">📷</div>
           )}
-          {kind === "video" && (
+          {kind === "video" && (mounted ? (
             <DiaryVideo
               src={toEmbedUrl(photo.image_url)}
+              poster={poster}
               label={label}
-              active={index === priority}
+              active={active}
               interactive={interactive}
             />
-          )}
+          ) : poster ? (
+            <StillFrame src={poster} label={label} />
+          ) : (
+            <div className="og-diary-wait" aria-hidden="true">▶</div>
+          ))}
           {kind === "embed" && (mounted ? (
             <>
               <iframe

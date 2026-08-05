@@ -14,7 +14,9 @@
  *
  * Runs against the ISOLATED test stack (fresh Postgres, backend :3002, frontend
  * :8081), Stripe in test mode. Emails run in dev-mode (RESEND_API_KEY empty), so
- * the subscribe response returns the code inline — that's how we read it here.
+ * nothing is actually delivered — and the subscribe response deliberately never
+ * carries the code (email-only delivery), so the suite reads codes back from the
+ * admin table, the same place the shop owner would.
  *
  * Serial (workers=1): the reservation cases build on codes reserved earlier.
  * Account discipline: shopper2 is the "reserving" account for the API cases;
@@ -51,9 +53,24 @@ let unitCents = 0;
 const freshEmail = (tag: string) => `e2e-sub-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
 const priceToCents = (price: string) => Math.round(parseFloat(String(price).replace(/[^0-9.]/g, "")) * 100);
 
+/**
+ * The welcome code issued to an address, read from the admin table. The public
+ * subscribe response never carries the code — it is emailed and nowhere else —
+ * so this is the only way to see one, for the suite and for the shop owner alike.
+ */
+const lookupCode = async (email: string): Promise<string | undefined> => {
+  const { codes } = await (await admin.get(`/api/admin/discount-codes`, { headers: auth(TOKEN) })).json();
+  return codes.find((c: { email: string | null }) => (c.email ?? "").toLowerCase() === email.toLowerCase())?.code;
+};
+
 /** Subscribe an address and return the welcome code issued to it. */
-const codeFor = async (email: string): Promise<string> =>
-  (await (await admin.post(`/api/subscribers`, { data: { email } })).json()).discount.code;
+const codeFor = async (email: string): Promise<string> => {
+  const res = await admin.post(`/api/subscribers`, { data: { email } });
+  expect(res.ok(), `subscribe ${email} → ${res.status()}`).toBeTruthy();
+  const code = await lookupCode(email);
+  expect(code, `no welcome code issued to ${email}`).toBeTruthy();
+  return code!;
+};
 
 /** Issue a welcome code to a throwaway address nobody has an account for. */
 const issueCode = (tag: string) => codeFor(freshEmail(tag));
@@ -179,10 +196,14 @@ test.describe("Issuance", () => {
     expect(body.already_subscribed).toBe(false);
     expect(body.discount).toBeTruthy();
     expect(body.discount.discount_percent).toBe(DISCOUNT_PERCENT);
-    // Dev mode (RESEND empty) → code returned inline; delivered=false.
+    // Dev mode (RESEND empty) → nothing delivered.
     expect(body.discount.email_delivered).toBe(false);
-    expect(body.discount.code).toMatch(/^OG-[A-Z2-9]{8}$/);
-    const code = body.discount.code as string;
+    // The code must NEVER travel to the browser: printing it on the site (or
+    // leaving it in the network tab) turns signup into a code dispenser for
+    // anyone willing to type a fresh made-up address.
+    expect(body.discount.code, "the welcome code must not be returned to the client").toBeUndefined();
+    const code = (await lookupCode(email))!;
+    expect(code).toMatch(/^OG-[A-Z2-9]{8}$/);
 
     // Re-subscribing an already-listed email hands back the SAME unused code
     // (200, already_subscribed) rather than minting a second or stonewalling —
@@ -191,7 +212,8 @@ test.describe("Issuance", () => {
     expect(again.status()).toBe(200);
     const againBody = await again.json();
     expect(againBody.already_subscribed).toBe(true);
-    expect(againBody.discount.code).toBe(code);
+    expect(againBody.discount.code).toBeUndefined();
+    expect(await lookupCode(email)).toBe(code);
 
     // …and there is still exactly one code row for the email.
     const { codes } = await (await admin.get(`/api/admin/discount-codes`, { headers: auth(TOKEN) })).json();
@@ -212,9 +234,12 @@ test.describe("Issuance", () => {
 
     for (const alias of [`${local}+deals@${domain}`, `${local}+2@${domain}`, `${local}+again@${domain}`]) {
       const res = await admin.post(`/api/subscribers`, { data: { email: alias } });
-      const body = await res.json();
-      expect(body.discount?.code, `${alias} must not mint a second code`).toBe(first);
+      expect(res.ok(), `${alias} should still subscribe`).toBeTruthy();
+      // No row of its own: the alias resolves to the mailbox's existing code,
+      // which is re-sent to the same inbox rather than minted afresh.
+      expect(await lookupCode(alias), `${alias} must not mint a second code`).toBeUndefined();
     }
+    expect(await lookupCode(base)).toBe(first);
 
     // …and the table agrees: one row for the whole mailbox.
     const { codes } = await (await admin.get(`/api/admin/discount-codes`, { headers: auth(TOKEN) })).json();
@@ -226,11 +251,15 @@ test.describe("Issuance", () => {
     // Google ignores dots in the local part, so m.e@gmail.com is me@gmail.com.
     const local = `e2e.dots.${Date.now()}.${Math.floor(Math.random() * 1e6)}`;
     const first = await codeFor(`${local}@gmail.com`);
-    const dotted = await admin.post(`/api/subscribers`, { data: { email: `${local.replace(/\./g, "")}@gmail.com` } });
-    expect((await dotted.json()).discount?.code).toBe(first);
+    const undotted = `${local.replace(/\./g, "")}@gmail.com`;
+    expect((await admin.post(`/api/subscribers`, { data: { email: undotted } })).ok()).toBeTruthy();
+    expect(await lookupCode(undotted), "dot variant must not mint a second code").toBeUndefined();
     // …including the googlemail.com spelling of the same account.
-    const alt = await admin.post(`/api/subscribers`, { data: { email: `${local}@googlemail.com` } });
-    expect((await alt.json()).discount?.code).toBe(first);
+    const googlemail = `${local}@googlemail.com`;
+    expect((await admin.post(`/api/subscribers`, { data: { email: googlemail } })).ok()).toBeTruthy();
+    expect(await lookupCode(googlemail), "googlemail spelling must not mint a second code").toBeUndefined();
+    // The mailbox still holds exactly the one code it started with.
+    expect(await lookupCode(`${local}@gmail.com`)).toBe(first);
   });
 });
 
@@ -318,9 +347,11 @@ test.describe("No loopholes", () => {
     const [local, domain] = first.email.split("@");
     const alias = `${local}+again@${domain}`;
 
-    // Subscribing the alias hands back the mailbox's existing code, not a new one.
+    // Subscribing the alias re-sends the mailbox's existing code, not a new one.
     const aliasSub = await admin.post(`/api/subscribers`, { data: { email: alias } });
-    expect((await aliasSub.json()).discount?.code).toBe(first.code);
+    expect(aliasSub.ok()).toBeTruthy();
+    expect(await lookupCode(alias), "the alias must not mint a code of its own").toBeUndefined();
+    expect(await lookupCode(first.email)).toBe(first.code);
 
     // A second account registered on the alias is allowed — but the code belongs to
     // the mailbox, and this account can't spend a second one.
@@ -591,33 +622,60 @@ test.describe("Signup popup", () => {
     await expect(page.locator(POPUP)).toBeVisible({ timeout: 15_000 });
   }
 
-  test("subscribing shows the code with a copy button and does not auto-close", async ({ page }) => {
+  test("subscribing confirms the code was emailed — and never prints it on the page", async ({ page }) => {
+    const email = freshEmail("popup");
     await openPopup(page);
 
-    await page.locator(`${POPUP} input[type="email"]`).fill(freshEmail("popup"));
+    await page.locator(`${POPUP} input[type="email"]`).fill(email);
     await page.locator(`${POPUP} button[type="submit"]`).click();
 
-    // The success view shows the actual code and a copy affordance…
-    await expect(page.locator(POPUP).getByText(/^OG-[A-Z2-9]{8}$/)).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(POPUP).getByText(/tap to copy/i)).toBeVisible();
+    // The success view names the mailbox it went to…
+    await expect(page.locator(POPUP).getByText(new RegExp(email, "i"))).toBeVisible({ timeout: 10_000 });
 
-    // …and it stays put (no 3.5s auto-close eating the code).
+    // …and the code itself appears nowhere on the page. This is the anti-farming
+    // guarantee: a code you can read off the screen is a code you can mint with a
+    // made-up address, over and over.
+    await expect(page.locator("body")).not.toContainText(/OG-[A-Z2-9]{8}/);
+    const issued = await lookupCode(email);
+    expect(issued, "the code still exists — it just went to the mailbox").toMatch(/^OG-[A-Z2-9]{8}$/);
+
+    // …and it stays put (no auto-close eating the confirmation).
     await page.waitForTimeout(4500);
     await expect(page.locator(POPUP)).toBeVisible();
   });
 
-  test("an already-subscribed email with an unused code gets its code re-shown, not stonewalled", async ({ page }) => {
+  test("the modal blocks the page until it is closed", async ({ page }) => {
+    await openPopup(page);
+
+    // A blocking dialog: the storefront behind it is inert, so the offer has to be
+    // answered or closed rather than scrolled past and ignored.
+    const shopLink = page.locator('header a[href="/shop"]').first();
+    if (await shopLink.count()) {
+      await shopLink.click({ timeout: 2000 }).catch(() => { /* blocked, as intended */ });
+      await expect(page).toHaveURL(new RegExp(`^${BASE}/?$`));
+    }
+    await expect(page.locator(POPUP)).toBeVisible();
+
+    await page.locator(`${POPUP} button[aria-label="Close signup offer"]`).click();
+    await expect(page.locator(POPUP)).toBeHidden();
+    // …and with it gone the page is usable again.
+    await page.getByRole("link", { name: /shop/i }).first().click();
+    await expect(page).toHaveURL(/\/shop/);
+  });
+
+  test("an already-subscribed email with an unused code is re-sent it, not stonewalled", async ({ page }) => {
     const taken = freshEmail("popup-dupe");
-    const firstCode = (await (await admin.post(`/api/subscribers`, { data: { email: taken } })).json()).discount.code;
+    const firstCode = await codeFor(taken);
 
     await openPopup(page);
     await page.locator(`${POPUP} input[type="email"]`).fill(taken);
     await page.locator(`${POPUP} button[type="submit"]`).click();
 
-    // Re-subscribing hands back the SAME code with an "already on the list" note,
-    // and the card stays open — the pre-existing-subscriber can finally see it.
+    // Re-subscribing re-sends the SAME code with an "already on the list" note,
+    // and the card stays open rather than shutting them out.
     await expect(page.locator(POPUP).getByText(/already on the list/i)).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(POPUP).getByText(new RegExp(firstCode))).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(firstCode);
+    expect(await lookupCode(taken), "still exactly the one code").toBe(firstCode);
   });
 });
 

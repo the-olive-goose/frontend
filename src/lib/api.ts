@@ -206,7 +206,8 @@ export const saveSettings = async (data: HeroSettings): Promise<void> => {
 export interface SubscribeDiscount {
   discount_percent: number;
   email_delivered: boolean;
-  code?: string;
+  // No `code`. The welcome code is deliberately never sent to the browser — it is
+  // delivered by email only, so claiming the offer requires owning the mailbox.
 }
 
 export interface SubscribeResult {
@@ -690,12 +691,29 @@ export interface AnalyticsOverview {
   // orders whose purchase could be tied back to a matching session.
   attributed: boolean;
   abandoned: { checkout_sessions: number; abandoned_sessions: number; lost_revenue: number };
+  // The storefront's single sign-in gate ("Proceed to Checkout"). null when no
+  // session in the window went through it — a window predating the event must
+  // show nothing rather than a row of confident zeroes.
+  signin_wall: {
+    gate_sessions: number;      // pressed the button at all
+    walled_sessions: number;    // …as a guest, so a sign-in was demanded
+    walled_continued: number;   // …and still reached the checkout page
+    walled_purchased: number;
+    passed_sessions: number;    // pressed it already signed in (the control group)
+    passed_purchased: number;
+    blocked_basket_value: number; // in the baskets that never got past the gate
+  } | null;
+  // Dates inside this window on which a metric's definition changed. Comparing
+  // across one of these reads an instrumentation change as shopper behaviour.
+  measurement_notes: Array<{ date: string; note: string }>;
   traffic: {
     visitors: number; sessions: number; pageviews: number;
     pages_per_session: number; bounce_rate: number;
     new_visitors: number; returning_visitors: number;
-    // % of visitors whose id survives the tab (cookie banner accepted). The
-    // rest count as "new" on every visit. null when there were no visitors.
+    // % of visitors whose id survives the tab. The rest count as "new" on every
+    // visit. Not about the cookie answer — first-party measurement doesn't
+    // depend on it — but about browsers that refuse storage outright.
+    // null when there were no visitors.
     identified_visitor_pct: number | null;
     prev: { visitors: number; sessions: number; pageviews: number };
   };
@@ -713,7 +731,12 @@ export interface AnalyticsOverview {
   };
   funnel: Array<{ stage: string; sessions: number }>;
   daily: Array<{ day: string; visitors: number; sessions: number; pageviews: number; orders: number; revenue: number }>;
-  top_products: Array<{ name: string; units: number; revenue: number; add_to_carts: number }>;
+  // view_to_cart_pct / cart_to_buy_pct are null when the stage below them had no
+  // traffic — "unknown", which must not be rendered as 0%.
+  top_products: Array<{
+    name: string; units: number; revenue: number; add_to_carts: number;
+    views: number; view_to_cart_pct: number | null; cart_to_buy_pct: number | null;
+  }>;
   top_pages: Array<{ path: string; views: number; sessions: number }>;
   sources: Array<{ source: string; sessions: number; orders: number; revenue: number }>;
   devices: Array<{ device: string; sessions: number }>;

@@ -48,6 +48,20 @@ const vercelCsp = () => {
   return parseCsp(header.value);
 };
 
+// The third copy: backend/index.js sets the same headers on everything it
+// serves. It matters because that server also serves the SPA — on the Railway
+// origin directly, and on any deploy without the CDN in front — so a directive
+// missing here blocks the same features the CDN copies allow. It drifted exactly
+// that way: frame-src was added to _headers and vercel.json and never here.
+const backendCsp = () => {
+  const src = readFileSync(path.join(REPO_ROOT, "backend", "index.js"), "utf8");
+  const block = src.match(/const CSP = \[([\s\S]*?)\]\.join\('; '\)/);
+  if (!block) throw new Error("no CSP array in backend/index.js");
+  const directives = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  if (!directives.length) throw new Error("CSP array in backend/index.js is empty");
+  return parseCsp(directives.join("; "));
+};
+
 /**
  * Does `policy` allow `url` for `directive`, honouring the CSP fallback chain
  * (frame-src → child-src → default-src)?
@@ -74,6 +88,7 @@ const ADMIN_VIDEO_URLS = [
 describe.each([
   ["public/_headers (Netlify — live)", netlifyCsp],
   ["vercel.json", vercelCsp],
+  ["backend/index.js (Railway origin + SPA fallback)", backendCsp],
 ])("%s CSP", (_name, load) => {
   it("frames every embed URL the video admin can produce", () => {
     const policy = load();
@@ -96,8 +111,33 @@ describe.each([
     const policy = load();
     expect(allows(policy, "connect-src", "https://theolivegoose.ie/api/health")).toBe(true);
   });
+
+  // Scripts are the one directive where a relaxation is game over, so this is
+  // asserted as an exact value rather than a set of "not" checks: script-src is
+  // 'self' and nothing else. The shop's analytics is first-party
+  // (src/lib/analytics.ts posts to our own API), so no third-party script host
+  // has any reason to appear here. A GA4 tag was briefly wired up and widened
+  // this to allow googletagmanager.com; it was removed, and this test is what
+  // stops that host — or any other — creeping back in unnoticed.
+  it("locks script-src to 'self' with no third-party hosts", () => {
+    const policy = load();
+    expect(policy["script-src"]).toEqual(["'self'"]);
+  });
+
+  it("blocks a third-party tag host outright", () => {
+    const policy = load();
+    expect(
+      allows(policy, "script-src", "https://www.googletagmanager.com/gtag/js?id=G-ABC1234567")
+    ).toBe(false);
+  });
 });
 
 it("Netlify and Vercel serve the same policy", () => {
   expect(netlifyCsp()).toEqual(vercelCsp());
+});
+
+// Whichever origin answers, the SPA must run under the same rules — otherwise a
+// feature works on one host and is silently blocked on the other.
+it("the backend serves the same policy as the CDN copies", () => {
+  expect(backendCsp()).toEqual(netlifyCsp());
 });

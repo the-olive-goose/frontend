@@ -1,6 +1,10 @@
 # Security headers served by Netlify for every path.
-# Scripts are locked to this origin (the Vite bundle has no inline scripts);
-# inline styles + Google Fonts stay allowed so the site renders unchanged.
+# Scripts are locked to this origin and nothing else — the Vite bundle has no
+# inline scripts, and the shop's analytics is first-party (src/lib/analytics.ts
+# posts to our own API), so no third-party script host needs to be allowed here.
+# Keep it that way: widening script-src is the single most costly relaxation in
+# this policy. Inline styles + Google Fonts stay allowed so the site renders
+# unchanged.
 #
 # frame-src must be listed explicitly: without it, embedded frames fall back to
 # default-src 'self' and every video the studio rail plays through an embed

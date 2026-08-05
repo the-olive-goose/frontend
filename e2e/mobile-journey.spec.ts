@@ -459,14 +459,16 @@ test.describe("Mobile purchase journey", () => {
     await page.request.delete(`${API}/api/cart`);
   });
 
-  test("a signed-out phone visitor tapping the basket is asked to sign in", async ({ page }) => {
+  test("a signed-out phone visitor tapping the basket reaches the basket", async ({ page }) => {
     await page.goto(BASE);
     const cartBtn = page.getByRole("button", { name: /^basket(,|$)/i }).first();
     await expect(cartBtn).toBeVisible({ timeout: 10_000 });
     await cartBtn.click();
 
-    // Not a dead end and not a bounce to an empty basket — the auth modal opens.
-    await expect(page.getByPlaceholder("you@example.com"))
+    // The basket itself, not a sign-in wall: shopping doesn't require an account,
+    // only checking out does.
+    await expect(page).toHaveURL(/\/basket/, { timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: /your olive goose basket/i }))
       .toBeVisible({ timeout: 10_000 });
   });
 });

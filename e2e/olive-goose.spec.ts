@@ -57,8 +57,8 @@ test.describe("Homepage", () => {
 
   test("products section renders cards", async ({ page }) => {
     await page.goto(BASE, { waitUntil: "domcontentloaded" });
-    // Product cards load after their content fetch. A guest sees "Buy Now"; a
-    // signed-in shopper sees "Add to Cart" (ScrapbookSection renders one per card).
+    // Product cards load after their content fetch. Every card says "Add to Cart"
+    // signed in or out (ScrapbookSection renders one per card).
     const addBtns = page.getByRole("button", { name: /add to cart|buy now/i });
     await expect(addBtns.first()).toBeVisible({ timeout: 20_000 });
   });

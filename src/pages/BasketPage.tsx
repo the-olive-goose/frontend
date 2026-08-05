@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -8,6 +8,7 @@ import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
 import { useContent } from "@/hooks/useContent";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
+import { track } from "@/lib/analytics";
 import { computeBundleSavings } from "@/lib/bundleSavings";
 import { getBundleNudges } from "@/lib/bundleNudges";
 import FreeShippingBar from "@/components/FreeShippingBar";
@@ -19,7 +20,7 @@ import m2 from "@/assets/M2.png";
 const FALLBACK_IMGS = [m1, m2];
 
 const BasketPage = () => {
-  const { user, openAuthModal } = useAuth();
+  const { user, openAuthModal, requireAuth } = useAuth();
   const { items, removeFromCart, updateQuantity, clearCart, count, addToCart } = useCart();
   const navigate = useNavigate();
   const [clearing, setClearing] = useState(false);
@@ -32,6 +33,17 @@ const BasketPage = () => {
     getContent<DealsContent>("deals", DEFAULT_DEALS).then(d => setBundles(d?.bundles ?? []));
     getContent("products", DEFAULT_CONTENT.products).then(d => setAllProducts(d?.items ?? []));
   }, []);
+
+  // view_cart — the step between adding something and starting checkout, and
+  // where a large share of abandonment actually happens. Fires once per visit to
+  // the page with a non-empty basket; an empty basket is a bounce, not a cart
+  // view, and counting it would understate the cart→checkout rate.
+  const cartViewed = useRef(false);
+  useEffect(() => {
+    if (cartViewed.current || items.length === 0) return;
+    cartViewed.current = true;
+    track("view_cart", { items: count, total: +cartSubtotal(items).toFixed(2) });
+  }, [items, count]);
 
   // Per-unit, non-overlapping bundle allocation — same algorithm the backend
   // charges with, so what's shown here matches the Stripe total to the cent. The
@@ -63,7 +75,22 @@ const BasketPage = () => {
   // Shipping is deliberately NOT charged here: it depends on the fulfilment choice
   // (delivery vs pickup) the shopper only makes on the checkout page, so the basket
   // shows an items-only estimate and defers the shipping line to checkout.
-  const estimatedTotal = `€${Math.max(0, subtotalNum - Math.min(bundleSavings, subtotalNum)).toFixed(2)}`;
+  const estimatedTotalNum = Math.max(0, subtotalNum - Math.min(bundleSavings, subtotalNum));
+  const estimatedTotal = `€${estimatedTotalNum.toFixed(2)}`;
+
+  // The storefront's one and only sign-in gate, so this is the one place that can
+  // measure what it costs. Without the event, a guest who won't make an account
+  // looks identical to someone who simply left the basket page — the drop lands
+  // on "Reached checkout" with no way to tell the two apart. The basket value
+  // rides along so the money held up at the wall is knowable, not guessed.
+  const handleProceedToCheckout = () => {
+    track("checkout_gate", {
+      outcome: user ? "passed" : "signin_required",
+      total: +estimatedTotalNum.toFixed(2),
+      items: count,
+    });
+    requireAuth(() => navigate("/checkout"));
+  };
 
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
@@ -82,8 +109,9 @@ const BasketPage = () => {
           {/* ── Left: basket contents ── */}
           <div className="flex-1 min-w-0">
 
-            {/* Not signed in */}
-            {!user && (
+            {/* Signed out — empty. Signing in isn't required to shop, it just
+                brings back a basket left on another device. */}
+            {!user && items.length === 0 && (
               <div className="bg-white rounded-xl p-8 flex flex-col sm:flex-row items-center gap-8"
                 style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <div className="shrink-0 w-24 h-24 rounded-full flex items-center justify-center"
@@ -98,6 +126,9 @@ const BasketPage = () => {
                   <h2 className="font-serif text-xl font-bold mb-1" style={{ color: "#0F1111" }}>Your Basket is empty.</h2>
                   <p className="font-sans text-sm mb-5" style={{ color: "#C7511F" }}>
                     <a href="/shop" className="hover:underline">Shop today's candles</a>
+                  </p>
+                  <p className="font-sans text-sm mb-4" style={{ color: "#555" }}>
+                    No account needed to add items — you can sign in when you check out.
                   </p>
                   <div className="flex flex-wrap gap-3 mb-4">
                     <button onClick={openAuthModal}
@@ -137,8 +168,8 @@ const BasketPage = () => {
               </div>
             )}
 
-            {/* Signed in — has items */}
-            {user && items.length > 0 && (
+            {/* Has items — signed in or not */}
+            {items.length > 0 && (
               <div className="bg-white rounded-xl overflow-hidden"
                 style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid #EEE" }}>
@@ -245,7 +276,7 @@ const BasketPage = () => {
             )}
 
             {/* Clear basket */}
-            {user && items.length > 0 && (
+            {items.length > 0 && (
               <div className="mt-3 text-right">
                 <button onClick={handleClear} disabled={clearing}
                   className="og-tap font-sans text-xs transition-colors hover:underline disabled:opacity-50"
@@ -256,7 +287,7 @@ const BasketPage = () => {
             )}
 
             {/* Almost-a-bundle nudges — ranked by how compelling they are to finish */}
-            {user && bundleNudges.length > 0 && (
+            {bundleNudges.length > 0 && (
               <div className="mt-3 space-y-2">
                 {bundleNudges.map(nudge => (
                   <div key={nudge.bundle.id} className="flex items-center gap-3 px-4 py-3 rounded-xl flex-wrap"
@@ -283,8 +314,8 @@ const BasketPage = () => {
           {/* ── Right: summary / info ── */}
           <div className="w-full lg:w-72 shrink-0 space-y-4">
 
-            {/* Order summary (when signed in + has items) */}
-            {user && items.length > 0 && (
+            {/* Order summary (whenever there is something to buy) */}
+            {items.length > 0 && (
               <div className="bg-white rounded-xl p-5 space-y-3"
                 style={{ border: "1px solid #DDD", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <FreeShippingBar subtotal={subtotalNum} threshold={pickup.free_shipping_threshold} ready={pickupReady} />
@@ -320,13 +351,21 @@ const BasketPage = () => {
                     Shipping is added once you choose delivery or pickup at checkout.
                   </p>
                 </div>
+                {/* The site's single sign-in gate. requireAuth replays the
+                    navigation once sign-in succeeds, and the guest basket is
+                    merged into the account by then, so nothing is lost. */}
                 <motion.button
                   whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
-                  onClick={() => navigate("/checkout")}
+                  onClick={handleProceedToCheckout}
                   className="og-tap justify-center w-full font-sans text-sm font-bold py-2.5 rounded-full transition-all"
                   style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
                   Proceed to Checkout
                 </motion.button>
+                {!user && (
+                  <p className="text-center font-sans text-xs" style={{ color: "#555" }}>
+                    You'll sign in at checkout — your basket comes with you.
+                  </p>
+                )}
                 <div className="pt-1">
                   <TrustBadges compact />
                 </div>

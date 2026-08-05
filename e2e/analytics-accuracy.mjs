@@ -115,34 +115,59 @@ async function seed(pool) {
   const O3 = "33333333-3333-4333-8333-333333333333";
   const O4 = "44444444-4444-4444-8444-444444444444";
 
-  // S1 — desktop, google, full journey. Order has a €10 discount on €110 of goods.
+  // S1 — desktop, google, the complete modern journey: every GA4 stage in order,
+  // from browsing a collection to handing off to Stripe. Order has a €10 discount
+  // on €110 of goods.
   await ev("s1", "v1", "page_view", at(3, 10), { path: "/", src: "google", dev: "desktop" });
   await ev("s1", "v1", "page_view", at(3, 10, 1), { path: "/shop", src: "google", dev: "desktop" });
+  await ev("s1", "v1", "view_item_list", at(3, 10, 1), { path: "/shop", src: "google", dev: "desktop", props: { list_id: "all", item_count: 3 } });
+  await ev("s1", "v1", "view_item", at(3, 10, 2), { path: "/products/candle-a", src: "google", dev: "desktop", props: { product_id: "p-a", name: "Candle A" } });
   await ev("s1", "v1", "add_to_cart", at(3, 10, 2), { src: "google", dev: "desktop", props: { product_id: "p-a", name: "Candle A" } });
-  await ev("s1", "v1", "begin_checkout", at(3, 10, 3), { src: "google", dev: "desktop", props: { total: 100 } });
+  await ev("s1", "v1", "view_cart", at(3, 10, 3), { path: "/basket", src: "google", dev: "desktop", props: { total: 100, items: 2 } });
+  await ev("s1", "v1", "checkout_gate", at(3, 10, 3), { path: "/basket", src: "google", dev: "desktop", props: { outcome: "passed", total: 100, items: 2 } });
+  await ev("s1", "v1", "begin_checkout", at(3, 10, 3), { path: "/checkout", src: "google", dev: "desktop", props: { total: 100 } });
+  await ev("s1", "v1", "add_shipping_info", at(3, 10, 3), { src: "google", dev: "desktop", props: { total: 100 } });
+  await ev("s1", "v1", "add_payment_info", at(3, 10, 3), { src: "google", dev: "desktop", props: { total: 100 } });
   await order(O1, u1, 100, 110, 10, at(3, 10, 4), [line("p-a", "Candle A", 55, 2)]);
   await ev("s1", "v1", "purchase", at(3, 10, 4), { path: "/checkout/success", props: { order_id: O1, total: 100 } });
 
   // S2 — MOBILE, referred by www.instagram.com, lands straight on a product page
-  // (never sees /shop) and buys. Trips: mobile-filter revenue, funnel monotonicity,
-  // www-stripping, non-direct source revenue.
+  // (never sees a collection) and buys. Trips: mobile-filter revenue, funnel
+  // monotonicity — it must be credited with browsing despite never seeing a
+  // list — www-stripping, non-direct source revenue.
   await ev("s2", "v2", "page_view", at(2, 12), { path: "/products/candle-b", ref: "https://www.instagram.com/p/xyz", dev: "mobile" });
+  await ev("s2", "v2", "view_item", at(2, 12), { path: "/products/candle-b", ref: "https://www.instagram.com/p/xyz", dev: "mobile", props: { product_id: "p-b", name: "Candle B" } });
   await ev("s2", "v2", "add_to_cart", at(2, 12, 1), { path: "/products/candle-b", ref: "https://www.instagram.com/p/xyz", dev: "mobile", props: { product_id: "p-b", name: "Candle B" } });
-  await ev("s2", "v2", "begin_checkout", at(2, 12, 2), { dev: "mobile", props: { total: 50 } });
+  await ev("s2", "v2", "checkout_gate", at(2, 12, 1), { path: "/basket", ref: "https://www.instagram.com/p/xyz", dev: "mobile", props: { outcome: "signin_required", total: 50, items: 1 } });
+  await ev("s2", "v2", "begin_checkout", at(2, 12, 2), { path: "/checkout", dev: "mobile", props: { total: 50 } });
+  await ev("s2", "v2", "add_shipping_info", at(2, 12, 2), { dev: "mobile", props: { total: 50 } });
+  await ev("s2", "v2", "add_payment_info", at(2, 12, 2), { dev: "mobile", props: { total: 50 } });
   await order(O2, u2, 50, 50, 0, at(2, 12, 3), [line("p-b", "Candle B", 50, 1)]);
   await ev("s2", "v2", "purchase", at(2, 12, 3), { path: "/checkout/success", props: { order_id: O2, total: 50 } });
 
-  // S3 — mobile, direct, single page view, no engagement → the only true bounce.
+  // S3 — mobile, direct, single page view, no engagement → a true bounce.
   await ev("s3", "v3", "page_view", at(2, 9), { path: "/", dev: "mobile" });
 
-  // S4 — desktop/google, browses and carts a product it never buys.
+  // S4 — desktop/google, browses, reads a product and carts it, never buys.
   await ev("s4", "v4", "page_view", at(1, 14), { path: "/shop", src: "google", dev: "desktop" });
+  await ev("s4", "v4", "view_item_list", at(1, 14), { path: "/shop", src: "google", dev: "desktop", props: { list_id: "all", item_count: 3 } });
+  await ev("s4", "v4", "view_item", at(1, 14, 1), { path: "/products/candle-c", src: "google", dev: "desktop", props: { product_id: "p-c", name: "Candle C" } });
   await ev("s4", "v4", "add_to_cart", at(1, 14, 1), { src: "google", dev: "desktop", props: { product_id: "p-c", name: "Candle C" } });
+  // Pressed "Proceed to Checkout" as a guest, was asked to make an account, and
+  // left. Before checkout_gate existed this session was indistinguishable from
+  // someone who idly abandoned the basket, so the cost of the gate was unknowable.
+  await ev("s4", "v4", "checkout_gate", at(1, 14, 2), { path: "/basket", src: "google", dev: "desktop", props: { outcome: "signin_required", total: 40, items: 1 } });
 
-  // S5 — desktop/google, reaches payment with a €75 basket and never pays.
+  // S5 — desktop/google, gets as far as entering delivery details on a €75
+  // basket and never reaches payment. This is the session that proves the two
+  // deepest stages are distinct: it must appear in "Added delivery details"
+  // and NOT in "Went to payment".
   await ev("s5", "v5", "page_view", at(1, 16), { path: "/", src: "google", dev: "desktop" });
   await ev("s5", "v5", "add_to_cart", at(1, 16, 1), { src: "google", dev: "desktop", props: { product_id: "p-a", name: "Candle A" } });
-  await ev("s5", "v5", "begin_checkout", at(1, 16, 2), { src: "google", dev: "desktop", props: { total: 75 } });
+  await ev("s5", "v5", "view_cart", at(1, 16, 1), { path: "/basket", src: "google", dev: "desktop", props: { total: 75, items: 1 } });
+  await ev("s5", "v5", "checkout_gate", at(1, 16, 1), { path: "/basket", src: "google", dev: "desktop", props: { outcome: "passed", total: 75, items: 1 } });
+  await ev("s5", "v5", "begin_checkout", at(1, 16, 2), { path: "/checkout", src: "google", dev: "desktop", props: { total: 75 } });
+  await ev("s5", "v5", "add_shipping_info", at(1, 16, 2), { src: "google", dev: "desktop", props: { total: 75 } });
 
   // O3 — a real paid order whose client never sent analytics ids: the purchase
   // event lands on the 'server' sentinel. Must not create a session/visitor.
@@ -160,6 +185,29 @@ async function seed(pool) {
   // Under UTC bucketing this lands on the wrong calendar day. Also the one
   // visitor who declined cookies, so their id dies with the tab.
   await ev("s6", "v6", "page_view", at(1, 0, 30), { path: "/", dev: "desktop", scope: "session" });
+
+  // S7 — a LEGACY-shaped session, 20 days back so it falls outside both the
+  // main window and the previous one it is compared against. It carries only the
+  // events that existed before the GA4 vocabulary shipped: no view_item,
+  // no view_cart, no add_shipping_info. It exists to prove two things about
+  // historical data — that the path fallbacks still place it in the funnel, and
+  // that the stages it could never have reported are omitted rather than shown
+  // as zero (which would read as every shopper abandoning).
+  await ev("s7", "v7", "page_view", at(20, 11), { path: "/shop", src: "google", dev: "desktop" });
+  await ev("s7", "v7", "add_to_cart", at(20, 11, 1), { src: "google", dev: "desktop", props: { product_id: "p-a", name: "Candle A" } });
+  await ev("s7", "v7", "page_view", at(20, 11, 2), { path: "/checkout", src: "google", dev: "desktop" });
+
+  // S8 — 15 days back, in its own window: a session that BOUGHT but whose
+  // begin_checkout never arrived (a beacon dropped on a hard reload). The funnel
+  // credits it with reaching checkout, because a purchase proves it got there.
+  // The abandonment card must agree — derived from begin_checkout alone it did
+  // not, and the two disagreed on screen about how many people reached checkout.
+  const O6 = "66666666-6666-4666-8666-666666666666";
+  await ev("s8", "v8", "page_view", at(15, 11), { path: "/shop", src: "google", dev: "desktop" });
+  await ev("s8", "v8", "view_item_list", at(15, 11), { path: "/shop", src: "google", dev: "desktop", props: { list_id: "all", item_count: 3 } });
+  await ev("s8", "v8", "add_to_cart", at(15, 11, 1), { src: "google", dev: "desktop", props: { product_id: "p-a", name: "Candle A" } });
+  await order(O6, u3, 40, 40, 0, at(15, 11, 2), [line("p-a", "Candle A", 40, 1)]);
+  await ev("s8", "v8", "purchase", at(15, 11, 2), { path: "/checkout/success", props: { order_id: O6, total: 40 } });
 
   // O5 — paid in full, then one of its two lines returned and refunded. The
   // return never touches orders.refund_status, so this order still reads as
@@ -235,20 +283,58 @@ async function main() {
   eq("revenue excludes the refunded order", d.sales.revenue, 240);
   eq("attributed_orders reports the tracking gap", d.sales.attributed_orders, 2);
   eq("funnel stage 1 == sessions KPI", stage(0), d.traffic.sessions);
+  // The full GA4 funnel. s2 lands straight on a product and still counts as
+  // having browsed (monotonic cascade); s5 enters delivery details but never
+  // reaches payment, which is the one-session gap between stages 6 and 7.
+  eq("funnel stages are named in journey order", d.funnel.map(f => f.stage), [
+    "Sessions", "Browsed a collection", "Viewed a product", "Added to cart",
+    "Viewed basket", "Pressed checkout", "Reached checkout", "Added delivery details",
+    "Went to payment", "Purchased",
+  ]);
   eq("browsed credits a straight-to-product session", stage(1), 4);
-  eq("added to cart", stage(2), 4);
-  eq("reached payment", stage(3), 3);
-  eq("purchased (sentinel excluded)", stage(4), 2);
-  eq("funnel never widens", d.funnel.map(f => f.sessions), [6, 4, 4, 3, 2]);
+  eq("viewed a product", stage(2), 4);
+  eq("added to cart", stage(3), 4);
+  eq("viewed basket", stage(4), 4);
+  // The stage the sign-in gate sits on. s4 pressed checkout and never reached
+  // the page — that one-session gap between stages 5 and 6 IS the wall, and it
+  // was invisible before this event existed.
+  eq("pressed checkout", stage(5), 4);
+  eq("reached checkout", stage(6), 3);
+  eq("added delivery details", stage(7), 3);
+  eq("went to payment excludes the shipping-only session", stage(8), 2);
+  eq("purchased (sentinel excluded)", stage(9), 2);
+  eq("funnel never widens", d.funnel.map(f => f.sessions), [6, 4, 4, 4, 4, 4, 3, 3, 2, 2]);
+  // Belt and braces: whatever the stage list becomes, it must never increase.
+  eq("every stage is <= the one above it",
+    d.funnel.every((f, i) => i === 0 || f.sessions <= d.funnel[i - 1].sessions), true);
   eq("conversion = purchased / sessions", d.sales.conversion_rate, +(2 / 6 * 100).toFixed(2));
-  eq("bounce counts only the unengaged single-pager", d.traffic.bounce_rate, +(2 / 6 * 100).toFixed(1));
+  eq("bounce counts only the unengaged single-pagers", d.traffic.bounce_rate, +(2 / 6 * 100).toFixed(1));
   eq("device split sums to sessions", d.devices.reduce((s, x) => s + x.sessions, 0), 6);
   eq("no phantom 'unknown' device", d.devices.filter(x => x.device === "unknown").length, 0);
   eq("desktop sessions", d.devices.find(x => x.device === "desktop")?.sessions, 4);
   eq("mobile sessions", d.devices.find(x => x.device === "mobile")?.sessions, 2);
-  eq("abandoned at payment", d.abandoned.abandoned_sessions, 1);
-  eq("value left at payment", d.abandoned.lost_revenue, 75);
-  eq("sessions reaching payment", d.abandoned.checkout_sessions, 3);
+  eq("abandoned at checkout", d.abandoned.abandoned_sessions, 1);
+  eq("basket value walked away from", d.abandoned.lost_revenue, 75);
+  // The card and the funnel are computed from the same predicate, so these must
+  // be the same number — they used to be derived separately and could disagree
+  // on screen about how many people reached checkout.
+  eq("sessions reaching checkout", d.abandoned.checkout_sessions, 3);
+  eq("abandonment card agrees with the funnel", d.abandoned.checkout_sessions,
+    d.funnel.find(f => f.stage === "Reached checkout")?.sessions);
+
+  // ── The sign-in gate ────────────────────────────────────────────────────────
+  // s1 and s5 pressed checkout already signed in; s2 was asked to sign in, did,
+  // and bought; s4 was asked and left. Without these the shop cannot tell what
+  // requiring an account costs it, which is the decision this instrumentation
+  // exists to inform.
+  eq("gate sessions counted", d.signin_wall?.gate_sessions, 4);
+  eq("guests asked to sign in", d.signin_wall?.walled_sessions, 2);
+  eq("…who signed in and carried on", d.signin_wall?.walled_continued, 1);
+  eq("…and bought", d.signin_wall?.walled_purchased, 1);
+  eq("already-signed-in presses are the control group", d.signin_wall?.passed_sessions, 2);
+  eq("…of whom this many bought", d.signin_wall?.passed_purchased, 1);
+  // Only s4's basket: s2 got past the gate, so its €50 was never held up by it.
+  eq("basket value held up at the gate", d.signin_wall?.blocked_basket_value, 40);
 
   const src = Object.fromEntries(d.sources.map(s => [s.source, s]));
   eq("instagram host is normalised (www stripped)", Object.keys(src).sort(), ["direct", "google", "instagram.com"]);
@@ -260,6 +346,18 @@ async function main() {
   eq("product revenue is net of the order discount", prod["Candle A"]?.revenue, 190); // 100 (O1, prorated) + 30 (O3) + 60 (O5)
   eq("cart-only product is still listed", prod["Candle C"]?.units, 0);
   eq("cart-only product shows its demand", prod["Candle C"]?.add_to_carts, 1);
+  // Per-product conversion. Candle C was viewed once and carted once but never
+  // bought: 100% view→cart, 0% cart→buy — the exact shape of a product whose
+  // page sells well and whose checkout doesn't.
+  eq("product views are counted per session", prod["Candle C"]?.views, 1);
+  eq("view->cart rate", prod["Candle C"]?.view_to_cart_pct, 100);
+  eq("cart->buy rate is 0, not null, when carts exist", prod["Candle C"]?.cart_to_buy_pct, 0);
+  // Candle B was viewed once, carted once and bought once — a clean 100/100.
+  eq("a converting product reports both rates",
+    [prod["Candle B"]?.view_to_cart_pct, prod["Candle B"]?.cart_to_buy_pct], [100, 100]);
+  // Never-viewed products must report an UNKNOWN rate, not 0% — 0 would read as
+  // "everyone who looked rejected it" rather than "nobody looked".
+  eq("an unviewed product's rate is null, never 0", prod["Candle D"]?.view_to_cart_pct ?? null, null);
   eq("product revenue sums to revenue minus shipping", +d.top_products.reduce((s, p) => s + p.revenue, 0).toFixed(2), 240);
 
   const yday = new Date(Date.parse(`${today}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
@@ -291,7 +389,7 @@ async function main() {
   eq("revenue is NOT zeroed by the device filter", m.sales.revenue, 50);
   eq("orders under filter", m.sales.orders, 1);
   eq("sessions under filter", m.traffic.sessions, 2);
-  eq("purchased stage is not zero", m.funnel[4]?.sessions, 1);
+  eq("purchased stage is not zero", m.funnel.at(-1)?.sessions, 1);
   eq("conversion under filter", m.sales.conversion_rate, 50);
   eq("abandonment is not 100%", m.abandoned.abandoned_sessions, 0);
   eq("top products survive the filter", m.top_products.find(p => p.name === "Candle B")?.revenue, 50);
@@ -304,7 +402,7 @@ async function main() {
   eq("google sessions", g.traffic.sessions, 3);
   eq("google revenue is NOT zeroed", g.sales.revenue, 100);
   eq("google orders", g.sales.orders, 1);
-  eq("google abandoned at payment", g.abandoned.abandoned_sessions, 1);
+  eq("google abandoned at checkout", g.abandoned.abandoned_sessions, 1);
 
   // ── source=instagram.com — mid-session referrer loss must not split it ──────
   console.log("\n\x1b[1msource=instagram.com\x1b[0m");
@@ -368,6 +466,57 @@ async function main() {
   const p = await get();
   eq("previous window is empty (no data seeded there)", p.traffic.prev.sessions, 0);
   eq("previous revenue is zero", p.sales.prev.revenue, 0);
+
+  // ── Historical data, before the GA4 events existed ──────────────────────────
+  // A window containing only legacy-shaped events (S7). The path fallbacks must
+  // still place it in the funnel, and the stages that could not have been
+  // recorded then must be ABSENT — a zero there would be read as every shopper
+  // abandoning at delivery details, and acted on.
+  console.log("\n\x1b[1mlegacy window (pre-GA4-events)\x1b[0m");
+  const legacyDay = new Date(Date.parse(`${today}T00:00:00Z`) - 20 * 86400000).toISOString().slice(0, 10);
+  const legacyRes = await fetch(`${API}/api/admin/analytics?start=${legacyDay}&end=${legacyDay}`, { headers: auth });
+  const L = await legacyRes.json();
+  const legacyStages = L.funnel.map(f => f.stage);
+  eq("a legacy session is still counted", L.traffic.sessions, 1);
+  eq("the /shop page_view fallback still credits browsing",
+    L.funnel.find(f => f.stage === "Browsed a collection")?.sessions, 1);
+  eq("the /checkout page_view fallback still credits checkout",
+    L.funnel.find(f => f.stage === "Reached checkout")?.sessions, 1);
+  eq("uninstrumented stages are omitted, not zeroed",
+    legacyStages.includes("Added delivery details") || legacyStages.includes("Went to payment"), false);
+  eq("the legacy funnel is still monotonic",
+    L.funnel.every((f, i) => i === 0 || f.sessions <= L.funnel[i - 1].sessions), true);
+
+  // ── A session whose checkout event never arrived ────────────────────────────
+  // S8 bought without a begin_checkout (dropped beacon). The funnel credits it
+  // with reaching checkout — a purchase is proof it got there — so the
+  // abandonment card, which the panel says is "the same sessions", has to agree.
+  // Derived from begin_checkout alone it reported 0 against the funnel's 1.
+  console.log("\n\x1b[1mlossy session (purchase, no begin_checkout)\x1b[0m");
+  const lossyDay = new Date(Date.parse(`${today}T00:00:00Z`) - 15 * 86400000).toISOString().slice(0, 10);
+  const X = await (await fetch(`${API}/api/admin/analytics?start=${lossyDay}&end=${lossyDay}`, { headers: auth })).json();
+  const reachedX = X.funnel.find(f => f.stage === "Reached checkout")?.sessions;
+  eq("a purchase alone still credits reaching checkout", reachedX, 1);
+  eq("the abandonment card agrees with it", X.abandoned.checkout_sessions, reachedX);
+  eq("a session that bought is not counted as abandoned", X.abandoned.abandoned_sessions, 0);
+  eq("no phantom lost revenue", X.abandoned.lost_revenue, 0);
+  eq("the gate stage is omitted where the event never fired",
+    X.funnel.some(f => f.stage === "Pressed checkout"), false);
+  eq("no sign-in gate block without gate events", X.signin_wall, null);
+  eq("that window's funnel is still monotonic",
+    X.funnel.every((f, i) => i === 0 || f.sessions <= X.funnel[i - 1].sessions), true);
+
+  // ── Measurement changes are declared, not hidden ────────────────────────────
+  // A window spanning the day a metric's definition moved is comparing two
+  // different measurements. No query can reconcile that, so the API has to say
+  // so — otherwise the step reads as shopper behaviour and gets acted on.
+  console.log("\n\x1b[1mmeasurement changes\x1b[0m");
+  const spanning = await (await fetch(`${API}/api/admin/analytics?start=2026-08-01&end=2026-08-07`, { headers: auth })).json();
+  const clear = await (await fetch(`${API}/api/admin/analytics?start=2026-08-05&end=2026-08-07`, { headers: auth })).json();
+  eq("a window spanning the change is flagged", spanning.measurement_notes.length, 1);
+  eq("…and dated", spanning.measurement_notes[0]?.date, "2026-08-04");
+  eq("…and says what moved", /sign-in/i.test(spanning.measurement_notes[0]?.note ?? ""), true);
+  eq("a window entirely after it is not flagged", clear.measurement_notes.length, 0);
 
   await pool.end();
   console.log(`\n${fails.length ? `\x1b[31m${fails.length} FAILED\x1b[0m` : "\x1b[32mall checks passed\x1b[0m"}`);

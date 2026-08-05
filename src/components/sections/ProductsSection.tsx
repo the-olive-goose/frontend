@@ -4,25 +4,21 @@ import { ProductsContent, type Product } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
 import { formatPrice } from "@/lib/cart";
 import { isOutOfStock, productPath } from "@/lib/products";
-import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 
 interface Props { data: ProductsContent }
 
 const ProductsSection = ({ data }: Props) => {
   const items = data.items ?? [];
-  const { user, requireAuth } = useAuth();
   const { addToCart } = useCart();
 
-  // Same rule as the shop grid: signed out shows "Buy Now" and opens the
-  // sign-in modal (the add replays once sign-in succeeds).
-  const handleAddToCart = (product: Product) => {
-    requireAuth(async () => {
-      await addToCart(product);
-      toast.success(`${product.name} added to cart`, {
-        description: formatPrice(product.price),
-        duration: 2500,
-      });
+  // Same rule as the shop grid: anyone can fill a basket. Signing in is asked
+  // for at checkout, and a guest basket merges into the account at that point.
+  const handleAddToCart = async (product: Product) => {
+    await addToCart(product);
+    toast.success(`${product.name} added to cart`, {
+      description: formatPrice(product.price),
+      duration: 2500,
     });
   };
 
@@ -127,7 +123,7 @@ const ProductsSection = ({ data }: Props) => {
                 <button
                   onClick={() => handleAddToCart(product)}
                   disabled={outOfStock}
-                  title={outOfStock ? "Out of stock" : !user ? "Sign in to add to cart" : undefined}
+                  title={outOfStock ? "Out of stock" : undefined}
                   className="mt-1 w-full py-2.5 font-sans text-sm font-semibold transition-all hover:opacity-85 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{
                     background: "var(--btn-dark-bg)",
@@ -135,7 +131,7 @@ const ProductsSection = ({ data }: Props) => {
                     borderRadius: "var(--radius-pill)",
                   }}
                 >
-                  {outOfStock ? "Out of Stock" : user ? "Add to Cart" : "Buy Now"}
+                  {outOfStock ? "Out of Stock" : "Add to Cart"}
                 </button>
               </div>
             </div>

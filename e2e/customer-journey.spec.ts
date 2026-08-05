@@ -49,14 +49,33 @@ test.describe("Guest browsing", () => {
     // Header + footer both use <nav>, so scope to the first landmark.
     await expect(page.locator("nav").first()).toBeVisible();
     await page.goto(`${BASE}/shop`);
-    // A guest sees "Buy Now"; a signed-in shopper sees "Add to Cart".
-    await expect(page.getByRole("button", { name: /add to cart|buy now/i }).first())
+    // One label, signed in or out — adding to the basket never asks who you are.
+    await expect(page.getByRole("button", { name: /add to cart/i }).first())
       .toBeVisible({ timeout: 10_000 });
   });
 
-  test("guest basket prompts sign-in", async ({ page }) => {
+  test("an empty guest basket still offers sign-in", async ({ page }) => {
     await page.goto(`${BASE}/basket`);
     await expect(page.getByText(/sign in/i).first()).toBeVisible();
+  });
+
+  test("a guest can fill a basket and is only asked to sign in at checkout", async ({ page }) => {
+    await page.goto(`${BASE}/shop`, { waitUntil: "domcontentloaded" });
+    const addBtn = page.getByRole("button", { name: /^add to cart$/i }).first();
+    await expect(addBtn).toBeVisible({ timeout: 15_000 });
+    await addBtn.click();
+
+    // No sign-in modal — the item just lands in the basket.
+    await expect(page.getByPlaceholder("you@example.com")).toBeHidden();
+
+    await page.goto(`${BASE}/basket`);
+    await expect(page.getByRole("button", { name: /proceed to checkout/i }))
+      .toBeVisible({ timeout: 10_000 });
+
+    // The gate lives here and nowhere earlier.
+    await page.getByRole("button", { name: /proceed to checkout/i }).click();
+    await expect(page.getByPlaceholder("you@example.com"))
+      .toBeVisible({ timeout: 10_000 });
   });
 });
 
@@ -84,6 +103,34 @@ test.describe("Signup journey", () => {
     });
     expect(res.status()).toBe(400);
     expect((await res.json()).error).toMatch(/8 characters/i);
+  });
+});
+
+// ─── 2b. Guest basket survives sign-in ───────────────────────────────────────
+
+test.describe("Guest basket carries into the account", () => {
+  test("items added before signing in are still there afterwards", async ({ page }) => {
+    await page.goto(`${BASE}/shop`, { waitUntil: "domcontentloaded" });
+    const addBtn = page.getByRole("button", { name: /^add to cart$/i }).first();
+    await expect(addBtn).toBeVisible({ timeout: 15_000 });
+    await addBtn.click();
+    // The basket count badge sits inside the button, so its accessible name
+    // reads "1Basket" on desktop and "Basket, 1 item" on a phone.
+    await expect(page.getByRole("button", { name: /basket/i }).first())
+      .toContainText("1", { timeout: 10_000 });
+
+    // Signing in must merge that basket onto the account, not discard it —
+    // losing it is exactly the failure that made the old sign-in-first gate safe.
+    await signIn(page);
+    await page.goto(`${BASE}/basket`);
+    await expect(page.getByRole("button", { name: /proceed to checkout/i }))
+      .toBeVisible({ timeout: 10_000 });
+
+    const rows = await page.request.get(`${API}/api/cart`);
+    expect(rows.ok()).toBeTruthy();
+    expect((await rows.json()).length).toBeGreaterThan(0);
+
+    await clearCartViaApi(page);
   });
 });
 

@@ -30,6 +30,8 @@ const overview = (o: Partial<AnalyticsOverview> = {}): AnalyticsOverview => ({
   filters: { device: null, source: null, attr: "source" },
   attributed: false,
   abandoned: { checkout_sessions: 3, abandoned_sessions: 1, lost_revenue: 75 },
+  signin_wall: null,
+  measurement_notes: [],
   traffic: {
     visitors: 6, sessions: 6, pageviews: 9, pages_per_session: 1.5, bounce_rate: 16.7,
     new_visitors: 6, returning_visitors: 0, identified_visitor_pct: 100,
@@ -45,13 +47,21 @@ const overview = (o: Partial<AnalyticsOverview> = {}): AnalyticsOverview => ({
   },
   funnel: [
     { stage: "Sessions", sessions: 6 },
-    { stage: "Browsed products", sessions: 4 },
+    { stage: "Browsed a collection", sessions: 4 },
+    { stage: "Viewed a product", sessions: 4 },
     { stage: "Added to cart", sessions: 4 },
-    { stage: "Reached payment", sessions: 3 },
+    { stage: "Viewed basket", sessions: 3 },
+    { stage: "Pressed checkout", sessions: 3 },
+    { stage: "Reached checkout", sessions: 3 },
+    { stage: "Added delivery details", sessions: 3 },
+    { stage: "Went to payment", sessions: 2 },
     { stage: "Purchased", sessions: 2 },
   ],
   daily: [{ day: "2026-07-30", visitors: 6, sessions: 6, pageviews: 9, orders: 3, revenue: 180 }],
-  top_products: [{ name: "Candle A", units: 3, revenue: 130, add_to_carts: 2 }],
+  top_products: [{
+    name: "Candle A", units: 3, revenue: 130, add_to_carts: 2,
+    views: 8, view_to_cart_pct: 25, cart_to_buy_pct: 100,
+  }],
   top_pages: [{ path: "/shop", views: 4, sessions: 3 }],
   sources: [{ source: "google", sessions: 3, orders: 1, revenue: 100 }],
   devices: [{ device: "desktop", sessions: 4 }, { device: "mobile", sessions: 2 }],
@@ -107,6 +117,45 @@ describe("AnalyticsPanel", () => {
     steps.forEach(pct => expect(pct).toBeLessThanOrEqual(100));
   });
 
+  it("reports what the sign-in gate cost, not just that people left", async () => {
+    mocked.mockResolvedValue(overview({
+      signin_wall: {
+        gate_sessions: 10, walled_sessions: 8, walled_continued: 3, walled_purchased: 2,
+        passed_sessions: 2, passed_purchased: 2, blocked_basket_value: 240,
+      },
+    }));
+    render(<AnalyticsPanel />);
+
+    await screen.findByText("Sign-in gate");
+    expect(screen.getByText("Asked to sign in")).toBeInTheDocument();
+    // 8 asked, 3 carried on → 62.5% turned back. Reported as the share who left,
+    // because that is the number the decision to keep the gate turns on.
+    expect(screen.getByText("62.5%")).toBeInTheDocument();
+    expect(screen.getByText(/3 of 8 guests/i)).toBeInTheDocument();
+    expect(screen.getByText(/already signed in when they pressed checkout: 2/i)).toBeInTheDocument();
+  });
+
+  it("hides the gate block entirely when nothing went through it", async () => {
+    mocked.mockResolvedValue(overview({ signin_wall: null }));
+    render(<AnalyticsPanel />);
+
+    // A window predating the event must show nothing — a row of zeroes here
+    // would read as "the gate costs nothing", which is a different claim.
+    await screen.findByText("Conversion funnel");
+    expect(screen.queryByText("Sign-in gate")).not.toBeInTheDocument();
+  });
+
+  it("declares a mid-window measurement change rather than letting it read as behaviour", async () => {
+    mocked.mockResolvedValue(overview({
+      measurement_notes: [{ date: "2026-08-04", note: "Adding to the basket stopped requiring a sign-in." }],
+    }));
+    render(<AnalyticsPanel />);
+
+    expect(await screen.findByText(/measured changed on 2026-08-04/i)).toBeInTheDocument();
+    expect(screen.getByText(/Adding to the basket stopped requiring a sign-in/i)).toBeInTheDocument();
+    expect(screen.getByText(/like-for-like/i)).toBeInTheDocument();
+  });
+
   it("says there is no baseline instead of silently dropping the delta", async () => {
     mocked.mockResolvedValue(overview());
     render(<AnalyticsPanel />);
@@ -148,15 +197,68 @@ describe("AnalyticsPanel", () => {
     expect(screen.queryByText(/accepted cookies and can be/i)).not.toBeInTheDocument();
   });
 
-  it("labels the payment step for what the event actually measures", async () => {
+  it("labels the checkout step for what the events now measure", async () => {
     mocked.mockResolvedValue(overview());
     render(<AnalyticsPanel />);
 
     await screen.findByText("Conversion funnel");
-    expect(screen.getByText("Reached payment")).toBeInTheDocument();
-    expect(screen.getByText("Abandoned at payment")).toBeInTheDocument();
-    // "Abandoned checkouts" would overstate the loss: the event fires on pay,
-    // not on reaching the checkout page.
-    expect(screen.queryByText("Abandoned checkouts")).not.toBeInTheDocument();
+    // begin_checkout now fires on ARRIVAL at checkout, so this stage and the
+    // abandonment card below it both mean "got to the checkout page" — they are
+    // computed from the same predicate and must be described the same way.
+    expect(screen.getByText("Reached checkout")).toBeInTheDocument();
+    expect(screen.getByText("Abandoned at checkout")).toBeInTheDocument();
+    // The old wording measured the payment click and would now understate the
+    // loss, since everyone who bailed before pressing Pay is included.
+    expect(screen.queryByText("Reached payment")).not.toBeInTheDocument();
+    expect(screen.queryByText("Abandoned at payment")).not.toBeInTheDocument();
+  });
+
+  it("renders every funnel stage the API returns, not just the first five", async () => {
+    mocked.mockResolvedValue(overview());
+    render(<AnalyticsPanel />);
+
+    await screen.findByText("Conversion funnel");
+    // The funnel outgrew the five-colour ramp; stages past the fifth used to
+    // render with an undefined background, i.e. an invisible bar.
+    // getAllByText because some stage names ("Sessions") are also KPI tiles.
+    for (const stage of [
+      "Sessions", "Browsed a collection", "Viewed a product", "Added to cart",
+      "Viewed basket", "Reached checkout", "Added delivery details",
+      "Went to payment", "Purchased",
+    ]) {
+      expect(screen.getAllByText(stage).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("omits funnel stages the API left out rather than inventing zeroes", async () => {
+    // A window predating the checkout-step instrumentation: the API drops those
+    // stages entirely, and the panel must not resurrect them.
+    mocked.mockResolvedValue(overview({
+      funnel: [
+        { stage: "Sessions", sessions: 6 },
+        { stage: "Reached checkout", sessions: 3 },
+        { stage: "Purchased", sessions: 2 },
+      ],
+    }));
+    render(<AnalyticsPanel />);
+
+    await screen.findByText("Conversion funnel");
+    expect(screen.queryByText("Added delivery details")).not.toBeInTheDocument();
+    expect(screen.getByText("Reached checkout")).toBeInTheDocument();
+  });
+
+  it("shows an unknown per-product rate as a dash, never as 0%", async () => {
+    mocked.mockResolvedValue(overview({
+      top_products: [{
+        name: "Never viewed", units: 0, revenue: 0, add_to_carts: 0,
+        views: 0, view_to_cart_pct: null, cart_to_buy_pct: null,
+      }],
+    }));
+    render(<AnalyticsPanel />);
+
+    await screen.findByText("Never viewed");
+    // 0% would read as "everyone who looked rejected it" — a very different
+    // message from "nobody looked".
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
   });
 });

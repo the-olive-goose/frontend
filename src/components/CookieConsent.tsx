@@ -1,23 +1,26 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-
-const COOKIE_KEY = "og_cookie_consent";
+import { cookieBannerAnswered, writeCookieConsent } from "@/lib/cookieConsent";
 
 const CookieConsent = () => {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    const saved = localStorage.getItem(COOKIE_KEY);
-    if (!saved) setVisible(true);
+    // Unanswered — or answered so long ago the choice has lapsed. Either way the
+    // visitor gets asked; see lib/cookieConsent for the interval.
+    if (!cookieBannerAnswered()) setVisible(true);
   }, []);
 
+  // The choice is recorded in storage (see lib/cookieConsent) and read back by
+  // anything that needs it. No third-party tag is loaded either way — the shop's
+  // analytics is first-party only, so accepting grants nothing to an outside host.
   const accept = () => {
-    localStorage.setItem(COOKIE_KEY, "accepted");
+    writeCookieConsent("accepted");
     setVisible(false);
   };
 
   const decline = () => {
-    localStorage.setItem(COOKIE_KEY, "declined");
+    writeCookieConsent("declined");
     setVisible(false);
   };
 
@@ -65,7 +68,9 @@ const CookieConsent = () => {
                   className="font-sans text-sm leading-relaxed"
                   style={{ color: "rgba(30,41,24,0.65)" }}
                 >
-                  We use cookies to personalise content, remember your cart, and improve your experience. You can choose to accept or decline.
+                  Cookies help The Olive Goose keep things smooth and personal.
+                  Accept the vibe ✨ or decline — no pressure, no drama. We’ll
+                  still be here, making candles for you.
                 </p>
               </div>
             </div>

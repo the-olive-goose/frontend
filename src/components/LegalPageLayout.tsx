@@ -23,12 +23,13 @@ const LegalPageLayout = ({ eyebrow, section, fallback }: Props) => {
   const page   = useContent(section, fallback);
   const pickup = useContent("pickupSettings", DEFAULT_CONTENT.pickupSettings);
   const popup  = useContent("subscribePopup", DEFAULT_CONTENT.subscribePopup);
+  const returns = useContent("returnPolicy", DEFAULT_CONTENT.returnPolicy);
 
   // The body and the figures it quotes have to land together: a policy rendered
   // against fallback settings would state a threshold the shop doesn't offer.
-  const ready = page.ready && pickup.ready && popup.ready;
+  const ready = page.ready && pickup.ready && popup.ready && returns.ready;
   const data  = page.data;
-  const offer = resolveOfferValues(pickup.data, popup.data);
+  const offer = resolveOfferValues(pickup.data, popup.data, returns.data);
   const fill  = (text: string) => fillOfferTokens(text, offer);
 
   return (
