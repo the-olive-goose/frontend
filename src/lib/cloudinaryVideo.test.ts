@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildHeroMobileVideoUrl,
   buildHeroVideoUrl,
+  buildLightboxVideoUrl,
   buildOptimizedUrl,
   buildPosterUrl,
   buildRailVideoUrl,
@@ -137,6 +138,64 @@ describe("buildRailVideoUrl", () => {
       "",
     ]) {
       expect(buildRailVideoUrl(url), url).toBe(url);
+    }
+  });
+});
+
+describe("buildLightboxVideoUrl", () => {
+  const BASE = "https://res.cloudinary.com/ajlu9eld/video/upload";
+  const BOX = "f_mp4,vc_h264,w_1080,c_limit,q_auto:good";
+
+  it("derives a full-screen cut instead of playing the stored file", () => {
+    expect(buildLightboxVideoUrl(`${BASE}/v1787066277/1_bbht7b.mp4`)).toBe(
+      `${BASE}/${BOX}/v1787066277/1_bbht7b.mp4`,
+    );
+  });
+
+  it("never delivers a raw original, however large the stored one is", () => {
+    // The regression this guards: a re-upload left the six reels stored as raw
+    // camera .mov files totalling 331 MB, one of them 97.5 MB, and the lightbox
+    // handed that straight to the visitor. At a 25-credit free tier that is
+    // ~256 full-screen opens before the account is disabled again.
+    const raw = `${BASE}/v1787066277/1_bbht7b.mov`;
+    const out = buildLightboxVideoUrl(raw);
+    expect(out).not.toBe(raw);
+    expect(out).toContain(BOX);
+  });
+
+  it("forces mp4, because a .mov original does not play in Chrome", () => {
+    const out = buildLightboxVideoUrl(`${BASE}/v1/reel.mov`);
+    expect(out).toMatch(/\.mp4$/);
+    expect(out).toContain("f_mp4");
+  });
+
+  it("replaces whatever chain the stored URL carried", () => {
+    const stored = `${BASE}/f_mp4,vc_h264,w_1080,c_limit,q_auto:best/v1/reel.mp4`;
+    const out = buildLightboxVideoUrl(stored);
+    expect(out).toBe(`${BASE}/${BOX}/v1/reel.mp4`);
+    expect(out).not.toContain("q_auto:best");
+    expect(out.match(/\/video\/upload\//g)).toHaveLength(1);
+  });
+
+  it("is idempotent", () => {
+    const once = buildLightboxVideoUrl(`${BASE}/v1/reel.mp4`);
+    expect(buildLightboxVideoUrl(once)).toBe(once);
+  });
+
+  it("names the same asset the rail does", () => {
+    const stored = `${BASE}/v1787066277/1_bbht7b.mov`;
+    expect(buildLightboxVideoUrl(stored)).toContain("v1787066277/1_bbht7b");
+    expect(buildRailVideoUrl(stored)).toContain("v1787066277/1_bbht7b");
+  });
+
+  it("leaves anything that is not a Cloudinary video exactly as it was", () => {
+    for (const url of [
+      "https://www.youtube.com/watch?v=abc",
+      "https://player.vimeo.com/video/123",
+      "https://example.com/clip.mp4",
+      "",
+    ]) {
+      expect(buildLightboxVideoUrl(url), url).toBe(url);
     }
   });
 });

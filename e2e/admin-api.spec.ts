@@ -666,8 +666,20 @@ test.describe("analytics", () => {
     expect(a.timezone).toBeTruthy();
   });
 
-  test("nonsense ranges fall back safely instead of erroring", async () => {
-    for (const q of ["start=2026-99-99&end=2026-01-01", "start=2026-06-30&end=2026-04-01", "days=99999", "days=-5"]) {
+  // An *explicitly asked for* range that cannot be honoured is refused, not
+  // quietly substituted: the panel would otherwise print the dates the admin
+  // typed above numbers measured over some other window, and nothing on screen
+  // would say so. A bare `days` carries no such promise, so it still clamps.
+  test("an impossible explicit range is refused, not silently substituted", async () => {
+    for (const q of ["start=2026-99-99&end=2026-01-01", "start=2026-06-30&end=2026-04-01"]) {
+      const res = await admin.get(`/api/admin/analytics?${q}`, { headers: auth(TOKEN) });
+      expect(res.status(), `?${q} must be refused rather than answered`).toBe(400);
+      expect((await res.json()).error, `?${q} must say why`).toBeTruthy();
+    }
+  });
+
+  test("a nonsense days window clamps and reports the window it used", async () => {
+    for (const q of ["days=99999", "days=-5"]) {
       const res = await admin.get(`/api/admin/analytics?${q}`, { headers: auth(TOKEN) });
       expect(res.ok(), `?${q} should degrade gracefully`).toBeTruthy();
       // Degrading is only safe if the answer says which window it fell back to;

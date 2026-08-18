@@ -54,8 +54,12 @@ const fetched = (container: HTMLElement) => [
   ...[...container.querySelectorAll("iframe")].map((frame) => frame.getAttribute("src") ?? ""),
 ];
 
+/** Real media, as opposed to a ~40 KB poster still (which ends `.jpg`). */
 const originals = (container: HTMLElement) =>
-  fetched(container).filter((src) => /i\.ibb\.co/.test(src) || /\.mov$/.test(src));
+  fetched(container).filter((src) => /i\.ibb\.co/.test(src) || /\.(mov|mp4)$/.test(src));
+
+/** The rail's derived cut of a stored clip — never the stored clip itself. */
+const RAIL = "f_mp4,vc_h264,w_720,c_limit,q_auto:eco";
 
 describe("DiaryReel load budget", () => {
   it("leaves every slide past the first neighbour unfetched", () => {
@@ -71,9 +75,13 @@ describe("DiaryReel load budget", () => {
     expect(originals(container)).toEqual([
       "https://i.ibb.co/a/one.jpg", // the photo itself…
       "https://i.ibb.co/a/one.jpg", // …and the blur behind it, one decode
-      `${CLOUDINARY}/v1785628891/clip-a.mov`,
+      `${CLOUDINARY}/${RAIL}/v1785628891/clip-a.mp4`,
     ]);
     expect(container.querySelectorAll(".og-diary-wait").length).toBeGreaterThan(0);
+
+    // The stored .mov is 35–100 MB. Whatever the diary mounts, it is never that
+    // — the ceiling is the code's, not the admin's.
+    expect(fetched(container).some((src) => src.endsWith(".mov"))).toBe(false);
   });
 
   it("shows an out-of-window video as its Cloudinary still, not a black frame", () => {

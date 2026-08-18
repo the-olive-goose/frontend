@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { diaryMediaKind, toEmbedUrl, type OurStoryPhoto } from "@/lib/defaults";
-import { buildPosterUrl } from "@/lib/cloudinaryVideo";
+import { buildLightboxVideoUrl, buildPosterUrl, buildRailVideoUrl } from "@/lib/cloudinaryVideo";
 import { tuneEmbed } from "@/components/sections/VideosSection";
 import RichText, { stripRichText } from "@/lib/richtext";
 import useBodyScrollLock from "@/hooks/useBodyScrollLock";
@@ -173,6 +173,26 @@ const StillFrame = ({ src, label }: { src: string; label: string }) => (
   </>
 );
 
+/**
+ * Which cut of a diary video to play.
+ *
+ * The diary used to hand `<video>` the stored URL, which was fine only for as
+ * long as an admin optimised before saving. It stopped being fine on
+ * 2026-08-18: a Cloudinary re-upload stored raw camera originals, and the
+ * equivalent line in VideosSection was serving a 97.5 MB .mov per full-screen
+ * open. Deriving here puts the ceiling in the code instead, so a diary clip
+ * pasted straight from an upload cannot blow the free tier either.
+ *
+ * Non-Cloudinary sources (YouTube, Vimeo, a file on someone else's CDN) come
+ * back untouched from both builders, so `toEmbedUrl` still gets its turn.
+ *
+ * @see src/lib/cloudinaryVideo.ts — the two cuts and what they weigh
+ */
+const diaryVideoSrc = (url: string, interactive: boolean): string => {
+  const embed = toEmbedUrl(url);
+  return interactive ? buildLightboxVideoUrl(embed) : buildRailVideoUrl(embed);
+};
+
 const ReelSlides = ({ photos, handle, priority, interactive = false }: ReelSlidesProps) => (
   <>
     {photos.map((photo, index) => {
@@ -200,7 +220,7 @@ const ReelSlides = ({ photos, handle, priority, interactive = false }: ReelSlide
           )}
           {kind === "video" && (mounted ? (
             <DiaryVideo
-              src={toEmbedUrl(photo.image_url)}
+              src={diaryVideoSrc(photo.image_url, interactive)}
               poster={poster}
               label={label}
               active={active}

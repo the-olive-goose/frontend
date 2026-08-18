@@ -70,6 +70,13 @@ async function openRail(page: Page) {
   await page.goto(`${BASE}/`);
   const rail = page.locator("#journal");
   await expect(rail).toBeVisible();
+  // The rail only mounts real players for reels that are actually on screen —
+  // it sits ~2,700px down the homepage, and mounting it for a visitor who never
+  // scrolled past the hero cost ~15MB of video (see ReelCard's isMounted).
+  // A test that never scrolls therefore sees the poster and no player, which
+  // looks exactly like the blank-frame bug this suite exists to catch. Scroll it
+  // into view so the assertions are about the URL shape, not the load budget.
+  await rail.scrollIntoViewIfNeeded();
   return rail.locator(".og-reel-card").first();
 }
 
@@ -111,7 +118,12 @@ const PLAYABLE: Array<{ name: string; url: string; media: "iframe" | "video"; sr
     name: "Cloudinary delivery URL carrying a file extension",
     url: "https://res.cloudinary.com/demo/video/upload/v1/dog.mp4",
     media: "video",
-    src: "https://res.cloudinary.com/demo/video/upload/v1/dog.mp4",
+    // The rail never plays the stored asset — it re-cuts it (buildRailVideoUrl).
+    // A raw original stored here once measured 97.5 MB and cost the shop its
+    // Cloudinary account, so what matters is that the rendered URL carries a
+    // width/quality chain and points at the same asset. Matched by shape rather
+    // than by the exact chain, which is free to be retuned.
+    src: /^https:\/\/res\.cloudinary\.com\/demo\/video\/upload\/[^/]*w_720[^/]*q_auto[^/]*\/v1\/dog\.mp4$/,
   },
   {
     // Cloudinary's own UI hands you an extension-less URL when the format is
@@ -119,7 +131,8 @@ const PLAYABLE: Array<{ name: string; url: string; media: "iframe" | "video"; sr
     name: "Cloudinary delivery URL with no file extension",
     url: "https://res.cloudinary.com/demo/video/upload/f_auto,q_auto/v1/dog",
     media: "video",
-    src: "https://res.cloudinary.com/demo/video/upload/f_auto,q_auto/v1/dog.mp4",
+    // Same re-cut as above, and the missing extension is resolved to .mp4.
+    src: /^https:\/\/res\.cloudinary\.com\/demo\/video\/upload\/[^/]*w_720[^/]*q_auto[^/]*\/v1\/dog\.mp4$/,
   },
   {
     name: "an uploaded file served from this site",
@@ -192,6 +205,8 @@ test.describe("show/hide toggle", () => {
     await saveVideos({ ...originalVideos, enabled: true, items: [reel] });
     await page.goto(`${BASE}/`);
     await expect(page.locator("#journal")).toBeVisible();
+    // Players only mount for a rail that is actually on screen (see openRail).
+    await page.locator("#journal").scrollIntoViewIfNeeded();
     await expect(page.locator("#journal video")).toHaveCount(1);
   });
 
@@ -245,6 +260,10 @@ test("a full rail shows a picture in every card — no blank frames", async ({ p
   const cards = page.locator("#journal .og-reel-card");
   await expect(cards).toHaveCount(items.length);
   await expect(page.locator("#journal").getByText(PLACEHOLDER)).toHaveCount(0);
+  // "In view" is both halves: the right card along the rail AND the rail itself
+  // on screen. Without scrolling to it nothing mounts at all, and the mounted
+  // window below would fail for the load budget rather than for a blank frame.
+  await page.locator("#journal").scrollIntoViewIfNeeded();
 
   // The mounted window plays for real.
   for (const i of [0, 1]) {

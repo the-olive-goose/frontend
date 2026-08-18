@@ -181,6 +181,36 @@ export const buildRailVideoUrl = (url: string): string => {
 };
 
 /**
+ * The lightbox's own copy of a reel.
+ *
+ * This exists because "full screen plays what was saved" quietly assumed the
+ * saved URL had been through `buildOptimizedUrl`. On 2026-08-18 that assumption
+ * cost the shop its Cloudinary account: after a re-upload the stored URLs were
+ * raw camera originals with no chain at all, and the six reels measured
+ * 331 MB between them — one of them 97.5 MB. The rail was unaffected, because
+ * it always re-cuts; the lightbox handed the visitor the original.
+ *
+ * At a 25-credit free tier — roughly 25 GB of delivery — that is about 256
+ * full-screen opens before the account is disabled again. Deriving here instead
+ * makes the ceiling a property of the code rather than of whatever an admin
+ * happened to paste: the site cannot deliver a 97.5 MB file even if one is
+ * stored, because no rendered URL ever points at it.
+ *
+ * `f_mp4` is load-bearing beyond weight. A `.mov` original plays in Safari and
+ * generally does not in Chrome, so forcing the container is also what keeps a
+ * re-uploaded reel playable at all.
+ *
+ * Balanced (`q_auto:good`) rather than the rail's `eco`: this one is full screen
+ * with sound and deserves the headroom. Measured across the current reels that
+ * is ~3.3 MB against ~35 MB raw.
+ */
+export const buildLightboxVideoUrl = (url: string): string => {
+  const parsed = parseCloudinaryVideo(url);
+  if (!parsed) return url;
+  return `${parsed.base}f_mp4,vc_h264,w_1080,c_limit,q_auto:good/${withExtension(parsed.path, "mp4")}`;
+};
+
+/**
  * A still of the first frame, for cards that are not the one playing. At ~40 KB
  * this is what makes a rail of six reels cost less than a single photo.
  *

@@ -7,6 +7,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import crypto from 'crypto';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
 import multer from 'multer';
@@ -149,18 +151,23 @@ const toOrigin = (value) => {
 
 const allowedOrigins = [
   ...String(process.env.FRONTEND_URL || '').split(',').map(toOrigin),
-  'http://localhost:5173',
-  'http://localhost:5199',
-  'http://localhost:8080',
-  'http://localhost:3000',
+  // Local development origins are deliberately excluded from production. A
+  // production API must only accept the explicitly configured storefronts.
+  ...(!IS_PROD ? [
+    'http://localhost:5173',
+    'http://localhost:5199',
+    'http://localhost:8080',
+    'http://localhost:3000',
+  ] : []),
 ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || allowedOrigins.includes(toOrigin(origin) ?? origin)) return cb(null, true);
-    const err = new Error('Origin not allowed');
-    err.status = 403; // a rejected origin is a client error, not a server crash
-    cb(err);
+    // Do not throw from CORS: a malicious Origin header is routine internet
+    // traffic, not an application error worth emitting a stack trace for. The
+    // CSRF middleware below still returns 403 for state-changing requests.
+    cb(null, false);
   },
   credentials: true, // required so the browser sends/accepts the session cookie cross-port in dev
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -173,10 +180,15 @@ const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SEC
 // Only called when the admin has opted into `refund_automation_enabled` — off
 // by default, since this moves real money. Throws on failure so callers never
 // mark a refund "done" when Stripe didn't actually process it.
-const refundViaStripe = async (paymentIntentId, amountCents) => {
+const refundViaStripe = async (paymentIntentId, amountCents, idempotencyKey) => {
   if (!stripe) throw new Error('Stripe is not configured');
   if (!paymentIntentId) throw new Error('This order has no Stripe payment to refund');
-  return stripe.refunds.create({ payment_intent: paymentIntentId, amount: Math.round(amountCents) });
+  return stripe.refunds.create(
+    { payment_intent: paymentIntentId, amount: Math.round(amountCents) },
+    // Retrying the same admin action (or two requests racing) must resolve to
+    // one Stripe refund rather than risking two money movements.
+    idempotencyKey ? { idempotencyKey } : undefined,
+  );
 };
 
 // Registered before express.json() — Stripe's webhook signature check needs the
@@ -302,16 +314,58 @@ const warnOnMisconfiguration = () => {
          `The OAuth callback would set the session cookie on ${registrableDomain(BACKEND_URL)}, where the storefront can't use it — social sign-in will appear to succeed and then log the user straight back out. Set BACKEND_URL to ${FRONTEND_URL}.`);
 };
 
+// These services are core to the customer journey, rather than optional
+// enhancements: without them a production checkout can be paid without an
+// order ever being created, and email signup/reset can appear to succeed while
+// no customer receives a code. Refuse to boot in that state instead of exposing
+// a deceptively working but incomplete shop.
+const assertProductionConfiguration = () => {
+  if (!IS_PROD) return;
+
+  const frontendOrigin = toOrigin(FRONTEND_URL);
+  const backendOrigin = toOrigin(BACKEND_URL);
+  const problems = [];
+  if (!process.env.DATABASE_URL) problems.push('DATABASE_URL is required');
+  if (!process.env.JWT_SECRET) problems.push('JWT_SECRET is required');
+  if (!frontendOrigin || !frontendOrigin.startsWith('https://'))
+    problems.push('FRONTEND_URL must be an HTTPS storefront URL');
+  if (!backendOrigin || !backendOrigin.startsWith('https://'))
+    problems.push('BACKEND_URL must be an HTTPS public API/proxy URL');
+  if (!process.env.STRIPE_SECRET_KEY) problems.push('STRIPE_SECRET_KEY is required for payments');
+  if (!process.env.STRIPE_WEBHOOK_SECRET) problems.push('STRIPE_WEBHOOK_SECRET is required to finalize payments');
+  if (!process.env.RESEND_API_KEY) problems.push('RESEND_API_KEY is required for email verification and resets');
+
+  if (problems.length) throw new Error(`Production configuration invalid: ${problems.join('; ')}`);
+};
+
 const BCRYPT_ROUNDS = 12;
 
 // ── Session cookie (customer-facing auth) ──────────────────────────────────────
-// httpOnly so it's invisible to page JS (no XSS token theft). In production the
-// storefront (theolivegoose.ie) and this API (…up.railway.app) are different
-// registrable sites, so the cookie is cross-site on every fetch() from the shop.
-// A SameSite=Lax cookie is NOT attached to cross-site XHR/fetch, which would make
-// checkout behave as if logged out — so production must use SameSite=None; Secure
-// (Secure is mandatory for None, and Railway serves HTTPS). Dev stays Lax because
-// SameSite=None requires Secure, which a browser won't honour over http://localhost.
+// httpOnly so it's invisible to page JS (no XSS token theft).
+//
+// SameSite=Lax, not None. This used to be None because the storefront
+// (theolivegoose.ie) and this API (…up.railway.app) were different registrable
+// sites, which made the session cookie cross-site on every fetch() from the shop
+// — and a Lax cookie is not attached to cross-site XHR. That is no longer how
+// production is wired: Netlify serves the SPA and proxies /api/* through to this
+// backend (public/_redirects), the bundle hardcodes a same-origin API base
+// (src/lib/apiBase.ts pins API_URL to "" in any production build), and the OAuth
+// redirect_uri comes back to theolivegoose.ie/api/... too. Every request that
+// carries this cookie is therefore same-site already.
+//
+// Keeping None once same-origin is a live CSRF weakening rather than a no-op: a
+// None cookie is attached to cross-site requests by the browser, which leaves the
+// Origin/Referer check the *only* thing standing between evil.com and a
+// cookie-authed POST. Lax means the browser never sends it on cross-site XHR in
+// the first place, so that check becomes the second layer instead of the only
+// one. og_oauth_state has run Lax on this exact origin in production all along.
+//
+// Dev stays Lax as well (identical behaviour over http://localhost, where the
+// browser would refuse a None cookie anyway for lacking Secure).
+//
+// Escape hatch: set SESSION_COOKIE_SAMESITE=none to restore the old behaviour
+// without a code change if a future deploy ever puts the API back on its own
+// origin — the storefront would otherwise look permanently signed out there.
 const SESSION_COOKIE = 'og_session';
 
 // ── Session lifetimes ─────────────────────────────────────────────────────────
@@ -343,20 +397,22 @@ const SESSION_RENEW_AT = 0.5;
 
 const sessionIdleMs = (remember) => (remember ? SESSION_IDLE_REMEMBER_MS : SESSION_IDLE_SHORT_MS);
 
-// Decide Secure/SameSite from the actual connection, not just NODE_ENV: Railway
-// terminates TLS at its proxy, and with `trust proxy` set req.secure reflects
+// Decide Secure from the actual connection, not just NODE_ENV: Railway terminates
+// TLS at its proxy, and with `trust proxy` set req.secure reflects
 // x-forwarded-proto. If NODE_ENV is ever left unset on a real HTTPS deploy, a
-// NODE_ENV-only check would emit a Lax, non-Secure cookie that browsers refuse
-// to store from a cross-site response — login then "succeeds" but no session
-// persists. Keying on req.secure keeps the cookie None+Secure on any HTTPS
-// deploy while dev over plain http stays Lax (None requires Secure, which
-// browsers won't honour on http://localhost).
+// NODE_ENV-only check would emit a non-Secure cookie on an https response.
+// SameSite is Lax on every deploy (see the note above SESSION_COOKIE) unless
+// SESSION_COOKIE_SAMESITE explicitly asks for none, which the browser only
+// honours together with Secure.
+const SESSION_SAMESITE =
+  String(process.env.SESSION_COOKIE_SAMESITE || '').toLowerCase() === 'none' ? 'none' : 'lax';
 const sessionCookieOptions = (res, maxAge) => {
   const secure = IS_PROD || Boolean(res.req?.secure);
   return {
     httpOnly: true,
     secure,
-    sameSite: secure ? 'none' : 'lax',
+    // 'none' requires Secure; fall back to lax on a plain-http dev connection.
+    sameSite: SESSION_SAMESITE === 'none' && secure ? 'none' : 'lax',
     path: '/',
     ...(maxAge ? { maxAge } : {}), // omit maxAge → browser-session cookie ("remember me" off)
   };
@@ -547,6 +603,18 @@ const apiLimiter = rateLimit({
   message: { error: 'Too many requests. Please slow down and try again shortly.' },
 });
 app.use('/api', apiLimiter);
+// Creating a Checkout Session also creates Stripe-side state (and, where a
+// discount applies, a one-time coupon). The broad API limit is intentionally
+// generous for browsing, so use a tight per-account cap here to prevent a
+// compromised customer account from being used to exhaust Stripe resources.
+const checkoutLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.CHECKOUT_RATE_LIMIT_MAX) || 12,
+  keyGenerator: (req) => `account:${String(req.user?.userId || 'unknown')}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many checkout attempts. Please wait a few minutes and try again.' },
+});
 // Unauthenticated write endpoints (newsletter signup, feedback) get a much
 // tighter budget — nothing legitimate submits these dozens of times.
 const publicWriteLimiter = rateLimit({
@@ -656,7 +724,7 @@ const validatePassword = (pw) => {
   return null;
 };
 
-const sixDigitCode = () => Math.floor(100000 + Math.random() * 900000).toString();
+const sixDigitCode = () => crypto.randomInt(100000, 1_000_000).toString();
 
 // ── Order tracking ───────────────────────────────────────────────────────────
 // Status is set explicitly by an admin (see PUT /api/admin/orders/:id) and
@@ -758,7 +826,7 @@ const decrementStock = async (items) => {
 };
 
 const genTrackingNumber = () =>
-  `OG${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 9000 + 1000)}`;
+  `OG${Date.now().toString(36).toUpperCase()}${crypto.randomInt(1000, 10_000)}`;
 
 // Free-text fields (reasons, notes, admin message subject/body) come straight
 // from request bodies — coerce to a bounded string so a non-string value can't
@@ -1090,8 +1158,9 @@ const reserveDiscountCode = async (code, userId, sessionId) => {
   // Resolved before BEGIN so the transaction holding the row lock stays short.
   const userCanonical = await canonicalEmailForUser(userId);
 
-  const client = await pool.connect();
+  let client;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
 
     // Lock the target row so a concurrent reserve of the same code serializes here.
@@ -2665,7 +2734,7 @@ app.post('/api/auth/phone/send-otp', otpSendLimiter, async (req, res) => {
   if (!phone || typeof phone !== 'string' || !PHONE_RE.test(phone.trim()))
     return res.status(400).json({ error: 'Please enter a valid phone number' });
 
-  const otp       = Math.floor(100000 + Math.random() * 900000).toString();
+  const otp       = sixDigitCode();
   const otpHash   = await bcrypt.hash(otp, 8);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
@@ -2848,7 +2917,7 @@ app.delete('/api/cart', requireUserAuth, async (req, res) => {
 // Nothing is written to `orders` here — the order only gets created once Stripe
 // confirms payment (see finalizeCheckoutSession), so there's no way to end up
 // with an order that was never paid for.
-app.post('/api/checkout/session', requireUserAuth, async (req, res) => {
+app.post('/api/checkout/session', requireUserAuth, checkoutLimiter, async (req, res) => {
   if (!stripe) return res.status(500).json({ error: 'Online payments are not configured yet.' });
 
   const fulfillmentType = req.body.fulfillment_type === 'pickup' ? 'pickup' : 'delivery';
@@ -3349,7 +3418,7 @@ app.put('/api/admin/orders/:id/refund-status', requireAuth, async (req, res) => 
     let viaStripe = false;
     if (settings.refund_automation_enabled && order.stripe_payment_intent_id) {
       try {
-        await refundViaStripe(order.stripe_payment_intent_id, Math.round(Number(order.total) * 100));
+        await refundViaStripe(order.stripe_payment_intent_id, Math.round(Number(order.total) * 100), `order-refund:${order.id}`);
         viaStripe = true;
       } catch (err) {
         return res.status(502).json({ error: `Stripe refund failed: ${err.message}` });
@@ -3409,36 +3478,72 @@ app.post('/api/returns', requireUserAuth, async (req, res) => {
   if (!order_id || !product_id || !reason)
     return res.status(400).json({ error: 'order_id, product_id and reason are required' });
 
+  const client = await pool.connect();
   try {
-    const { rows: orderRows } = await pool.query(
-      'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
+    await client.query('BEGIN');
+    // Serialise requests for the same order line. A double-tap or parallel
+    // request must not create two return records that two admins could later
+    // each refund. PostgreSQL advisory locks work across every app instance.
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`return:${req.user.userId}:${order_id}:${product_id}`]
+    );
+    const { rows: orderRows } = await client.query(
+      'SELECT * FROM orders WHERE id = $1 AND user_id = $2 FOR UPDATE',
       [order_id, req.user.userId]
     );
-    if (!orderRows.length) return res.status(404).json({ error: 'Order not found' });
+    if (!orderRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    const order = orderRows[0];
+    if (order.payment_status !== 'paid' || !withTracking(order).tracking.delivered) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Returns can be requested after a paid order has been delivered or collected.' });
+    }
 
-    const item = (orderRows[0].items || []).find(i => i.product_id === product_id);
-    if (!item) return res.status(400).json({ error: 'That item is not part of this order' });
+    const item = (order.items || []).find(i => i.product_id === product_id);
+    if (!item) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'That item is not part of this order' });
+    }
 
-    const { rows } = await pool.query(
+    const { rows: existing } = await client.query(
+      `SELECT id FROM returns
+       WHERE order_id = $1 AND user_id = $2 AND product_id = $3
+         AND status IN ('requested', 'approved', 'refunded')
+       LIMIT 1`,
+      [order_id, req.user.userId, product_id]
+    );
+    if (existing.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'A return for this item is already in progress or has been completed.' });
+    }
+
+    const { rows } = await client.query(
       `INSERT INTO returns (order_id, user_id, product_id, product_name, reason)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
       [order_id, req.user.userId, product_id, item.product_data?.name || '', reason]
     );
     const ret = rows[0];
+    await client.query('COMMIT');
 
     await addOrderEvent(order_id, {
       type: 'return_requested', actor: 'customer', title: `Return requested: ${ret.product_name}`,
       detail: reason, meta: { return_id: ret.id },
     });
     if (req.user.email) {
-      sendReturnRequestedEmail(req.user.email, { productName: ret.product_name, trackingNumber: orderRows[0].tracking_number })
+      sendReturnRequestedEmail(req.user.email, { productName: ret.product_name, trackingNumber: order.tracking_number })
         .catch(err => console.error('[sendReturnRequestedEmail]', err));
     }
-    getAutomationSettings().then(settings => evaluateReturnDecision(ret, orderRows[0], settings)).catch(err => console.error('[evaluateReturnDecision]', err));
+    getAutomationSettings().then(settings => evaluateReturnDecision(ret, order, settings)).catch(err => console.error('[evaluateReturnDecision]', err));
 
     res.status(201).json(ret);
   } catch (err) {
+    await client?.query('ROLLBACK').catch(() => {});
     sendServerError(res, err);
+  } finally {
+    client?.release();
   }
 });
 
@@ -3508,7 +3613,7 @@ const applyReturnStatusChange = async (returnId, status) => {
         const amount = item ? parsePrice(item.product_data?.price) * item.quantity : 0;
         if (amount > 0) {
           try {
-            await refundViaStripe(order.stripe_payment_intent_id, amount * 100);
+            await refundViaStripe(order.stripe_payment_intent_id, amount * 100, `return-refund:${returnId}`);
             viaStripe = true;
           } catch (err) {
             const e = new Error(`Stripe refund failed: ${err.message}`); e.status = 502; throw e;
@@ -5709,24 +5814,112 @@ const SHIPPED_ICONS = new Set([
 // on the next request rather than waiting out the TTL.
 const REMOTE_ICON_TTL_MS = 60 * 60 * 1000;
 const REMOTE_ICON_MAX_BYTES = 2 * 1024 * 1024;
+const REMOTE_ICON_MAX_REDIRECTS = 3;
 const remoteIconCache = new Map();
+
+// A favicon URL is administrator-configured, but fetching it still makes the
+// server a network client. Do not let a compromised admin session turn this
+// public endpoint into an SSRF primitive against Railway, the database network,
+// or cloud metadata services. Validate every redirect as well as the first URL.
+const isPrivateNetworkAddress = (address) => {
+  const kind = isIP(address);
+  if (kind === 4) {
+    const [a, b] = address.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && (b === 0 || b === 168)) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224;
+  }
+  if (kind === 6) {
+    const normalized = address.toLowerCase();
+    return normalized === '::' || normalized === '::1' ||
+      normalized.startsWith('fc') || normalized.startsWith('fd') ||
+      normalized.startsWith('fe80:') || normalized.startsWith('::ffff:') ||
+      normalized.startsWith('2001:db8:');
+  }
+  // DNS lookup only gives IP literals; treat anything else as unsafe rather
+  // than accidentally allowing a parsing edge case.
+  return true;
+};
+
+const validateRemoteIconUrl = async (value) => {
+  let target;
+  try {
+    target = new URL(value);
+  } catch {
+    throw new Error('invalid URL');
+  }
+  if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password)
+    throw new Error('URL must be an unauthenticated HTTP(S) URL');
+
+  const hostname = target.hostname.toLowerCase();
+  if (hostname === 'localhost' || hostname.endsWith('.localhost'))
+    throw new Error('local hosts are not allowed');
+
+  const resolved = isIP(hostname)
+    ? [{ address: hostname }]
+    : await dnsLookup(hostname, { all: true, verbatim: true });
+  if (!resolved.length || resolved.some(({ address }) => isPrivateNetworkAddress(address)))
+    throw new Error('private network addresses are not allowed');
+  return target;
+};
+
+const readRemoteIconBody = async (upstream) => {
+  const declaredLength = Number(upstream.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > REMOTE_ICON_MAX_BYTES)
+    throw new Error(`upstream declared ${declaredLength} bytes`);
+  if (!upstream.body) throw new Error('upstream sent no body');
+
+  const reader = upstream.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > REMOTE_ICON_MAX_BYTES)
+        throw new Error(`upstream exceeded ${REMOTE_ICON_MAX_BYTES} bytes`);
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  if (!length) throw new Error('upstream sent no bytes');
+  return Buffer.concat(chunks, length);
+};
 
 async function fetchRemoteIcon(url) {
   const cached = remoteIconCache.get(url);
   if (cached && Date.now() - cached.at < REMOTE_ICON_TTL_MS) return cached;
 
-  const upstream = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(5000) });
-  if (!upstream.ok) throw new Error(`upstream responded ${upstream.status}`);
-  const type = String(upstream.headers.get('content-type') || '').split(';')[0].trim();
-  if (!type.startsWith('image/')) throw new Error(`upstream sent ${type || 'no content-type'}`);
-  const body = Buffer.from(await upstream.arrayBuffer());
-  if (!body.length || body.length > REMOTE_ICON_MAX_BYTES) {
-    throw new Error(`upstream sent ${body.length} bytes`);
-  }
+  let target = await validateRemoteIconUrl(url);
+  for (let redirects = 0; redirects <= REMOTE_ICON_MAX_REDIRECTS; redirects++) {
+    const upstream = await fetch(target, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+    if ([301, 302, 303, 307, 308].includes(upstream.status)) {
+      const location = upstream.headers.get('location');
+      if (!location) throw new Error('redirect had no location');
+      if (redirects === REMOTE_ICON_MAX_REDIRECTS) throw new Error('too many redirects');
+      target = await validateRemoteIconUrl(new URL(location, target).toString());
+      continue;
+    }
 
-  const entry = { body, type, at: Date.now() };
-  remoteIconCache.set(url, entry);
-  return entry;
+    if (!upstream.ok) throw new Error(`upstream responded ${upstream.status}`);
+    const type = String(upstream.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    // The SEO editor asks for a PNG; keep this proxy raster-only so it cannot
+    // become a vector-document delivery endpoint if a browser ever navigates to
+    // it directly.
+    if (!new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif', 'image/x-icon', 'image/vnd.microsoft.icon']).has(type))
+      throw new Error(`upstream sent unsupported content type ${type || 'none'}`);
+
+    const entry = { body: await readRemoteIconBody(upstream), type, at: Date.now() };
+    remoteIconCache.set(url, entry);
+    return entry;
+  }
+  throw new Error('too many redirects');
 }
 
 app.get('/api/favicon/:file', async (req, res) => {
@@ -5741,6 +5934,9 @@ app.get('/api/favicon/:file', async (req, res) => {
     });
 
   res.setHeader('Cache-Control', 'public, max-age=3600');
+  // This route may serve an administrator-chosen image. It is not an HTML
+  // document, but sandbox it anyway in case a browser opens it directly.
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   try {
     const { rows } = await pool.query("SELECT value FROM site_settings WHERE key = 'content_seo'");
     const configured = String(rows[0]?.value?.favicon_url || '').trim();
@@ -5756,7 +5952,7 @@ app.get('/api/favicon/:file', async (req, res) => {
           const icon = await fetchRemoteIcon(configured);
           return res.type(icon.type).send(icon.body);
         } catch (err) {
-          console.error('[favicon] could not fetch', configured, '—', err.message);
+          console.error('[favicon] could not fetch configured remote icon —', err.message);
         }
       }
       // Configured but unusable (file deleted, or a path we can't resolve) —
@@ -6487,6 +6683,12 @@ const pruneAnalyticsEvents = async () => {
 
 const PORT = process.env.PORT || 3001;
 warnOnMisconfiguration();
+try {
+  assertProductionConfiguration();
+} catch (err) {
+  console.error(`FATAL: ${err.message}`);
+  process.exit(1);
+}
 initDb()
   .then(() => {
     app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));

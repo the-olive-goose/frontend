@@ -55,11 +55,22 @@ test.afterAll(async () => { await api?.dispose(); });
 
 // ─── 1. The production cookie contract ───────────────────────────────────────
 //
-// This is the regression that broke the live launch. Each case pins one half of
-// the rule: HTTPS (behind a proxy) ⇒ None+Secure; plain http dev ⇒ Lax.
+// The rule used to be "HTTPS ⇒ SameSite=None+Secure", because the shop
+// (theolivegoose.ie) called the API on its own Railway origin and a Lax cookie
+// is not attached to cross-site XHR — that mismatch is what broke the live
+// launch. That is no longer the architecture: Netlify proxies /api/* through to
+// the backend (public/_redirects) and the bundle pins a same-origin API base
+// (src/lib/apiBase.ts), so every request carrying this cookie is same-site.
+//
+// Once same-origin, None is not merely redundant but weaker: the browser keeps
+// attaching the cookie to cross-site requests, leaving the Origin/Referer check
+// as the only thing between evil.com and a cookie-authed POST. So the contract
+// is now Lax on every deploy, Secure whenever the connection is HTTPS.
+// SESSION_COOKIE_SAMESITE=none restores the old behaviour if the API is ever
+// moved back onto its own site.
 
 test.describe("Session cookie attributes", () => {
-  test("behind an HTTPS proxy the session cookie is SameSite=None; Secure", async () => {
+  test("behind an HTTPS proxy the session cookie is SameSite=Lax; Secure", async () => {
     // `trust proxy` is on, so this is byte-for-byte what Railway's proxy sends.
     const res = await api.post(`/api/user/login`, {
       headers: { "X-Forwarded-Proto": "https" },
@@ -69,9 +80,9 @@ test.describe("Session cookie attributes", () => {
 
     const cookie = sessionCookie(res);
     expect(cookie, "login must set the og_session cookie").toBeTruthy();
-    expect(cookie, "cross-site (Netlify → Railway) requires SameSite=None or the browser drops it")
-      .toMatch(/SameSite=None/i);
-    expect(cookie, "SameSite=None is only honoured with Secure").toMatch(/;\s*Secure/i);
+    expect(cookie, "production is same-origin (Netlify proxies /api), so the cookie must not ride cross-site requests")
+      .toMatch(/SameSite=Lax/i);
+    expect(cookie, "an HTTPS session cookie must be Secure").toMatch(/;\s*Secure/i);
     expect(cookie, "the session cookie must stay out of reach of JS").toMatch(/HttpOnly/i);
   });
 
@@ -94,7 +105,7 @@ test.describe("Session cookie attributes", () => {
     const out = await ctx.post(`/api/user/logout`, { headers: { "X-Forwarded-Proto": "https" } });
     expect(out.ok()).toBeTruthy();
     const cleared = sessionCookie(out);
-    expect(cleared, "the clear must carry the same SameSite/Secure pair").toMatch(/SameSite=None/i);
+    expect(cleared, "the clear must carry the same SameSite/Secure pair").toMatch(/SameSite=Lax/i);
     expect(cleared).toMatch(/;\s*Secure/i);
 
     await ctx.dispose();

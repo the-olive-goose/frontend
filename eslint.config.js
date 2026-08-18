@@ -23,4 +23,13 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": "off",
     },
   },
+  // Playwright API responses intentionally use `any` in a small number of
+  // adversarial test payloads. Keep that escape hatch scoped to the test suite;
+  // application code continues to require explicit types.
+  {
+    files: ["e2e/**/*.{ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
 );

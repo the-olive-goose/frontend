@@ -283,6 +283,11 @@ test.describe("Returns", () => {
     const ok = await cctx.post(`${API}/api/returns`, { data: { order_id: orderId(), product_id: pid, reason: "Arrived damaged" } });
     expect(ok.status()).toBe(201);
     returnId = (await ok.json()).id;
+
+    // A second submission for the same paid item must not create another return
+    // record that could eventually lead to a duplicate refund.
+    const duplicate = await cctx.post(`${API}/api/returns`, { data: { order_id: orderId(), product_id: pid, reason: "Duplicate tap" } });
+    expect(duplicate.status()).toBe(409);
     await cctx.dispose();
   });
 
@@ -376,14 +381,16 @@ test.describe("Analytics", () => {
     expect(res.ok()).toBeTruthy();
   });
 
-  test("garbage date params fall back to trailing window (no 500)", async ({ request }) => {
+  test("garbage date params are rejected clearly (never silently re-windowed)", async ({ request }) => {
     const res = await request.get(`${API}/api/admin/analytics?start=not-a-date&end=also-bad`, { headers: auth(TOKEN) });
-    expect(res.ok()).toBeTruthy();
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toMatch(/YYYY-MM-DD/);
   });
 
-  test("inverted range (end<start) falls back safely", async ({ request }) => {
+  test("inverted range is rejected clearly (never silently re-windowed)", async ({ request }) => {
     const res = await request.get(`${API}/api/admin/analytics?start=2026-12-31&end=2026-01-01`, { headers: auth(TOKEN) });
-    expect(res.ok()).toBeTruthy();
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toMatch(/on or after/);
   });
 
   test("live view returns without error", async ({ request }) => {

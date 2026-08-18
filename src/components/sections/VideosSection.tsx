@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { VideosContent, VideoItem, toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled, youtubeThumbnailUrl } from "@/lib/defaults";
-import { buildPosterUrl, buildRailVideoUrl } from "@/lib/cloudinaryVideo";
+import { buildLightboxVideoUrl, buildPosterUrl, buildRailVideoUrl } from "@/lib/cloudinaryVideo";
 import RichText, { stripRichText } from "@/lib/richtext";
 import useIsMobile from "@/hooks/useIsMobile";
 import useInViewport from "@/hooks/useInViewport";
@@ -221,8 +221,9 @@ const ReelMedia = ({ item, interactive }: { item: VideoItem; interactive: boolea
   }
 
   if (embed && isDirectVideo(embed)) {
-    // The rail plays a thumbnail-weight cut; full screen plays what was saved.
-    const src = interactive ? embed : buildRailVideoUrl(embed);
+    // Both sizes are derived, never the stored URL: an admin can paste a raw
+    // 97.5 MB .mov and the site still refuses to deliver more than this cut.
+    const src = interactive ? buildLightboxVideoUrl(embed) : buildRailVideoUrl(embed);
     return <DirectVideo src={src} interactive={interactive} poster={posterFor(item)} />;
   }
 

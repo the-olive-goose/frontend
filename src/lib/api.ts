@@ -54,7 +54,7 @@ export const login = async (email: string, password: string): Promise<void> => {
   }
   if (!res.ok) {
     let errMsg = `HTTP ${res.status}`;
-    try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+    try { const body = await res.json(); errMsg = body.error || errMsg; } catch { /* retain HTTP fallback */ }
     throw new Error(errMsg);
   }
   const { token } = await res.json();
@@ -84,7 +84,7 @@ export const confirmAdminPasswordReset = async (token: string, newPassword: stri
   });
   if (!res.ok) {
     let errMsg = `HTTP ${res.status}`;
-    try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+    try { const body = await res.json(); errMsg = body.error || errMsg; } catch { /* retain HTTP fallback */ }
     throw new Error(errMsg);
   }
 };

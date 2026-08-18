@@ -143,6 +143,7 @@ async function main() {
   const boot = startBackend({
     AUTH_RATE_LIMIT_MAX: "100000", API_RATE_LIMIT_MAX: "100000",
     PUBLIC_WRITE_RATE_LIMIT_MAX: "100000", OTP_RATE_LIMIT_MAX: "100000",
+    CHECKOUT_RATE_LIMIT_MAX: "100000",
     // Every page a suite opens beacons to /api/analytics/events, so the storefront
     // suites alone spend the 150/5min budget before the analytics tests run.
     ANALYTICS_RATE_LIMIT_MAX: "100000",
