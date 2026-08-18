@@ -1024,6 +1024,22 @@ const welcomeCodeBlockReason = async (db, target, userId, userCanonical) => {
   return rows.length ? "You've already used a welcome discount." : null;
 };
 
+// One redemption of a given code per account, unless the admin deliberately made
+// it repeatable. This is what makes "max uses" mean "this many customers": a
+// shared promo like SPRING20 with 100 uses is otherwise 100 discounted orders for
+// whoever finds it first. Welcome codes are single-use anyway, so this only ever
+// bites on multi-use admin codes. Reads the redemption ledger rather than
+// redeemed_by_user_id, which only remembers the most recent redeemer.
+// `db` is the pool or an open transaction client (reserve holds its row lock).
+const codeUsedByUserReason = async (db, target, userId) => {
+  if (!target.one_per_customer || !userId) return null;
+  const { rows } = await db.query(
+    'SELECT 1 FROM discount_redemptions WHERE code_id = $1 AND user_id = $2 LIMIT 1',
+    [target.id, userId]
+  );
+  return rows.length ? "You've already used this code." : null;
+};
+
 // Read-only validation for the pre-checkout "apply code" UX. Never mutates —
 // the authoritative check + hold happens in reserveDiscountCode at session time.
 const inspectDiscountCode = async (code, userId) => {
@@ -1039,7 +1055,8 @@ const inspectDiscountCode = async (code, userId) => {
     return { valid: false, message: singleUse ? 'This code has already been used.' : 'This code has been fully redeemed.' };
   }
 
-  const blocked = await welcomeCodeBlockReason(pool, row, userId, await canonicalEmailForUser(userId));
+  const blocked = (await codeUsedByUserReason(pool, row, userId))
+    || (await welcomeCodeBlockReason(pool, row, userId, await canonicalEmailForUser(userId)));
   if (blocked) return { valid: false, message: blocked };
 
   // Held by someone else's in-flight checkout right now. Only single-use codes
@@ -1090,9 +1107,11 @@ const reserveDiscountCode = async (code, userId, sessionId) => {
       return { ok: false, message: singleUse ? 'This code has already been used.' : 'This code has been fully redeemed.' };
     }
 
-    // Recipient binding + one-welcome-per-person, evaluated inside the same
-    // transaction that holds the FOR UPDATE lock (see welcomeCodeBlockReason).
-    const blocked = await welcomeCodeBlockReason(client, target, userId, userCanonical);
+    // Recipient binding, one-welcome-per-person and one-use-per-customer, all
+    // evaluated inside the same transaction that holds the FOR UPDATE lock (see
+    // welcomeCodeBlockReason / codeUsedByUserReason).
+    const blocked = (await codeUsedByUserReason(client, target, userId))
+      || (await welcomeCodeBlockReason(client, target, userId, userCanonical));
     if (blocked) { await client.query('ROLLBACK'); return { ok: false, message: blocked }; }
 
     // A single-use code already committed to a checkout that can still be paid.
@@ -1154,14 +1173,38 @@ const reserveDiscountCode = async (code, userId, sessionId) => {
   }
 };
 
-// Spend the code for good, at order finalization. Idempotent and defensive: the
-// per-user NOT EXISTS guard is a second line of defence behind the reservation
-// so a redeem can never hand one account a second welcome discount.
+// Spend the code for good, at order finalization: bumps the counter and writes
+// the redemption ledger row that one-per-customer is read from. Idempotent and
+// defensive — the per-user NOT EXISTS guard is a second line of defence behind
+// the reservation so a redeem can never hand one account a second welcome
+// discount, and the ledger's (code, order) uniqueness absorbs a replayed finalize.
 const redeemDiscountCode = async (code, userId, orderId) => {
   const normalized = normalizeCode(code);
   if (!normalized) return;
-  await pool.query(
-    `UPDATE discount_codes dc
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Lock the code so two redeems of the same code serialize here: the ledger
+    // check, the counter increment and the ledger write have to be one step, or
+    // a multi-use code could record fewer redemptions than orders it funded.
+    const { rows: targetRows } = await client.query(
+      'SELECT id, one_per_customer FROM discount_codes WHERE code = $1 FOR UPDATE', [normalized]
+    );
+    const target = targetRows[0];
+    if (!target) { await client.query('ROLLBACK'); return; }
+
+    // Same one-per-customer rule reserve applied, re-checked now that the order
+    // is real — a shopper who somehow reached payment twice on one code still
+    // only ever spends it once.
+    if (await codeUsedByUserReason(client, target, userId)) {
+      await client.query('ROLLBACK');
+      return;
+    }
+
+    const { rowCount } = await client.query(
+      `UPDATE discount_codes dc
         SET redemption_count = dc.redemption_count + 1,
             redeemed_at = CASE WHEN dc.redemption_count + 1 >= dc.max_redemptions
                                THEN NOW() ELSE dc.redeemed_at END,
@@ -1177,8 +1220,27 @@ const redeemDiscountCode = async (code, userId, orderId) => {
                    OR ( o.canonical_email IS NOT NULL
                         AND o.canonical_email = dc.canonical_email
                         AND o.redeemed_at IS NOT NULL ) ) ) )`,
-    [userId, normalized, orderId]
-  );
+      [userId, normalized, orderId]
+    );
+
+    // Ledger row only when the counter actually moved, so "rows in the ledger"
+    // and "redemption_count" stay the same number. ON CONFLICT makes a replayed
+    // finalize (same code, same order) a no-op instead of a duplicate entry.
+    if (rowCount) {
+      await client.query(
+        `INSERT INTO discount_redemptions (code_id, user_id, order_id)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [target.id, userId, orderId]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 };
 
 // Retire a shopper's earlier, still-payable checkout sessions before starting a
@@ -1191,7 +1253,8 @@ const redeemDiscountCode = async (code, userId, orderId) => {
 // complete or expired, and that must never block the new checkout.
 const expirePriorCheckouts = async (userId) => {
   const { rows } = await pool.query(
-    `SELECT id, stripe_session_id FROM pending_checkouts
+    `SELECT id, stripe_session_id, payload->>'discount_code' AS discount_code
+       FROM pending_checkouts
       WHERE user_id = $1 AND consumed_at IS NULL AND expired_at IS NULL
         AND created_at > NOW() - INTERVAL '24 hours'`,
     [userId]
@@ -1204,6 +1267,12 @@ const expirePriorCheckouts = async (userId) => {
       if (session.payment_status === 'paid' || session.status === 'complete') continue;
       if (session.status === 'open') await stripe.checkout.sessions.expire(row.stripe_session_id);
       await pool.query('UPDATE pending_checkouts SET expired_at = NOW() WHERE id = $1', [row.id]);
+      // The session is dead, so its hold on the code should die with it rather
+      // than linger for the rest of the 30 minutes. Matters when the shopper
+      // holds more than one welcome code: a stale hold on the abandoned one
+      // otherwise reads as "already using a welcome discount" and blocks the
+      // other. Only ever clears an unredeemed hold this same shopper placed.
+      if (row.discount_code) await releaseDiscountReservation(row.discount_code, userId);
     } catch (err) {
       console.error('[expirePriorCheckouts]', row.stripe_session_id, err?.message || err);
     }
@@ -3731,6 +3800,27 @@ const requestOrigin = (req) => toOrigin(req.headers.origin) || toOrigin(req.head
 // reaches the backend without passing through Netlify — the Railway hostname
 // direct, curl — can still set them freely, and a GROUP BY key must never be
 // attacker-shaped. Absent or unusable means 'unknown', never a guess.
+// The visitor's address as Netlify's edge saw it, or null.
+//
+// DELIBERATELY NOT req.ip. In production this app sits behind TWO proxies —
+// Netlify, then Railway — and `trust proxy` is set to 1, so req.ip is whichever
+// proxy spoke last, not the shopper. Matching "the owner's home network" against
+// that would compare a shared edge address to itself and exclude EVERY visitor,
+// reporting an empty shop with no error anywhere to explain it.
+//
+// So the only address trusted for this is the one the edge states explicitly
+// (netlify/edge-functions/analytics-geo.ts, which strips any inbound copy first).
+// When it is absent — local development, a request that bypassed Netlify — the
+// answer is null and network matching does not run at all. That is the safe
+// direction: a visit that should have been excluded is counted, rather than
+// every visit being excluded.
+const edgeClientIp = (req) => {
+  const raw = String(req.headers['x-og-client-ip'] || '').trim();
+  if (!raw || raw.length > 45) return null;
+  const addr = normaliseIp(raw);
+  return addr && (ipv4Int(addr) !== null || ipv6Prefix(addr) !== null) ? addr : null;
+};
+
 const GEO_CITY_RE = /^[\p{L}\p{M}\s'.\-()]{1,80}$/u;
 const geoFromHeaders = (req) => {
   let city = '';
@@ -3842,8 +3932,18 @@ const getInternalConfig = async () => {
     const { rows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'analytics_internal'`);
     const emails = (Array.isArray(rows[0]?.value?.emails) ? rows[0].value.emails : [])
       .map((e) => String(e).toLowerCase().trim()).filter(Boolean);
+    // Same rule the orders side uses (see NOT_INTERNAL_ORDER): an entry starting
+    // with '@' matches every address at that domain, so the QA harness accounts
+    // are covered without listing each one.
+    const exact = emails.filter((e) => !e.startsWith('@'));
+    const domains = emails.filter((e) => e.startsWith('@'));
     const ids = emails.length
-      ? (await pool.query(`SELECT id FROM users WHERE LOWER(email) = ANY($1::text[])`, [emails])).rows.map((r) => r.id)
+      ? (await pool.query(
+          `SELECT id FROM users
+            WHERE LOWER(email) = ANY($1::text[])
+               OR EXISTS (SELECT 1 FROM unnest($2::text[]) d WHERE LOWER(email) LIKE '%' || d)`,
+          [exact, domains]
+        )).rows.map((r) => r.id)
       : [];
     internalUserIds = new Set(ids);
     internalNetworks = (Array.isArray(rows[0]?.value?.networks) ? rows[0].value.networks : [])
@@ -3952,8 +4052,10 @@ app.post('/api/analytics/events', analyticsLimiter, express.text({ type: 'text/p
   const { userIds, networks } = await getInternalConfig();
   const flaggedByBrowser = body?.internal === true;
   const isInternalAccount = !!userId && userIds.has(userId);
-  // Compared and discarded — see ipIsInternal. The address is never written down.
-  const isInternalNetwork = ipIsInternal(requestIp(req), networks);
+  // Compared and discarded — see ipIsInternal. The address is never written down,
+  // and is only consulted when the edge vouched for it (see edgeClientIp).
+  const edgeIp = edgeClientIp(req);
+  const isInternalNetwork = !!edgeIp && ipIsInternal(edgeIp, networks);
   const reason = isInternalNetwork ? 'own network'
     : isInternalAccount ? 'internal account'
     : 'browser marked in admin';
@@ -4020,16 +4122,35 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
   const today = new Date().toLocaleDateString('en-CA', { timeZone: STORE_TZ });
 
-  let start = DATE_RE.test(String(req.query.start)) ? req.query.start : null;
-  let end   = DATE_RE.test(String(req.query.end))   ? req.query.end   : null;
-  if (!start || !end || end < start) {
+  // A range the caller *asked for* and got something else back is the one
+  // failure this endpoint must never paper over: the dashboard would print the
+  // requested dates above numbers measured over a different period, and no
+  // reader could tell. So an explicit range that can't be honoured is a 400,
+  // and only a caller that supplied no range at all gets the trailing default.
+  const askedStart = req.query.start !== undefined ? String(req.query.start) : null;
+  const askedEnd   = req.query.end   !== undefined ? String(req.query.end)   : null;
+  if (askedStart !== null || askedEnd !== null) {
+    if (!DATE_RE.test(askedStart || '') || !DATE_RE.test(askedEnd || '')) {
+      return res.status(400).json({ error: 'start and end must both be YYYY-MM-DD dates' });
+    }
+    if (askedEnd < askedStart) {
+      return res.status(400).json({ error: 'end must be on or after start' });
+    }
+  }
+
+  let start = askedStart && DATE_RE.test(askedStart) ? askedStart : null;
+  let end   = askedEnd   && DATE_RE.test(askedEnd)   ? askedEnd   : null;
+  if (!start || !end) {
     const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 730);
     end = today;
     start = isoDay(Date.parse(today) - (days - 1) * 86400000);
   }
   // Cap the window at 2 years so a mistyped range can't scan unbounded history.
+  // Reported back as `clamped` — the panel shows the window that was actually
+  // measured, and a silently shortened one would read as a drop in trade.
   let lenDays = Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
-  if (lenDays > 731) { lenDays = 731; start = isoDay(Date.parse(end) - 730 * 86400000); }
+  const clamped = lenDays > 731;
+  if (clamped) { lenDays = 731; start = isoDay(Date.parse(end) - 730 * 86400000); }
 
   const endExcl   = isoDay(Date.parse(end) + 86400000);          // $2 — end-exclusive
   const prevStart = isoDay(Date.parse(start) - lenDays * 86400000); // $3 — previous window start
@@ -4042,8 +4163,51 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   const T3 = `($3::date AT TIME ZONE '${STORE_TZ}')`;
   const DAY = (col) => `(${col} AT TIME ZONE '${STORE_TZ}')::date`;
 
-  // Orders that count toward revenue: paid and not refunded in full.
-  const PAID = `payment_status = 'paid' AND refund_status <> 'refunded'`;
+  // The window end plus a short grace period, for the one thing that legitimately
+  // lands after it: a checkout entered at 23:55 on the last day and confirmed at
+  // 00:03 the next. That sale belongs to the session that started it.
+  //
+  // The grace is bounded on purpose. These predicates used to have no upper bound
+  // at all ("purchase at any point from the window start onward"), which is
+  // harmless while the window ends today and quietly wrong the moment it doesn't:
+  // asking for last June counted every purchase made SINCE June as a June
+  // conversion, so a past month's funnel, conversion rate and abandonment were
+  // scored against a future the shopper hadn't reached yet. Six hours covers the
+  // midnight hand-over and nothing else.
+  const T2G = `(${T2} + INTERVAL '6 hours')`;
+
+  // Orders that count as a sale: paid, not refunded in full, and not the shop's
+  // own.
+  //
+  // THAT LAST CLAUSE LIVES HERE ON PURPOSE. Every query below that touches the
+  // orders table goes through this one predicate, so a test checkout cannot leak
+  // into Revenue, AOV, Orders, the daily chart, Top products, Customers,
+  // lifetime value or checkout abandonment — and a query added next year cannot
+  // reintroduce the leak by forgetting a filter. Excluding internal traffic from
+  // analytics_events alone was never enough: browsing lives in the events table
+  // but MONEY lives here, so the owner's own €0.20 test order was still landing
+  // in the revenue figures, in average order value, and at the top of the
+  // products table under the name "Test Product 1".
+  //
+  // An entry beginning with '@' in the internal list matches a whole domain,
+  // which is how the QA harness accounts (…@olivegoose-test.local) stay out
+  // without anyone maintaining a list of them by hand.
+  //
+  // Fails OPEN: an unset or malformed list matches nobody, so a configuration
+  // mistake shows too much revenue rather than silently hiding real sales.
+  const INTERNAL_EMAIL_ENTRIES = `
+    SELECT LOWER(entry) AS entry
+      FROM site_settings ss, LATERAL jsonb_array_elements_text(ss.value->'emails') AS entry
+     WHERE ss.key = 'analytics_internal'`;
+
+  // Requires the orders row to be aliased `o`, which every use site below does.
+  const NOT_INTERNAL_ORDER = `NOT EXISTS (
+    SELECT 1 FROM users iu, (${INTERNAL_EMAIL_ENTRIES}) ie
+     WHERE iu.id = o.user_id
+       AND (LOWER(iu.email) = ie.entry
+            OR (ie.entry LIKE '@%' AND LOWER(iu.email) LIKE '%' || ie.entry)))`;
+
+  const PAID = `payment_status = 'paid' AND refund_status <> 'refunded' AND ${NOT_INTERNAL_ORDER}`;
 
   // Money handed back through an approved return, which `refund_status` does NOT
   // record: applyReturnStatusChange refunds a single line (its price × quantity)
@@ -4118,7 +4282,8 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   const ORDER_ATTR = (idCol) =>
     filtered
       ? ` AND ${idCol}::text IN (SELECT props->>'order_id' FROM ${EVENTS} analytics_events
-           WHERE event_type = 'purchase' AND created_at >= ${T3}${SF()})`
+           WHERE event_type = 'purchase'
+             AND created_at >= ${T3} AND created_at < ${T2G}${SF()})`
       : '';
 
   // ?attr=source|medium|campaign switches the attribution table's grouping.
@@ -4132,12 +4297,14 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   // Guarded numeric read of the total stashed on begin_checkout events.
   const PROPS_TOTAL = `CASE WHEN props->>'total' ~ '^[0-9.]+$' THEN (props->>'total')::numeric END`;
 
-  // A session counts as converted if it has a purchase event at any point from
-  // the window start onward — deliberately *not* capped at the window end. A
-  // checkout at 23:55 that pays at 00:03 is a sale, not an abandonment.
+  // A session counts as converted if it has a purchase event inside the window
+  // or in the short grace period just after it (see T2G) — a checkout at 23:55
+  // that pays at 00:03 is a sale, not an abandonment, but a purchase two months
+  // later is not this window's conversion.
   const CONVERTED = `
     SELECT DISTINCT session_id FROM ${EVENTS} analytics_events
-    WHERE event_type = 'purchase' AND created_at >= ${T1} AND session_id <> '${NO_SESSION}'`;
+    WHERE event_type = 'purchase' AND created_at >= ${T1} AND created_at < ${T2G}
+      AND session_id <> '${NO_SESSION}'`;
 
   try {
     // Current-window queries reference $3 only when a filter is active; the
@@ -4341,7 +4508,9 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            SELECT o.created_at, ${NET_TOTAL} AS net,
                   o.id::text IN (
                     SELECT props->>'order_id' FROM ${EVENTS} analytics_events
-                    WHERE event_type = 'purchase' AND created_at >= ${T3} AND session_id <> '${NO_SESSION}'
+                    WHERE event_type = 'purchase'
+                      AND created_at >= ${T3} AND created_at < ${T2G}
+                      AND session_id <> '${NO_SESSION}'
                   ) AS attributed
            FROM orders o
            WHERE o.created_at >= ${T3} AND o.created_at < ${T2} AND ${PAID}
@@ -4399,41 +4568,74 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            SELECT product_id, MAX(name) AS name, SUM(qty)::int AS units,
                   ROUND(SUM(net), 2)::float AS revenue
            FROM line_items GROUP BY product_id
-         ), carts AS (
-           SELECT props->>'product_id' AS product_id, MAX(props->>'name') AS name,
-                  COUNT(DISTINCT session_id)::int AS add_to_carts
+         ), sess_prod AS (
+           -- What each session did with each product, one row per pair. Both
+           -- rates below are shares of a session set, so their numerators must
+           -- be the INTERSECTION of two sets, not two independent counts:
+           --
+           --   • view→cart was every carting session over every viewing one. A
+           --     product added straight from the shop grid never fires
+           --     view_item, so four carts over one view printed "400%" — a
+           --     share of a set, larger than the set.
+           --   • cart→buy was UNITS over carting sessions. One shopper buying
+           --     three candles, out of two sessions that added them, read as
+           --     "100% of carts converted" when the truth was half — and the
+           --     card tells the reader that a low cart→buy means the loss is at
+           --     checkout, so this overstated checkout health on every
+           --     multi-unit line.
+           --
+           -- Counted per session, not per event, so re-reading a page or adding
+           -- twice doesn't move the rate.
+           SELECT props->>'product_id' AS product_id, session_id,
+                  MAX(props->>'name') AS name,
+                  BOOL_OR(event_type = 'view_item') AS viewed,
+                  BOOL_OR(event_type = 'add_to_cart') AS carted
            FROM ${EVENTS} analytics_events
-           WHERE event_type = 'add_to_cart' AND created_at >= ${T1} AND created_at < ${T2}
+           WHERE event_type IN ('view_item', 'add_to_cart')
+             AND created_at >= ${T1} AND created_at < ${T2}
              AND props->>'product_id' IS NOT NULL AND session_id <> '${NO_SESSION}'${SF()}
-           GROUP BY 1
-         ), views AS (
-           -- Sessions that actually saw the product page. This is the
-           -- denominator that turns "12 add-to-carts" into "12 out of 400 people
-           -- who looked" — the difference between a product nobody finds and one
-           -- everybody rejects, which the units/revenue columns alone cannot
-           -- tell apart. Counted per session, not per event, so re-reading the
-           -- page doesn't dilute the rate.
-           SELECT props->>'product_id' AS product_id, MAX(props->>'name') AS name,
-                  COUNT(DISTINCT session_id)::int AS views
-           FROM ${EVENTS} analytics_events
-           WHERE event_type = 'view_item' AND created_at >= ${T1} AND created_at < ${T2}
-             AND props->>'product_id' IS NOT NULL AND session_id <> '${NO_SESSION}'${SF()}
-           GROUP BY 1
+           GROUP BY 1, 2
+         ), buyers AS (
+           -- The sessions that actually paid for each product.
+           SELECT DISTINCT item->>'product_id' AS product_id, e.session_id
+           FROM orders o
+           JOIN LATERAL jsonb_array_elements(o.items) AS item ON TRUE
+           JOIN ${EVENTS} e ON e.props->>'order_id' = o.id::text AND e.event_type = 'purchase'
+           WHERE o.created_at >= ${T1} AND o.created_at < ${T2} AND ${PAID}
+             AND e.session_id <> '${NO_SESSION}'${SF('e.session_id')}
+             AND NOT EXISTS (
+               SELECT 1 FROM returns r
+               WHERE r.order_id = o.id AND r.status = 'refunded'
+                 AND r.product_id = item->>'product_id'
+             )
+         ), engagement AS (
+           -- Views is the denominator that turns "12 add-to-carts" into "12 out
+           -- of 400 people who looked" — the difference between a product
+           -- nobody finds and one everybody rejects, which units and revenue
+           -- alone cannot tell apart.
+           SELECT sp.product_id, MAX(sp.name) AS name,
+                  COUNT(*) FILTER (WHERE sp.viewed)::int AS views,
+                  COUNT(*) FILTER (WHERE sp.carted)::int AS add_to_carts,
+                  COUNT(*) FILTER (WHERE sp.viewed AND sp.carted)::int AS viewed_then_carted,
+                  COUNT(*) FILTER (WHERE sp.carted AND b.session_id IS NOT NULL)::int AS carted_then_bought
+           FROM sess_prod sp
+           LEFT JOIN buyers b ON b.product_id = sp.product_id AND b.session_id = sp.session_id
+           GROUP BY sp.product_id
          )
-         SELECT COALESCE(s.name, c.name, v.name, 'Unknown') AS name,
+         SELECT COALESCE(s.name, e.name, 'Unknown') AS name,
                 COALESCE(s.units, 0)::int AS units,
                 COALESCE(s.revenue, 0)::float AS revenue,
-                COALESCE(c.add_to_carts, 0)::int AS add_to_carts,
-                COALESCE(v.views, 0)::int AS views,
+                COALESCE(e.add_to_carts, 0)::int AS add_to_carts,
+                COALESCE(e.views, 0)::int AS views,
                 -- NULL, not 0, when nothing was viewed: no views means the rate
                 -- is unknown, and a 0% would read as "everyone rejected it".
-                CASE WHEN COALESCE(v.views, 0) > 0
-                     THEN ROUND(COALESCE(c.add_to_carts, 0)::numeric * 100 / v.views, 1)::float
+                CASE WHEN COALESCE(e.views, 0) > 0
+                     THEN ROUND(e.viewed_then_carted::numeric * 100 / e.views, 1)::float
                 END AS view_to_cart_pct,
-                CASE WHEN COALESCE(c.add_to_carts, 0) > 0
-                     THEN ROUND(LEAST(COALESCE(s.units, 0), c.add_to_carts)::numeric * 100 / c.add_to_carts, 1)::float
+                CASE WHEN COALESCE(e.add_to_carts, 0) > 0
+                     THEN ROUND(e.carted_then_bought::numeric * 100 / e.add_to_carts, 1)::float
                 END AS cart_to_buy_pct
-         FROM sold s FULL JOIN carts c USING (product_id) FULL JOIN views v USING (product_id)
+         FROM sold s FULL JOIN engagement e USING (product_id)
          ORDER BY revenue DESC, add_to_carts DESC, views DESC LIMIT 10`,
         PC
       ),
@@ -4464,19 +4666,38 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
            WHERE created_at >= ${T1} AND created_at < ${T2}
              AND event_type NOT IN ('web_vital', 'purchase') AND session_id <> '${NO_SESSION}'${SF()}
            ORDER BY session_id, created_at ASC, id ASC
+         ), attributed AS (
+           -- One row per ORDER in the window that carries a tracked purchase
+           -- event. Keyed on the order and deduped with DISTINCT ON: a
+           -- re-flushed beacon or a retried finalize can write the same purchase
+           -- twice, and counting event rows billed that order to this table
+           -- twice — one €100 sale showed up as two orders and €200.
+           --
+           -- Selected by the ORDER's date, not the event's, so this table counts
+           -- exactly the orders the Revenue KPI above counts.
+           SELECT DISTINCT ON (o.id) e.session_id, o.id, ${NET_TOTAL} AS net
+           FROM orders o
+           JOIN ${EVENTS} e ON e.props->>'order_id' = o.id::text AND e.event_type = 'purchase'
+           WHERE o.created_at >= ${T1} AND o.created_at < ${T2} AND ${PAID}
+             AND NOT (${FULLY_RETURNED}) AND e.session_id <> '${NO_SESSION}'${SF('e.session_id')}
+           ORDER BY o.id, e.created_at ASC
          ), purchases AS (
-           SELECT e.session_id, COUNT(*)::int AS orders, SUM(${NET_TOTAL}) AS revenue
-           FROM ${EVENTS} e
-           JOIN orders o ON o.id::text = e.props->>'order_id' AND ${PAID}
-           WHERE e.event_type = 'purchase' AND e.created_at >= ${T1} AND e.created_at < ${T2}
-             AND NOT (${FULLY_RETURNED})
-           GROUP BY e.session_id
+           SELECT session_id, COUNT(*)::int AS orders, SUM(net) AS revenue
+           FROM attributed GROUP BY session_id
          ), grouped AS (
            SELECT l.source, COUNT(*)::int AS sessions,
                   COALESCE(SUM(p.orders), 0)::int AS orders,
                   COALESCE(SUM(p.revenue), 0) AS revenue
            FROM landing l LEFT JOIN purchases p USING (session_id)
            GROUP BY l.source
+           UNION ALL
+           -- Orders bought by a session that started BEFORE this window — a
+           -- visit that spanned the boundary, or a checkout resumed later. They
+           -- count in the Revenue KPI, so omitting them here would leave this
+           -- table quietly failing to add up to the figure above it.
+           SELECT '(visit began before this period)', 0, COUNT(*)::int, SUM(net)
+           FROM attributed WHERE session_id NOT IN (SELECT session_id FROM landing)
+           HAVING COUNT(*) > 0
          ), ranked AS (
            SELECT *, ROW_NUMBER() OVER (ORDER BY sessions DESC, source ASC) AS rn FROM grouped
          )
@@ -4530,25 +4751,45 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // rest as the whole picture.
       pool.query(
         `WITH sess_geo AS (
+           -- Every session the Sessions KPI counts, so the table covers the
+           -- same traffic the tiles do. Purchase rows are included but sorted
+           -- LAST: they are written server-side with no geo, so a session with
+           -- any located browsing event is placed by that, and only a session
+           -- with nothing located at all falls through to Unknown.
+           --
+           -- They have to be in the set at all because a visit that began
+           -- before the window and paid inside it has no other row here — it
+           -- used to drop out of this table entirely, taking its revenue with
+           -- it, so the busiest city by revenue could be a city with less
+           -- revenue than the amount silently missing.
            SELECT DISTINCT ON (session_id) session_id,
                   COALESCE(NULLIF(geo_city, ''), 'Unknown') AS city,
                   COALESCE(NULLIF(geo_country, ''), '') AS country
            FROM ${EVENTS} analytics_events
            WHERE created_at >= ${T1} AND created_at < ${T2}
-             AND event_type NOT IN ('purchase', 'web_vital')
+             AND event_type <> 'web_vital'
              AND session_id <> '${NO_SESSION}'${SF()}
-           ORDER BY session_id, created_at ASC, id ASC
+           ORDER BY session_id, (NULLIF(geo_city, '') IS NULL), created_at ASC, id ASC
          ), sess_orders AS (
-           SELECT DISTINCT ON (e.session_id) e.session_id, o.id AS order_id, ${NET_TOTAL} AS net
-           FROM ${EVENTS} e
-           JOIN orders o ON o.id::text = e.props->>'order_id'
-           WHERE e.event_type = 'purchase' AND e.created_at >= ${T1}
-             AND e.session_id <> '${NO_SESSION}' AND ${PAID} AND NOT (${FULLY_RETURNED})
-           ORDER BY e.session_id, e.created_at ASC
+           -- Deduped by ORDER, then rolled up per session: DISTINCT ON the
+           -- session credited only one order to a session that placed two, and
+           -- counting raw event rows credited one order twice when its purchase
+           -- beacon was flushed twice. Bounded by the order's own date so a
+           -- past window can't collect revenue earned after it ended.
+           SELECT session_id, COUNT(*)::int AS orders, SUM(net) AS net
+           FROM (
+             SELECT DISTINCT ON (o.id) e.session_id, o.id, ${NET_TOTAL} AS net
+             FROM orders o
+             JOIN ${EVENTS} e ON e.props->>'order_id' = o.id::text AND e.event_type = 'purchase'
+             WHERE o.created_at >= ${T1} AND o.created_at < ${T2}
+               AND e.session_id <> '${NO_SESSION}' AND ${PAID} AND NOT (${FULLY_RETURNED})
+             ORDER BY o.id, e.created_at ASC
+           ) x
+           GROUP BY session_id
          )
          SELECT g.city, g.country,
                 COUNT(*)::int AS sessions,
-                COUNT(so.order_id)::int AS orders,
+                COALESCE(SUM(so.orders), 0)::int AS orders,
                 COALESCE(ROUND(SUM(so.net)::numeric, 2), 0)::float AS revenue
          FROM sess_geo g LEFT JOIN sess_orders so USING (session_id)
          GROUP BY 1, 2
@@ -4651,7 +4892,8 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
          ), reached AS (
            SELECT DISTINCT session_id FROM ${EVENTS} analytics_events
            WHERE (event_type = 'begin_checkout' OR (event_type = 'page_view' AND path LIKE '/checkout%'))
-             AND created_at >= ${T1} AND created_at < ${T2} AND session_id <> '${NO_SESSION}'
+             AND created_at >= ${T1} AND created_at < ${T2}
+             AND session_id <> '${NO_SESSION}'${SF()}
          ), converted AS (${CONVERTED}
          )
          SELECT
@@ -4682,7 +4924,10 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
     const conversionRate = t.sessions ? +(f.purchased / t.sessions * 100).toFixed(2) : 0;
 
     res.json({
+      // The window that was ACTUALLY measured. The panel prints these, never the
+      // dates it asked for, so a clamped range can't be read as a fall in trade.
       start, end, days: lenDays, timezone: STORE_TZ,
+      clamped,
       filters: { device, source, attr },
       // True when a device/source filter is active, so event-derived metrics
       // cover only orders that could be tied back to a matching session.
@@ -4810,14 +5055,17 @@ app.get('/api/admin/analytics/internal', requireAuth, async (req, res) => {
     ]);
     const value = setting.rows[0]?.value || {};
     const networks = Array.isArray(value.networks) ? value.networks : [];
-    const ip = normaliseIp(requestIp(req));
+    // Only ever the edge's answer. Offering req.ip here would invite the owner to
+    // exclude a proxy address — or, from localhost, the loopback address, which
+    // silently protects nothing.
+    const ip = edgeClientIp(req);
     res.json({
       emails: Array.isArray(value.emails) ? value.emails : [],
       networks,
       // So the owner can add the network they're on without having to go and
       // look it up, and can see at a glance whether it's already covered.
-      current_ip: ip,
-      current_ip_excluded: ipIsInternal(ip, networks),
+      current_ip: ip || '',
+      current_ip_excluded: !!ip && ipIsInternal(ip, networks),
       excluded_visitors: visitors.rows,
       counted_origins: countedOrigins,
       origins_seen: origins.rows,
@@ -4834,7 +5082,11 @@ app.put('/api/admin/analytics/internal', requireAuth, async (req, res) => {
 
     const emails = Array.isArray(req.body?.emails)
       ? req.body.emails.map((e) => String(e).toLowerCase().trim())
-          .filter((e) => e.includes('@') && e.length <= 200).slice(0, 50)
+          // Either a full address, or '@domain' for every address at a domain.
+          // '@' alone would match every account the shop has ever had.
+          .filter((e) => e.length > 1 && e.length <= 200 && e.includes('@')
+                      && (e.startsWith('@') ? /^@[^@\s]+\.[^@\s]+$/.test(e) : /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)))
+          .slice(0, 50)
       : (Array.isArray(current.emails) ? current.emails : []);
 
     // An entry has to be an address this code can actually match, or it is a
@@ -5074,12 +5326,50 @@ app.post('/api/discount/validate', requireUserAuth, discountValidateLimiter, asy
   } catch (err) { sendServerError(res, err); }
 });
 
+// ── GET /api/discount/mine — this shopper's own unspent welcome code ─────────
+// The code is emailed at subscribe time and shown nowhere else, so a shopper who
+// deleted or never received that email had no way back to it and simply paid full
+// price. This returns only a code already bound to this account's *verified*
+// address — the same binding reserveDiscountCode enforces — so it hands over
+// nothing the signed-in shopper couldn't already spend by typing it. Answers
+// `{ code: null }` (never an error) when there's nothing to offer, including when
+// the welcome discount has already been used: an empty pocket is not a failure,
+// and checkout shouldn't render an error for it.
+app.get('/api/discount/mine', requireUserAuth, async (req, res) => {
+  try {
+    const canonical = await canonicalEmailForUser(req.user.userId);
+    if (!canonical) return res.json({ code: null });
+
+    const { rows } = await pool.query(
+      `SELECT * FROM discount_codes
+        WHERE source = 'subscribe' AND canonical_email = $1
+          AND is_active AND redemption_count < max_redemptions
+        ORDER BY created_at ASC LIMIT 1`,
+      [canonical]
+    );
+    const row = rows[0];
+    if (!row) return res.json({ code: null });
+
+    // Same person-level guards "Apply" would run, so checkout never dangles a
+    // code the shopper would then be refused.
+    const blocked = (await codeUsedByUserReason(pool, row, req.user.userId))
+      || (await welcomeCodeBlockReason(pool, row, req.user.userId, canonical));
+    if (blocked) return res.json({ code: null });
+
+    res.json({
+      code: row.code,
+      discount_type: row.discount_type,
+      discount_value: Number(row.discount_value),
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
 // ── GET /api/admin/discount-codes (admin only) ───────────────────────────────
 app.get('/api/admin/discount-codes', requireAuth, async (_req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT id, code, email, discount_percent, discount_type, discount_value,
-              max_redemptions, redemption_count, is_active, label, source,
+              max_redemptions, redemption_count, is_active, one_per_customer, label, source,
               redeemed_at, order_id, created_at
          FROM discount_codes
         ORDER BY created_at DESC
@@ -5111,6 +5401,10 @@ app.post('/api/admin/discount-codes', requireAuth, async (req, res) => {
     if (!Number.isFinite(maxRedemptions) || maxRedemptions < 1)
       return res.status(400).json({ error: 'Max uses must be a whole number of at least 1.' });
 
+    // Defaults to on, so "max uses" means "this many customers" unless the admin
+    // deliberately makes the code repeatable for the same shopper.
+    const onePerCustomer = body.one_per_customer === false ? false : true;
+
     const label = typeof body.label === 'string' ? body.label.trim().slice(0, 120) : null;
 
     // Custom code: normalize + charset-check. Otherwise generate one.
@@ -5129,12 +5423,12 @@ app.post('/api/admin/discount-codes', requireAuth, async (req, res) => {
     try {
       const { rows } = await pool.query(
         `INSERT INTO discount_codes
-           (code, email, source, discount_type, discount_value, discount_percent, max_redemptions, label)
-         VALUES ($1, NULL, 'admin', $2, $3, $4, $5, $6)
+           (code, email, source, discount_type, discount_value, discount_percent, max_redemptions, label, one_per_customer)
+         VALUES ($1, NULL, 'admin', $2, $3, $4, $5, $6, $7)
          RETURNING id, code, email, discount_percent, discount_type, discount_value,
-                   max_redemptions, redemption_count, is_active, label, source,
+                   max_redemptions, redemption_count, is_active, one_per_customer, label, source,
                    redeemed_at, order_id, created_at`,
-        [code, discountType, discountValue, legacyPercent, maxRedemptions, label]
+        [code, discountType, discountValue, legacyPercent, maxRedemptions, label, onePerCustomer]
       );
       res.status(201).json(rows[0]);
     } catch (err) {
@@ -5152,7 +5446,7 @@ app.patch('/api/admin/discount-codes/:id', requireAuth, async (req, res) => {
     const { rows } = await pool.query(
       `UPDATE discount_codes SET is_active = $2 WHERE id = $1
        RETURNING id, code, email, discount_percent, discount_type, discount_value,
-                 max_redemptions, redemption_count, is_active, label, source,
+                 max_redemptions, redemption_count, is_active, one_per_customer, label, source,
                  redeemed_at, order_id, created_at`,
       [req.params.id, req.body.is_active]
     );
@@ -5767,6 +6061,37 @@ async function initDb() {
       ON pending_checkouts ((payload->>'discount_code'))
       WHERE consumed_at IS NULL AND expired_at IS NULL;
 
+    -- "Max uses" on a shared promo code reads as how many *customers* it's good
+    -- for, so by default a code is one-per-customer: without this, one shopper
+    -- can spend all 100 uses of SPRING20 across 100 of their own orders. Admins
+    -- can switch it off per code for a deliberately repeatable offer.
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS one_per_customer BOOLEAN NOT NULL DEFAULT true;
+
+    -- Who has actually spent a code. discount_codes only ever kept the *last*
+    -- redeemer in redeemed_by_user_id, which can't answer "has this shopper used
+    -- this code before" for a multi-use code. Written in the same transaction
+    -- that increments redemption_count (see redeemDiscountCode), so the ledger
+    -- and the counter can never disagree.
+    CREATE TABLE IF NOT EXISTS discount_redemptions (
+      id         UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      code_id    UUID        NOT NULL REFERENCES discount_codes(id) ON DELETE CASCADE,
+      user_id    UUID        REFERENCES users(id) ON DELETE SET NULL,
+      order_id   UUID        REFERENCES orders(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- One row per code per order: makes a replayed redeem a no-op rather than a
+    -- second ledger entry for the same money.
+    CREATE UNIQUE INDEX IF NOT EXISTS discount_redemptions_code_order_uidx
+      ON discount_redemptions (code_id, order_id);
+    CREATE INDEX IF NOT EXISTS discount_redemptions_code_user_idx
+      ON discount_redemptions (code_id, user_id);
+    -- Backfill from the single-redeemer columns so codes spent before the ledger
+    -- existed still count against their redeemer's one-per-customer allowance.
+    INSERT INTO discount_redemptions (code_id, user_id, order_id, created_at)
+      SELECT id, redeemed_by_user_id, order_id, redeemed_at FROM discount_codes
+       WHERE redeemed_at IS NOT NULL AND order_id IS NOT NULL
+    ON CONFLICT DO NOTHING;
+
     CREATE TABLE IF NOT EXISTS returns (
       id           UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
       order_id     UUID        REFERENCES orders(id) ON DELETE CASCADE,
@@ -6043,6 +6368,11 @@ async function initDb() {
       ...rows.map((r) => r.email),
       'akash.rocks73@gmail.com',
       'bhardwajakash166@gmail.com',
+      // The end-to-end suite signs up real accounts on this domain and puts real
+      // orders through Stripe test mode. They are not customers, and a domain
+      // entry means a new fixture account is excluded the day it is created
+      // rather than the day someone notices it in the revenue figures.
+      '@olivegoose-test.local',
     ].filter(Boolean))];
     await client.query(
       `INSERT INTO site_settings (key, value) VALUES ('analytics_internal', $1)

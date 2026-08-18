@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildHeroMobileVideoUrl,
+  buildHeroVideoUrl,
   buildOptimizedUrl,
   buildPosterUrl,
+  buildRailVideoUrl,
+  HERO_MOBILE_WIDTH,
+  HERO_POSTER_WIDTH,
+  isSameVideoAsset,
+  isVideoUrl,
   isCloudinaryVideo,
   isOptimizedUrl,
   parseCloudinaryVideo,
@@ -92,6 +99,48 @@ describe("buildOptimizedUrl", () => {
   });
 });
 
+describe("buildRailVideoUrl", () => {
+  const BASE = "https://res.cloudinary.com/asravqmm/video/upload";
+  const RAIL = "f_mp4,vc_h264,w_720,c_limit,q_auto:eco";
+
+  it("asks for a thumbnail-weight cut of the same reel", () => {
+    expect(buildRailVideoUrl(`${BASE}/v1785190731/reel.mp4`)).toBe(`${BASE}/${RAIL}/v1785190731/reel.mp4`);
+  });
+
+  it("replaces whatever chain the stored URL carried", () => {
+    // The stored URL is sized for full screen; the rail is a 341px card. It is
+    // the same asset delivered twice, not two assets.
+    const stored = `${BASE}/f_mp4,vc_h264,w_1080,c_limit,q_auto:best/v1/reel.mp4`;
+    const rail = buildRailVideoUrl(stored);
+    expect(rail).toBe(`${BASE}/${RAIL}/v1/reel.mp4`);
+    expect(rail).not.toContain("q_auto:best");
+    expect(rail.match(/\/video\/upload\//g)).toHaveLength(1);
+  });
+
+  it("is idempotent", () => {
+    const once = buildRailVideoUrl(`${BASE}/v1/reel.mp4`);
+    expect(buildRailVideoUrl(once)).toBe(once);
+  });
+
+  it("points at the same asset the stored URL does", () => {
+    // The lightbox plays the stored URL and the rail plays this one; if they
+    // ever named different assets the card and the full screen would disagree.
+    const stored = `${BASE}/f_mp4,w_1080/v1785190731/1785188976153295_whqy1c.mp4`;
+    expect(buildRailVideoUrl(stored)).toContain("v1785190731/1785188976153295_whqy1c.mp4");
+  });
+
+  it("leaves anything that is not a Cloudinary video exactly as it was", () => {
+    for (const url of [
+      "https://www.youtube.com/watch?v=abc",
+      "https://player.vimeo.com/video/123",
+      "https://example.com/clip.mp4",
+      "",
+    ]) {
+      expect(buildRailVideoUrl(url), url).toBe(url);
+    }
+  });
+});
+
 describe("buildPosterUrl", () => {
   it("takes the first frame as a jpg", () => {
     expect(buildPosterUrl(ORIGINAL)).toBe(
@@ -125,5 +174,96 @@ describe("isOptimizedUrl", () => {
     expect(
       isOptimizedUrl("https://res.cloudinary.com/asravqmm/video/upload/f_mp4/v1/reel.mp4"),
     ).toBe(false);
+  });
+});
+
+describe("isVideoUrl", () => {
+  it("recognises a Cloudinary video delivery, chain or no chain", () => {
+    expect(isVideoUrl(ORIGINAL)).toBe(true);
+    // A transformed URL can end in the chain rather than a readable extension.
+    expect(isVideoUrl(buildHeroVideoUrl(ORIGINAL))).toBe(true);
+  });
+
+  it("recognises a plain video file anywhere else", () => {
+    expect(isVideoUrl("https://cdn.example.com/loop.mp4")).toBe(true);
+    expect(isVideoUrl("https://cdn.example.com/loop.mov?v=2")).toBe(true);
+  });
+
+  it("rejects embeds and photos, which cannot be a background", () => {
+    expect(isVideoUrl("https://youtube.com/shorts/abc123")).toBe(false);
+    expect(isVideoUrl("https://instagram.com/reel/abc123")).toBe(false);
+    expect(isVideoUrl("https://cdn.example.com/hero.jpg")).toBe(false);
+    expect(isVideoUrl("")).toBe(false);
+  });
+});
+
+describe("buildHeroVideoUrl", () => {
+  it("asks for an mp4 at the tier's width, with no audio track", () => {
+    expect(buildHeroVideoUrl(ORIGINAL, "balanced")).toBe(
+      "https://res.cloudinary.com/asravqmm/video/upload/" +
+      "f_mp4,vc_h264,w_1440,c_limit,q_auto:good,ac_none/v1785190731/1785188976153295_whqy1c.mp4",
+    );
+  });
+
+  it("sends phones their own narrower encode", () => {
+    const mobile = buildHeroMobileVideoUrl(ORIGINAL);
+    expect(mobile).toContain(`w_${HERO_MOBILE_WIDTH},c_limit,q_auto:eco,ac_none`);
+    expect(mobile).not.toBe(buildHeroVideoUrl(ORIGINAL));
+  });
+
+  it("trims to the first seconds when asked, and not otherwise", () => {
+    expect(buildHeroVideoUrl(ORIGINAL, "balanced", 10)).toContain("/so_0,du_10/");
+    expect(buildHeroVideoUrl(ORIGINAL, "balanced")).not.toContain("du_");
+  });
+
+  it("replaces an existing chain rather than stacking on it", () => {
+    // Pressing the button twice, or changing tier, must not compound: two width
+    // instructions in one URL is a URL Cloudinary answers with an error.
+    const once = buildHeroVideoUrl(ORIGINAL, "max", 10);
+    expect(buildHeroVideoUrl(once, "max", 10)).toBe(once);
+    expect(buildHeroVideoUrl(once, "light")).toBe(buildHeroVideoUrl(ORIGINAL, "light"));
+    expect(buildHeroMobileVideoUrl(once)).toBe(buildHeroMobileVideoUrl(ORIGINAL));
+  });
+
+  it("leaves a video hosted anywhere else exactly as it is", () => {
+    const other = "https://cdn.example.com/loop.mp4";
+    expect(buildHeroVideoUrl(other)).toBe(other);
+    expect(buildHeroMobileVideoUrl(other)).toBe(other);
+  });
+
+  it("reads as optimised once applied, so admin stops warning about it", () => {
+    expect(isOptimizedUrl(buildHeroVideoUrl(ORIGINAL))).toBe(true);
+    expect(isOptimizedUrl(buildHeroMobileVideoUrl(ORIGINAL))).toBe(true);
+  });
+});
+
+describe("buildPosterUrl", () => {
+  it("cuts the hero's still wider than a reel card's", () => {
+    expect(buildPosterUrl(ORIGINAL, HERO_POSTER_WIDTH)).toContain(`w_${HERO_POSTER_WIDTH},c_limit`);
+    // The rail's callers pass no width and must keep the size they had.
+    expect(buildPosterUrl(ORIGINAL)).toContain("w_640,c_limit");
+  });
+});
+
+describe("isSameVideoAsset", () => {
+  // What this answers: has the *clip* changed, or only the chain in front of
+  // it? A phone can now have a clip of its own, so "the desktop clip changed"
+  // must not throw away a different clip an admin chose deliberately.
+  it("sees through the transformation chain to the clip underneath", () => {
+    expect(isSameVideoAsset(buildHeroVideoUrl(ORIGINAL), ORIGINAL)).toBe(true);
+    expect(isSameVideoAsset(buildHeroMobileVideoUrl(ORIGINAL), buildHeroVideoUrl(ORIGINAL, "max", 10))).toBe(true);
+    // The container is delivery's choice — .mov in, .mp4 out, same clip.
+    expect(isSameVideoAsset(buildHeroVideoUrl(ORIGINAL), ORIGINAL.replace(".mov", ".mp4"))).toBe(true);
+  });
+
+  it("tells two different clips apart", () => {
+    const other = "https://res.cloudinary.com/asravqmm/video/upload/v1785190731/another_x9z8.mov";
+    expect(isSameVideoAsset(buildHeroMobileVideoUrl(other), ORIGINAL)).toBe(false);
+  });
+
+  it("is false when either side is empty, so nothing is cleared on a hunch", () => {
+    expect(isSameVideoAsset("", ORIGINAL)).toBe(false);
+    expect(isSameVideoAsset(ORIGINAL, "")).toBe(false);
+    expect(isSameVideoAsset("", "")).toBe(false);
   });
 });

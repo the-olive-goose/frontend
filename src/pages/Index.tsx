@@ -38,8 +38,8 @@ const Index = () => {
         {/* 1. Hero — full-width image, flush from top of viewport behind navbar */}
         <HeroSection data={hero.data} ready={hero.ready} />
 
-        {/* 2. "SMELLS LIKE YOUR CAFÉ ERA." — cream bg */}
-        <SmellsLikeSection />
+        {/* 2. Hero tagline band ("SMELLS LIKE YOUR CAFÉ ERA.") — cream bg */}
+        <SmellsLikeSection data={hero.data} ready={hero.ready} />
 
         {/* 3. New Arrivals — products tagged "new" */}
         <NewArrivalsSection />

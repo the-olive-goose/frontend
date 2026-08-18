@@ -148,12 +148,56 @@ export interface HeroContent {
   cta_text: string;
   cta_href: string;
   bg_image_url: string;
+  /**
+   * A photograph of the admin's own for phones, framed for a tall screen.
+   *
+   * Optional, and only ever an override. Left blank, phones are sent a centred
+   * cut of `bg_image_url` derived at render time — correct bytes, but the
+   * middle of the picture is whatever the picture happens to have in its
+   * middle. A wide photograph in a phone's tall frame loses more than half its
+   * width, so which half survives is a composition decision; this field is
+   * where an admin answers it, by choosing a different picture outright.
+   *
+   * Used exactly as saved — nothing in the render path re-derives from it,
+   * because re-deriving would centre-cut the very framing it exists to carry.
+   */
+  bg_image_mobile_url?: string;
+  /**
+   * A short clip that plays, muted and looping, over the background image.
+   *
+   * Optional, and the image is never optional in its place: the image is the
+   * poster the visitor sees before a frame has decoded, and it is the whole
+   * background for anyone the video is deliberately withheld from — a phone on
+   * a metered connection, a visitor who asked for reduced motion, a browser
+   * that refuses to autoplay. The hero looks finished in every one of those
+   * cases, which is why the video is a layer on top and not a replacement.
+   *
+   * Optional on the type so hero rows saved before this field existed still
+   * typecheck and keep rendering exactly as they did.
+   */
+  bg_video_url?: string;
+  /**
+   * The same clip encoded narrower for phones, written by the admin optimiser
+   * alongside the desktop one. A phone that is sent the desktop encode decodes
+   * every one of those pixels to paint 390 of them.
+   */
+  bg_video_mobile_url?: string;
   bg_opacity: number;       // background image opacity 0–1 (default 1.0 = original)
   tint_color: string;       // hex colour of the overlay tint
   tint_opacity: number;     // opacity of the tint overlay 0–1
   overlay_opacity?: number; // legacy — ignored, kept for DB back-compat
   show_countdown: boolean;
   launch_date: string | null;
+  /**
+   * The marker-font tagline band on the cream strip directly under the hero
+   * image ("SMELLS LIKE YOUR / CAFÉ ERA."). Newlines are the line breaks, so
+   * the admin controls where the phrase wraps; blank hides the whole band,
+   * stickers included.
+   *
+   * Optional so rows saved before this field existed still typecheck — they
+   * merge over the default below and keep showing the tagline they had.
+   */
+  tagline?: string;
 }
 
 /**
@@ -567,11 +611,15 @@ export const DEFAULT_CONTENT: SiteContent = {
     cta_text: "Shop the Collection",
     cta_href: "#collection",
     bg_image_url: "",
+    bg_image_mobile_url: "",
+    bg_video_url: "",
+    bg_video_mobile_url: "",
     bg_opacity: 1.0,
     tint_color: "#1e2918",
     tint_opacity: 0.45,
     show_countdown: false,
     launch_date: null,
+    tagline: "SMELLS LIKE YOUR\nCAFÉ ERA.",
   },
 
   momentPill: {

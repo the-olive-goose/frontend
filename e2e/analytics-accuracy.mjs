@@ -58,10 +58,14 @@ const sessionCookie = (userId) => {
 const kids = [];
 let pg;
 const fails = [];
-const ok = (name) => console.log(`  \x1b[32m✓\x1b[0m ${name}`);
+// How many assertions actually executed. A run that asserts nothing is not a
+// pass — see the exit path at the bottom of this file.
+let checks = 0;
+const ok = (name) => { checks++; console.log(`  \x1b[32m✓\x1b[0m ${name}`); };
 function eq(name, actual, expected) {
   const a = JSON.stringify(actual), e = JSON.stringify(expected);
   if (a === e) return ok(name);
+  checks++;
   fails.push(`${name}\n      expected ${e}\n      actual   ${a}`);
   console.log(`  \x1b[31m✗\x1b[0m ${name} — expected ${e}, got ${a}`);
 }
@@ -602,6 +606,64 @@ async function main() {
   await send("real-shopper", COUNTED_ORIGIN, { Cookie: sessionCookie(shopper) });
   eq("a signed-in customer is not excluded", await visitors(), after + 1);
 
+  // ── The shop's own money ────────────────────────────────────────────────────
+  // Browsing lives in analytics_events, but MONEY lives in the orders table, and
+  // the internal-traffic exclusion does not reach across on its own. Until it
+  // did, a €0.20 test checkout landed in Revenue, in average order value, in the
+  // customer count, and at the top of Top products under the name "Test Product".
+  // That is the figure an owner shows an investor.
+  console.log("\n\x1b[1mthe shop's own money\x1b[0m");
+
+  // Set the list this section depends on explicitly rather than relying on what
+  // an earlier check left behind — including the '@domain' form, which is how
+  // the shop keeps QA accounts out without naming each one.
+  await fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ emails: ["owner@test.local", "@olivegoose-test.local"] }),
+  });
+
+  const beforeMoney = await get();
+
+  // An order placed by an account on the internal list, and one by a QA-harness
+  // account matched only by its domain.
+  const ownerBuyer = (await pool.query(
+    `SELECT id FROM users WHERE email = 'owner@test.local'`
+  )).rows[0].id;
+  const qaBuyer = (await pool.query(
+    `INSERT INTO users (email, full_name) VALUES ('qa.bot@olivegoose-test.local','QA') RETURNING id`
+  )).rows[0].id;
+
+  const internalOrder = async (id, user, total) => pool.query(
+    `INSERT INTO orders (id, user_id, items, subtotal, shipping, total, discount_amount,
+                         tracking_number, payment_status, refund_status, created_at)
+     VALUES ($1,$2,$3,$4,0,$4,0,'T-INT','paid','not_applicable',$5)`,
+    [id, user, JSON.stringify([{ product_id: "test-1", quantity: 1,
+        product_data: { name: "Test Product 1", price: "€" + total } }]), total, at(2, 12)]
+  );
+  await internalOrder("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", ownerBuyer, 999);
+  await internalOrder("bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", qaBuyer, 888);
+
+  const afterMoney = await get();
+
+  eq("a test order does not become revenue", afterMoney.sales.revenue, beforeMoney.sales.revenue);
+  eq("…nor an order", afterMoney.sales.orders, beforeMoney.sales.orders);
+  eq("…nor moves average order value", afterMoney.sales.aov, beforeMoney.sales.aov);
+  eq("…nor creates a customer", afterMoney.customers.total_customers, beforeMoney.customers.total_customers);
+  eq("…nor a new customer this period", afterMoney.customers.new_customers, beforeMoney.customers.new_customers);
+  eq("…nor distorts lifetime value", afterMoney.customers.avg_lifetime_value, beforeMoney.customers.avg_lifetime_value);
+  eq("…nor appears in top products",
+    afterMoney.top_products.some(p => p.name === "Test Product 1"), false);
+  eq("…nor shows up on the daily chart",
+    afterMoney.daily.reduce((n, d) => n + d.revenue, 0), beforeMoney.daily.reduce((n, d) => n + d.revenue, 0));
+  // The QA account is excluded by its DOMAIN, never having been listed by name —
+  // which is what stops a fixture account created next month from counting.
+  eq("a QA-harness account is excluded by its domain alone",
+    afterMoney.sales.orders, beforeMoney.sales.orders);
+
+  // Real sales are untouched by all of it.
+  eq("real revenue is unchanged", afterMoney.sales.revenue, beforeMoney.sales.revenue);
+  eq("real revenue is still non-zero", afterMoney.sales.revenue > 0, true);
+
   // ── Where visitors are ──────────────────────────────────────────────────────
   // City and country arrive as headers from Netlify's edge, which resolved them
   // to route the request. No IP is looked up or stored to produce this, so the
@@ -713,7 +775,10 @@ async function main() {
   // address for every device on it. `trust proxy` is on, so an X-Forwarded-For
   // sent to a test server on localhost is exactly what a real proxied visit
   // looks like from the route's point of view.
-  const fromIp = (visitor, ip) => send(visitor, COUNTED_ORIGIN, { "X-Forwarded-For": ip });
+  // The address comes from the edge header, never from X-Forwarded-For: behind
+  // Netlify AND Railway, req.ip is a proxy, and matching on it would have
+  // compared a shared edge address to itself and excluded every visitor at once.
+  const fromIp = (visitor, ip) => send(visitor, COUNTED_ORIGIN, { "X-Og-Client-Ip": ip });
 
   await fromIp("home-laptop", "203.0.113.7");   // the browser doing the excluding
   await fromIp("home-phone", "203.0.113.7");    // someone else in the house
@@ -734,11 +799,26 @@ async function main() {
   eq("…and that visit takes its earlier ones out of the count too", await visitors(), beforeHome - 2);
   eq("a visitor somewhere else is untouched", await fromIp("someone-else", "198.51.100.9"), 1);
 
+  // The failure that would have emptied the dashboard: a request whose client
+  // address is unknown must be COUNTED, never matched. Behind two proxies the
+  // backend's own idea of "the client" is a shared edge address, so a version
+  // that fell back to it would have excluded the entire site the moment the
+  // owner pressed one button.
+  await fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ networks: ["203.0.113.7"] }),
+  });
+  const stranger = await send("proxy-visitor", COUNTED_ORIGIN, { "X-Forwarded-For": "203.0.113.7" });
+  eq("an address the edge did not vouch for is never matched", stranger, 1);
+  const noHeaders = await send("no-ip-visitor", COUNTED_ORIGIN);
+  eq("a visit with no client address at all is counted, not excluded", noHeaders, 1);
+
   // Saving one list must not silently blank the other — they are separate
   // controls on the same card, and losing the accounts by editing networks would
   // be invisible until the numbers moved.
   const both = await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json();
-  eq("saving networks kept the account list", both.emails, ["owner@test.local", "other@test.local"]);
+  // Whatever the account list currently holds, saving NETWORKS must not touch it.
+  eq("saving networks kept the account list", both.emails, ["owner@test.local", "@olivegoose-test.local"]);
 
   // IPv6: every device on a home connection — and every privacy-extension
   // rotation on one device — gets a different address inside the same /64, so
@@ -789,6 +869,262 @@ async function main() {
   eq("…and says what moved", /sign-in/i.test(spanning.measurement_notes[0]?.note ?? ""), true);
   eq("a window entirely after it is not flagged", clear.measurement_notes.length, 0);
 
+  // ── A window in the past is measured in the past ────────────────────────────
+  // Every check above asks for a window ending TODAY, which hid a whole class of
+  // error: several predicates were written as "from the window start onward"
+  // with no upper bound, which is invisible while the window ends now and wrong
+  // the moment it doesn't. Asking for last June counted every purchase made
+  // SINCE June as a June conversion — the funnel, the conversion rate and the
+  // abandonment card all scored a past month against a future the shopper had
+  // not reached yet, and the numbers looked plausible, which is worse.
+  //
+  // Seeded here rather than in the fixture so these rows can't perturb the
+  // assertions above: they sit 200/190/100 days back, far outside every window
+  // used up to this point.
+  console.log("\n\x1b[1mpast windows don't borrow from the future\x1b[0m");
+  const pastUser = (await pool.query(
+    `INSERT INTO users (email, full_name) VALUES ('past@test.local','T') RETURNING id`
+  )).rows[0].id;
+  const pev = (sid, vid, type, ts, o = {}) => pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, utm_source, device, props, visitor_scope, geo_city, geo_country, created_at)
+     VALUES ($1,$2,$3,$4,'google','desktop',$5,'persistent',$6,'IE',$7)`,
+    [vid, sid, type, o.path || "/", JSON.stringify(o.props || {}), o.city || "Cork", ts]
+  );
+  const pord = (id, total, ts, items) => pool.query(
+    `INSERT INTO orders (id, user_id, items, subtotal, shipping, total, discount_amount, tracking_number,
+                         payment_status, refund_status, created_at)
+     VALUES ($1,$2,$3,$4,0,$5,0,$6,'paid','not_applicable',$7)`,
+    [id, pastUser, JSON.stringify(items), total, total, `T-${id.slice(0, 6)}`, ts]
+  );
+  const pline = (pid, name, price) => ({ product_id: pid, quantity: 1, product_data: { name, price: `€${price}` } });
+  const day = (off) => new Date(Date.parse(`${todayTz()}T00:00:00Z`) - off * 86400000).toISOString().slice(0, 10);
+  const win = async (d) => (await fetch(`${API}/api/admin/analytics?start=${d}&end=${d}`, { headers: auth })).json();
+
+  // sHist reached checkout 200 days ago on a €500 basket and left. The same id
+  // carries a purchase 100 days later — a long-lived id, a replayed beacon, a
+  // checkout resumed. Whatever the cause, that sale is not this day's.
+  const OHIST = "77777777-7777-4777-8777-777777777777";
+  await pev("s-hist", "v-hist", "page_view", at(200, 12), { path: "/shop" });
+  await pev("s-hist", "v-hist", "begin_checkout", at(200, 12, 1), { path: "/checkout", props: { total: 500 } });
+  await pord(OHIST, 500, at(100, 12), [pline("p-h", "Candle H", 500)]);
+  await pev("s-hist", "v-hist", "purchase", at(100, 12), { path: "/checkout/success", props: { order_id: OHIST, total: 500 } });
+
+  const H = await win(day(200));
+  eq("the historical session is counted", H.traffic.sessions, 1);
+  eq("a purchase 100 days later is not this day's conversion", H.sales.conversion_rate, 0);
+  eq("…nor this day's funnel purchase", H.funnel.find(f => f.stage === "Purchased")?.sessions, 0);
+  eq("…and the session reads as abandoned, which is what it did", H.abandoned.abandoned_sessions, 1);
+  eq("…with the basket it walked away from", H.abandoned.lost_revenue, 500);
+  eq("no revenue leaks back into the earlier day", H.sales.revenue, 0);
+
+  // One order, two purchase rows — a re-flushed beacon or a retried finalize.
+  // Counted as event rows it became two orders and twice the money, in the two
+  // tables built from those rows.
+  const ODUP = "88888888-8888-4888-8888-888888888888";
+  await pev("s-dup", "v-dup", "page_view", at(190, 12), { path: "/shop", city: "Galway" });
+  await pord(ODUP, 80, at(190, 12, 1), [pline("p-i", "Candle I", 80)]);
+  await pev("s-dup", "v-dup", "purchase", at(190, 12, 2), { path: "/checkout/success", city: "Galway", props: { order_id: ODUP, total: 80 } });
+  await pev("s-dup", "v-dup", "purchase", at(190, 12, 3), { path: "/checkout/success", city: "Galway", props: { order_id: ODUP, total: 80 } });
+
+  const D = await win(day(190));
+  const dupSrc = D.sources.find(s => s.source === "google");
+  const dupLoc = D.locations.find(l => l.city === "Galway");
+  eq("a duplicated purchase row is still one order", D.sales.orders, 1);
+  eq("attribution counts it once", dupSrc?.orders, 1);
+  eq("…for its actual value", dupSrc?.revenue, 80);
+  eq("locations counts it once", dupLoc?.orders, 1);
+  eq("…for its actual value", dupLoc?.revenue, 80);
+
+  // The attribution table has to account for every attributed order, including
+  // one bought by a visit that began before the window — otherwise its columns
+  // quietly fail to add up to the Revenue figure directly above them.
+  const R = await win(day(100));
+  eq("the later order lands in its own day", R.sales.orders, 1);
+  eq("…and is attributable", R.sales.attributed_orders, 1);
+  eq("attribution accounts for every attributed order",
+    R.sources.reduce((n, s) => n + s.orders, 0), R.sales.attributed_orders);
+  eq("…and for all of their revenue", R.sources.reduce((n, s) => n + s.revenue, 0), R.sales.revenue);
+  eq("…saying plainly that the visit started earlier",
+    R.sources.some(s => /before this period/.test(s.source)), true);
+
+  // ── A range that can't be honoured is refused, not quietly replaced ─────────
+  // These used to fall back to "last 30 days" with a 200, so the panel printed
+  // the dates the reader picked above numbers from a different month.
+  console.log("\n\x1b[1mimpossible ranges are refused\x1b[0m");
+  const status = async (qs) => (await fetch(`${API}/api/admin/analytics?${qs}`, { headers: auth })).status;
+  eq("end before start is rejected", await status("start=2026-08-01&end=2026-07-01"), 400);
+  eq("a non-date is rejected", await status("start=hello&end=world"), 400);
+  eq("half a range is rejected", await status("start=2026-08-01"), 400);
+  eq("no range at all still gets the trailing default", await status("days=30"), 200);
+  const capped = await (await fetch(`${API}/api/admin/analytics?start=2020-01-01&end=${today}`, { headers: auth })).json();
+  eq("a range past the 2-year cap says it was shortened", capped.clamped, true);
+  eq("…and reports the window it actually measured", capped.days, 731);
+  eq("a normal range is not marked as shortened", (await win(day(190))).clamped, false);
+
+  // ── The cards have to agree with the tiles ─────────────────────────────────
+  // Sessions and visitors are counted once per window, but every card below
+  // them re-derives its own row set, and each re-derivation is a chance to
+  // count a different population than the tile it sits under. This fixture is
+  // built so that each card's total is checked against the KPI it must match,
+  // and so the awkward cases are present rather than assumed away: one person
+  // with two visits, one visit either side of midnight, a browser that reported
+  // only a performance measurement, a visit that began before the window and
+  // paid inside it, one session that placed two orders, and a product bought
+  // three at a time by one of the two sessions that added it.
+  console.log("\n\x1b[1mcards agree with the tiles\x1b[0m");
+  const cu = (await pool.query(
+    `INSERT INTO users (email, full_name) VALUES ('cards@test.local','T') RETURNING id`
+  )).rows[0].id;
+  const cev = (sid, vid, type, ts, o = {}) => pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, referrer, utm_source, utm_medium, utm_campaign, device, props, visitor_scope, geo_city, geo_country, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'persistent',$11,$12,$13)`,
+    [vid, sid, type, o.path || "/", o.ref || "", o.src || "", o.med || "", o.camp || "",
+     o.dev || "desktop", JSON.stringify(o.props || {}), o.city || "", o.country || "", ts]
+  );
+  const cord = (id, total, ts, items) => pool.query(
+    `INSERT INTO orders (id, user_id, items, subtotal, shipping, total, discount_amount, tracking_number,
+                         payment_status, refund_status, created_at)
+     VALUES ($1,$2,$3,$4,0,$5,0,$6,'paid','not_applicable',$7)`,
+    [id, cu, JSON.stringify(items), total, total, `T-${id.slice(0, 6)}`, ts]
+  );
+  const cline = (pid, name, price, qty = 1) => ({ product_id: pid, quantity: qty, product_data: { name, price: `€${price}` } });
+  const cid = (n) => `${String(n).repeat(8)}-9999-4999-8999-999999999999`;
+
+  // One visitor, two visits on different days.
+  for (const off of [298, 296]) {
+    await cev(`c-s${off}`, "c-v1", "page_view", at(off, 12), { path: "/shop", src: "google", city: "Dublin", country: "IE" });
+    await cev(`c-s${off}`, "c-v1", "view_item_list", at(off, 12, 1), { path: "/shop", src: "google", city: "Dublin", country: "IE" });
+  }
+  // One visit, either side of midnight.
+  await cev("c-span", "c-v2", "page_view", at(295, 23, 50), { path: "/", ref: "https://www.instagram.com/p/x", dev: "mobile", city: "Galway", country: "IE" });
+  await cev("c-span", "c-v2", "page_view", at(294, 0, 10), { path: "/shop", ref: "https://www.instagram.com/p/x", dev: "mobile", city: "Galway", country: "IE" });
+  // A browser that reported a performance measurement and nothing else.
+  await cev("c-vital", "c-v3", "web_vital", at(293, 10), { path: "/", props: { metric: "LCP", value: 1800 } });
+  // A visit that began before the window and paid inside it.
+  await cev("c-early", "c-v4", "page_view", at(310, 10), { path: "/shop", src: "google", city: "Limerick", country: "IE" });
+  await cord(cid(4), 200, at(290, 10), [cline("p-cc", "Candle CC", 200)]);
+  await cev("c-early", "c-v4", "purchase", at(290, 10), { path: "/checkout/success", props: { order_id: cid(4), total: 200 } });
+  // Added one, bought three.
+  const camp = { src: "newsletter", med: "email", camp: "spring", city: "Cork", country: "IE" };
+  await cev("c-buy", "c-v6", "page_view", at(288, 12), { path: "/products/candle-aa", ...camp });
+  await cev("c-buy", "c-v6", "view_item", at(288, 12, 1), { path: "/products/candle-aa", ...camp, props: { product_id: "p-aa", name: "Candle AA" } });
+  await cev("c-buy", "c-v6", "add_to_cart", at(288, 12, 2), { ...camp, props: { product_id: "p-aa", name: "Candle AA" } });
+  await cord(cid(6), 300, at(288, 12, 3), [cline("p-aa", "Candle AA", 100, 3)]);
+  await cev("c-buy", "c-v6", "purchase", at(288, 12, 4), { path: "/checkout/success", props: { order_id: cid(6), total: 300 } });
+  // Added the same one and did not buy.
+  await cev("c-look", "c-v7", "page_view", at(287, 12), { path: "/products/candle-aa", src: "google", city: "Cork", country: "IE" });
+  await cev("c-look", "c-v7", "view_item", at(287, 12, 1), { path: "/products/candle-aa", src: "google", city: "Cork", country: "IE", props: { product_id: "p-aa", name: "Candle AA" } });
+  await cev("c-look", "c-v7", "add_to_cart", at(287, 12, 2), { src: "google", city: "Cork", country: "IE", props: { product_id: "p-aa", name: "Candle AA" } });
+  // One session, two orders.
+  await cev("c-two", "c-v8", "page_view", at(285, 12), { path: "/shop", src: "google", city: "Dublin", country: "IE" });
+  await cord(cid(8), 50, at(285, 12, 5), [cline("p-dd", "Candle DD", 50)]);
+  await cev("c-two", "c-v8", "purchase", at(285, 12, 6), { path: "/checkout/success", props: { order_id: cid(8), total: 50 } });
+  await cord(cid(9), 60, at(285, 12, 30), [cline("p-ee", "Candle EE", 60)]);
+  await cev("c-two", "c-v8", "purchase", at(285, 12, 31), { path: "/checkout/success", props: { order_id: cid(9), total: 60 } });
+
+  const C = await (await fetch(
+    `${API}/api/admin/analytics?start=${day(300)}&end=${day(280)}`, { headers: auth }
+  )).json();
+  const total = (rows, k) => +rows.reduce((n, r) => n + r[k], 0).toFixed(2);
+
+  eq("a browser that only reported a web vital is not a visitor", C.traffic.visitors, 6);
+  eq("one visit either side of midnight is one session", C.traffic.sessions, 7);
+  eq("new + returning accounts for every visitor",
+    C.traffic.new_visitors + C.traffic.returning_visitors, C.traffic.visitors);
+  eq("page views", C.traffic.pageviews, 7);
+  eq("the device split covers every session", total(C.devices, "sessions"), C.traffic.sessions);
+
+  eq("the chart has a row for every day of the window", C.daily.length, 21);
+  eq("charted revenue adds up to the Revenue tile", total(C.daily, "revenue"), C.sales.revenue);
+  eq("charted orders add up to the Orders tile", total(C.daily, "orders"), C.sales.orders);
+  eq("charted page views add up to the Page views tile", total(C.daily, "pageviews"), C.traffic.pageviews);
+  // Per-day uniques deliberately exceed the period's: a visit spanning midnight
+  // is on both days, and a person who came back is on both days. The panel says
+  // so under the chart rather than leaving the reader to reconcile it.
+  eq("per-day sessions exceed the period total, as uniques must",
+    total(C.daily, "sessions") > C.traffic.sessions, true);
+
+  const city = (n) => C.locations.find(l => l.city === n);
+  eq("locations — Dublin sessions", city("Dublin")?.sessions, 3);
+  eq("locations — one session's two orders count as two", city("Dublin")?.orders, 2);
+  eq("locations — Dublin revenue", city("Dublin")?.revenue, 110);
+  eq("locations — Cork", [city("Cork")?.sessions, city("Cork")?.orders, city("Cork")?.revenue], [2, 1, 300]);
+  eq("every session appears on the map", total(C.locations, "sessions"), C.traffic.sessions);
+  eq("…and every order", total(C.locations, "orders"), C.sales.orders);
+  eq("…and all of the revenue", total(C.locations, "revenue"), C.sales.revenue);
+
+  const from = (n) => C.sources.find(s => s.source === n);
+  eq("attribution — google sessions", from("google")?.sessions, 4);
+  eq("attribution — www stripped from the referrer host", from("instagram.com")?.sessions, 1);
+  eq("attribution — a utm source beats the referrer", from("newsletter")?.sessions, 1);
+  eq("attribution — revenue follows the session", from("newsletter")?.revenue, 300);
+  eq("attribution accounts for every attributed order", total(C.sources, "orders"), C.sales.attributed_orders);
+  eq("…and all of their revenue", total(C.sources, "revenue"), C.sales.revenue);
+  // The one honest shortfall: a visit that started before the window is not a
+  // session OF the window, so the Sessions column is under the tile by exactly
+  // that many. The panel prints the difference rather than leaving it to be
+  // spotted.
+  eq("sessions are short only by the visits that began earlier",
+    C.traffic.sessions - total(C.sources, "sessions"), 1);
+  const byMedium = await (await fetch(
+    `${API}/api/admin/analytics?start=${day(300)}&end=${day(280)}&attr=medium`, { headers: auth }
+  )).json();
+  eq("grouping by medium keeps the same sessions", total(byMedium.sources, "sessions"), total(C.sources, "sessions"));
+  eq("…with the campaign's medium named", byMedium.sources.find(s => s.source === "email")?.sessions, 1);
+
+  const item = (n) => C.top_products.find(p => p.name === n);
+  eq("products — sessions that looked", item("Candle AA")?.views, 2);
+  eq("products — sessions that added", item("Candle AA")?.add_to_carts, 2);
+  eq("products — units sold", item("Candle AA")?.units, 3);
+  eq("products — view→cart", item("Candle AA")?.view_to_cart_pct, 100);
+  eq("products — cart→buy counts BUYERS, not units bought", item("Candle AA")?.cart_to_buy_pct, 50);
+  eq("products — a sale with no tracked views has unknown rates, not zero",
+    [item("Candle CC")?.views, item("Candle CC")?.view_to_cart_pct, item("Candle CC")?.cart_to_buy_pct], [0, null, null]);
+  eq("product revenue adds up to the Revenue tile", total(C.top_products, "revenue"), C.sales.revenue);
+
+  // ── The shape the panel is typed against ───────────────────────────────────
+  // AnalyticsOverview in src/lib/api.ts is a hand-written description of this
+  // response, and TypeScript cannot check it: nothing type-checks JSON coming
+  // off the wire. Rename a column here and the build stays green, the tests
+  // above keep passing on the fields they name, and the panel renders a blank
+  // where a number used to be. These lists are the other half of that contract.
+  console.log("\n\x1b[1mresponse shape\x1b[0m");
+  const keys = (o) => Object.keys(o).sort();
+  eq("top level", keys(C), [
+    "abandoned", "attributed", "clamped", "customers", "daily", "days", "devices", "end",
+    "filters", "funnel", "locations", "measurement_notes", "sales", "signin_wall", "sources",
+    "start", "timezone", "top_pages", "top_products", "traffic", "web_vitals", "web_vitals_by_page",
+  ]);
+  eq("traffic", keys(C.traffic), [
+    "bounce_rate", "identified_visitor_pct", "new_visitors", "pages_per_session", "pageviews",
+    "prev", "returning_visitors", "sessions", "visitors",
+  ]);
+  eq("traffic.prev", keys(C.traffic.prev), ["pageviews", "sessions", "visitors"]);
+  eq("sales", keys(C.sales), ["aov", "attributed_orders", "conversion_rate", "orders", "prev", "revenue"]);
+  eq("sales.prev", keys(C.sales.prev), ["aov", "orders", "revenue"]);
+  eq("customers", keys(C.customers), [
+    "avg_lifetime_value", "avg_orders_per_customer", "lifetime_repeat_customers",
+    "new_customers", "returning_customers", "total_customers",
+  ]);
+  eq("abandoned", keys(C.abandoned), ["abandoned_sessions", "checkout_sessions", "lost_revenue"]);
+  eq("filters", keys(C.filters), ["attr", "device", "source"]);
+  eq("daily row", keys(C.daily[0]), ["day", "orders", "pageviews", "revenue", "sessions", "visitors"]);
+  eq("top_products row", keys(C.top_products[0]), [
+    "add_to_carts", "cart_to_buy_pct", "name", "revenue", "units", "view_to_cart_pct", "views",
+  ]);
+  eq("sources row", keys(C.sources[0]), ["orders", "revenue", "sessions", "source"]);
+  eq("locations row", keys(C.locations[0]), ["city", "country", "orders", "revenue", "sessions"]);
+  eq("top_pages row", keys(C.top_pages[0]), ["path", "sessions", "views"]);
+  eq("devices row", keys(C.devices[0]), ["device", "sessions"]);
+  eq("funnel row", keys(C.funnel[0]), ["sessions", "stage"]);
+  // The gate block is null in this window, so its shape is checked where it exists.
+  eq("signin_wall", keys(d.signin_wall ?? {}), [
+    "blocked_basket_value", "gate_sessions", "passed_purchased", "passed_sessions",
+    "walled_continued", "walled_purchased", "walled_sessions",
+  ]);
+  eq("web_vitals row", keys(vitalsWindow.web_vitals[0]), ["metric", "p75", "samples"]);
+  eq("web_vitals_by_page row", keys(vitalsWindow.web_vitals_by_page[0]), ["metric", "p75", "path", "samples"]);
+
   await pool.end();
   console.log(`\n${fails.length ? `\x1b[31m${fails.length} FAILED\x1b[0m` : "\x1b[32mall checks passed\x1b[0m"}`);
   if (fails.length) { fails.forEach(f => console.log(`\n  ${f}`)); process.exitCode = 1; }
@@ -804,14 +1140,38 @@ async function main() {
 }
 
 let failed = false;
+
+// The verdict, somewhere it cannot be overwritten.
+//
+// Two things had been quietly turning failures into a green run — the one bug a
+// test suite must not have:
+//
+//   • embedded-postgres tears down by calling process.exit(0) itself, which
+//     wins over any exit code set before it and even skipped the explicit
+//     process.exit() that used to live in the `finally` below;
+//   • a run where the stack never came up (a previous `--serve` still holding
+//     the port) asserted NOTHING and exited 0 — green, and blind.
+//
+// An 'exit' listener is the last word: Node still honours a process.exitCode
+// assigned from inside one, whoever called exit and with whatever code.
+process.on("exit", () => {
+  if (checks === 0 && !fails.length) {
+    console.error(`\n\x1b[31mno checks ran\x1b[0m — the stack never came up. Is a previous ` +
+      `\`npm run test:analytics -- --serve\` still holding port ${PG_PORT} or ${PORT}?`);
+  }
+  if (failed || fails.length || checks === 0) process.exitCode = 1;
+});
+
 try { await main(); failed = fails.length > 0; }
 catch (e) { console.error(e); failed = true; }
 finally {
-  kids.forEach(c => { try { c.kill("SIGKILL"); } catch {} });
-  await new Promise(r => setTimeout(r, 800)); // let backend pools close before PG goes
-  if (pg) await pg.stop().catch(() => {});
-  rmSync(PG_DIR, { recursive: true, force: true });
-  // Explicit, and last: embedded-postgres' shutdown path resets process.exitCode,
-  // so a failing run was reporting success — the one bug a test suite must not have.
+  try {
+    kids.forEach(c => { try { c.kill("SIGKILL"); } catch {} });
+    await new Promise(r => setTimeout(r, 800)); // let backend pools close before PG goes
+    if (pg) await pg.stop().catch(() => {});
+    rmSync(PG_DIR, { recursive: true, force: true });
+  } catch (e) {
+    console.error("teardown:", e?.message || e); // cleanup must never mask the verdict
+  }
   process.exit(failed ? 1 : 0);
 }

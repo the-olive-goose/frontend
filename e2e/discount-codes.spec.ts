@@ -286,6 +286,53 @@ test.describe("Validation", () => {
     expect((await anon.post(`/api/discount/validate`, { data: { code } })).status()).toBe(401);
     await anon.dispose();
   });
+
+  test("applying, removing and re-applying a code never uses it up", async () => {
+    // "Apply" is a read-only check — a code is only ever spent once payment
+    // confirms. A shopper who applies a code, removes it to compare totals and
+    // puts it back must get the same answer every time, not "already used".
+    const owner = await newShopper("reapply");
+    for (const attempt of [1, 2, 3]) {
+      const v = await (await owner.ctx.post(`/api/discount/validate`, { data: { code: owner.code } })).json();
+      expect(v.valid, `apply #${attempt} must still be valid — applying never spends a code`).toBe(true);
+      expect(v.discount_percent).toBe(DISCOUNT_PERCENT);
+    }
+  });
+});
+
+// ─── 2b. Finding your own code ────────────────────────────────────────────────
+
+test.describe("Your own code", () => {
+  test("a shopper is handed back the unspent welcome code issued to their address", async () => {
+    // The code is emailed and shown nowhere else, so a shopper who lost the email
+    // used to have no way back to it and simply paid full price.
+    const owner = await newShopper("mine");
+    const mine = await (await owner.ctx.get(`/api/discount/mine`)).json();
+    expect(mine.code).toBe(owner.code);
+    expect(mine.discount_type).toBe("percentage");
+    expect(Number(mine.discount_value)).toBe(DISCOUNT_PERCENT);
+  });
+
+  test("an account with no code gets an empty answer, not an error", async () => {
+    const nobody = await newShopper("mine-none", false);
+    const res = await nobody.ctx.get(`/api/discount/mine`);
+    expect(res.ok(), "an empty pocket is not a failure — checkout must not show an error").toBeTruthy();
+    expect((await res.json()).code).toBeNull();
+  });
+
+  test("it never hands over a code issued to someone else", async () => {
+    const owner = await newShopper("mine-bound");
+    const stranger = await newShopper("mine-stranger", false);
+    const theirs = await (await stranger.ctx.get(`/api/discount/mine`)).json();
+    expect(theirs.code).toBeNull();
+    expect(theirs.code).not.toBe(owner.code);
+  });
+
+  test("signed-out visitors get nothing", async () => {
+    const anon = await pwRequest.newContext({ baseURL: API });
+    expect((await anon.get(`/api/discount/mine`)).status()).toBe(401);
+    await anon.dispose();
+  });
 });
 
 // ─── 3. The discount reaches the real payment amount ──────────────────────────
@@ -495,6 +542,25 @@ test.describe("Admin custom codes", () => {
     expect(v.valid).toBe(true);
   });
 
+  test("a code is one-per-customer by default, and can be made repeatable", async () => {
+    // "Max uses: 100" reads as a hundred customers, so that's what it means
+    // unless the admin deliberately says otherwise.
+    const capped = uniqueCode("cap");
+    const cappedRow = await (await createCode({ code: capped, discount_type: "percentage", discount_value: 10, max_redemptions: 50 })).json();
+    expect(cappedRow.one_per_customer).toBe(true);
+
+    const repeatable = uniqueCode("rep");
+    const repeatableRow = await (await createCode({
+      code: repeatable, discount_type: "percentage", discount_value: 10, max_redemptions: 50, one_per_customer: false,
+    })).json();
+    expect(repeatableRow.one_per_customer).toBe(false);
+
+    // The flag survives the admin listing, so the panel shows the truth.
+    const { codes } = await (await admin.get(`/api/admin/discount-codes`, { headers: auth(TOKEN) })).json();
+    expect(codes.find((c: { code: string }) => c.code === capped).one_per_customer).toBe(true);
+    expect(codes.find((c: { code: string }) => c.code === repeatable).one_per_customer).toBe(false);
+  });
+
   test("fixed-amount code reaches the payment as a flat euro discount", async () => {
     test.skip(!stripeReady, "STRIPE_SECRET_KEY (test mode) not available to the test process");
     // Fixed €3 off — smaller than the unit price so it isn't clamped to subtotal.
@@ -547,10 +613,27 @@ test.describe("Checkout UI", () => {
     await page.getByRole("button", { name: /add to cart/i }).first().click();
 
     await page.goto(`${BASE}/checkout`);
-    // Country first: it drives the county dropdown and the Eircode rules below it.
-    await fillDeliveryAddress(page, "E2E Shopper");
 
-    // Apply the code in the order summary.
+    // The code this account holds is offered right there, so a shopper who no
+    // longer has the email it arrived in isn't quietly paying full price.
+    const offer = page.getByRole("button", { name: new RegExp(`tap to apply ${code}`, "i") });
+    await expect(offer).toBeVisible({ timeout: 15_000 });
+    await offer.click();
+    await expect(page.getByText(new RegExp(`${DISCOUNT_PERCENT}% off`, "i")).first())
+      .toBeVisible({ timeout: 10_000 });
+
+    // It survives a reload — going back to the basket to fix a quantity used to
+    // drop the code silently and put the summary back to full price.
+    await page.reload();
+    await expect(page.getByText(new RegExp(`Code ${code}`, "i")).first())
+      .toBeVisible({ timeout: 15_000 });
+
+    // Removing it hands it straight back: applying never spends a code, so the
+    // field (and the offer) return, and it can be applied again.
+    await page.getByRole("button", { name: /^remove$/i }).click();
+    await expect(page.getByPlaceholder(/OG-/i)).toBeVisible();
+
+    // Apply it the manual way too — typed in from the email.
     await page.getByPlaceholder(/OG-/i).fill(code);
     await page.getByRole("button", { name: /^apply$/i }).click();
 
@@ -558,6 +641,9 @@ test.describe("Checkout UI", () => {
     await expect(page.getByText(new RegExp(`${DISCOUNT_PERCENT}% off`, "i")).first())
       .toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(new RegExp(`Code ${code}`, "i")).first()).toBeVisible();
+
+    // Country first: it drives the county dropdown and the Eircode rules below it.
+    await fillDeliveryAddress(page, "E2E Shopper");
 
     // Place order → reaching Stripe means the server accepted the coded session
     // (validated + reserved + priced) and handed us off to pay.
@@ -676,6 +762,76 @@ test.describe("Signup popup", () => {
     await expect(page.locator(POPUP).getByText(/already on the list/i)).toBeVisible({ timeout: 10_000 });
     await expect(page.locator("body")).not.toContainText(firstCode);
     expect(await lookupCode(taken), "still exactly the one code").toBe(firstCode);
+  });
+});
+
+// ─── 7. One use per customer (paid) ───────────────────────────────────────────
+
+test.describe("One use per customer", () => {
+  test("spending a multi-use promo code once uses up this shopper's turn, not the campaign", async ({ page }) => {
+    test.skip(!stripeReady, "STRIPE_SECRET_KEY (test mode) not available to the test process");
+    test.setTimeout(180_000);
+
+    // A shared campaign code with room for five customers. Without the
+    // per-customer rule, one shopper could quietly take all five.
+    const code = `E2E-ONCE-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`.toUpperCase();
+    const created = await admin.post(`/api/admin/discount-codes`, {
+      headers: auth(TOKEN),
+      data: { code, discount_type: "percentage", discount_value: 10, max_redemptions: 5, label: "e2e one-per-customer" },
+    });
+    expect(created.status()).toBe(201);
+    expect((await created.json()).one_per_customer).toBe(true);
+
+    // Sign in through the UI so the success page can finalize the order with the
+    // shopper's own session, exactly as a real payment does.
+    await signIn(page);
+    const fillCart = async () => {
+      await page.request.delete(`${API}/api/cart`);
+      await page.request.post(`${API}/api/cart/items`, {
+        data: { product_id: product.id, product_data: { id: product.id, price: product.price }, quantity: 1 },
+      });
+    };
+    await fillCart();
+
+    const sessionRes = await page.request.post(`${API}/api/checkout/session`, { data: { ...DELIVERY, discount_code: code } });
+    expect(sessionRes.ok(), `coded checkout must be accepted: ${await sessionRes.text()}`).toBeTruthy();
+    const url = (await sessionRes.json()).url;
+    const paidSessionId = sessionIdFromUrl(url);
+    expect(paidSessionId).toBeTruthy();
+
+    await page.goto(url);
+    const paid = await payStripeTestCard(page).catch(() => false);
+    test.skip(!paid, "Stripe hosted card widget not automatable in this run — the coded session priced and reached Stripe, which is the part our code owns.");
+
+    await page.waitForURL(/\/checkout\/success/, { timeout: 90_000 });
+    await expect(async () => {
+      const orders = await (await page.request.get(`${API}/api/orders`)).json();
+      const order = orders.find((o: { stripe_session_id?: string }) => o.stripe_session_id === paidSessionId);
+      expect(order, "the paid order must finalize").toBeTruthy();
+      expect(Number(order.discount_amount)).toBeGreaterThan(0);
+    }).toPass({ timeout: 60_000 });
+
+    // One of the five uses is gone — the campaign is still live…
+    const { codes } = await (await admin.get(`/api/admin/discount-codes`, { headers: auth(TOKEN) })).json();
+    const row = codes.find((c: { code: string }) => c.code === code);
+    expect(row.redemption_count).toBe(1);
+    expect(row.is_active).toBe(true);
+
+    // …but this shopper's turn is over, at "Apply"…
+    const again = await (await page.request.post(`${API}/api/discount/validate`, { data: { code } })).json();
+    expect(again.valid).toBe(false);
+    expect(again.message).toMatch(/already used this code/i);
+
+    // …and at the authoritative checkout step, so it's never a silent second discount.
+    await fillCart();
+    const retry = await page.request.post(`${API}/api/checkout/session`, { data: { ...DELIVERY, discount_code: code } });
+    expect(retry.status()).toBe(400);
+    expect((await retry.json()).error).toMatch(/already used this code/i);
+
+    // A different shopper is unaffected: the cap is per customer, not global.
+    const other = await newShopper("once-other", false);
+    const otherView = await (await other.ctx.post(`/api/discount/validate`, { data: { code } })).json();
+    expect(otherView.valid, "the remaining four uses still belong to other customers").toBe(true);
   });
 });
 

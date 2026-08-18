@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { consumeAuthReturn } from "@/lib/authReturn";
 
 // How the account was originally created, phrased for a shopper who has no idea
 // what a "provider" is.
@@ -41,6 +42,13 @@ const AuthCallback = () => {
   // account_exists is the one failure the shopper can fix on the spot, so it gets
   // a button to the sign-in form rather than a silent bounce to the homepage.
   const [showSignIn, setShowSignIn] = useState(false);
+  // Where the sign-in started. Read once per mount and cleared from storage in the
+  // same breath, so a later visit to this screen can't reuse it. Falls back to the
+  // homepage when nothing was recorded (storage blocked, or someone opening
+  // /auth/callback directly). Success or failure, the shopper goes back where they
+  // were — dumping a checkout sign-in on the homepage is how a paid-for basket
+  // gets abandoned.
+  const [returnTo] = useState(() => consumeAuthReturn() ?? "/");
 
   useEffect(() => {
     const err = params.get("error");
@@ -49,16 +57,16 @@ const AuthCallback = () => {
       const code = decodeURIComponent(err);
       setError(errorMessage(code, params.get("provider")));
       if (code === "account_exists") { setShowSignIn(true); return; }
-      setTimeout(() => navigate("/"), 3000);
+      setTimeout(() => navigate(returnTo, { replace: true }), 3000);
       return;
     }
 
     // The backend already set the session cookie during the OAuth redirect —
     // just confirm it took and load the user.
     completeOAuthLogin().then(ok => {
-      if (ok) { navigate("/"); return; }
+      if (ok) { navigate(returnTo, { replace: true }); return; }
       setError("Failed to complete sign-in. Please try again.");
-      setTimeout(() => navigate("/"), 3000);
+      setTimeout(() => navigate(returnTo, { replace: true }), 3000);
     });
   }, []);
 
@@ -70,14 +78,16 @@ const AuthCallback = () => {
           <p className="font-sans text-sm max-w-sm mx-auto" style={{ color: "rgba(30,41,24,0.6)" }}>{error}</p>
           {showSignIn ? (
             <button
-              onClick={() => { navigate("/"); openAuthModal(); }}
+              onClick={() => { navigate(returnTo, { replace: true }); openAuthModal(); }}
               className="mt-5 px-6 py-2.5 min-h-[44px] font-sans text-sm font-bold rounded-full transition-all hover:brightness-95 active:scale-[0.98]"
               style={{ background: "var(--color-gold)", color: "var(--color-forest-dark)" }}
             >
               Sign in instead
             </button>
           ) : (
-            <p className="font-sans text-xs mt-3" style={{ color: "rgba(30,41,24,0.4)" }}>Redirecting you home…</p>
+            <p className="font-sans text-xs mt-3" style={{ color: "rgba(30,41,24,0.4)" }}>
+              {returnTo === "/" ? "Redirecting you home…" : "Taking you back…"}
+            </p>
           )}
         </div>
       </div>

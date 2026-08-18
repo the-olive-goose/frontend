@@ -105,8 +105,13 @@ import {
   buildPosterUrl,
   isCloudinaryVideo,
   isOptimizedUrl,
+  isSameVideoAsset,
   type VideoQuality,
 } from "@/lib/cloudinaryVideo";
+import { DEFAULT_IMAGE_SIZE, type ImageSize } from "@/lib/cloudinaryImage";
+import { durableAvatarUrl, plainAvatarUrl, publicAvatarSource } from "@/lib/reviewAvatar";
+import ImageOptimiser from "@/components/admin/ImageOptimiser";
+import HeroVideoOptimiser from "@/components/admin/HeroVideoOptimiser";
 import { productSlug } from "@/lib/products";
 import { SITE_NAME, SITE_URL } from "@/lib/seo";
 import { META_SOURCES, previewMeta } from "@/lib/seoContent";
@@ -330,6 +335,7 @@ const AboutFounderEditor = ({
           </Field>
           <Field label="Founder Photo URL" hint="Circular profile photo — paste a direct image URL">
             <Input placeholder="https://…" value={data.photo_url} onChange={(e) => onChange({ ...data, photo_url: e.target.value })} />
+            <ImageOptimiser url={data.photo_url} defaultSize="thumb" onOptimise={(photo_url) => onChange({ ...data, photo_url })} />
           </Field>
           <Field label="Name Line">
             <RichInput value={data.name_line} onChange={(e) => onChange({ ...data, name_line: e.target.value })} />
@@ -551,6 +557,7 @@ const OurStoryPageEditor = ({
                   hint="Paste an image or video URL (YouTube, Vimeo, Instagram or a direct .mp4), or upload a file. Pasted links are safest — uploaded files can be lost when the site redeploys."
                   value={photo.image_url}
                   previewClass="hidden"
+                  optimiseSize="wide"
                   allowVideo
                   onError={onError}
                   onChange={(image_url) => {
@@ -844,7 +851,63 @@ const NavbarEditor = ({
   </div>
 );
 
-const HeroEditor = ({
+/**
+ * One titled card inside an editor.
+ *
+ * The hero has more knobs than any other section — copy, two backgrounds,
+ * brightness, tint, a countdown — and as one flat column it read as a list of
+ * unrelated inputs. Grouping is the whole point: an admin looking for what
+ * phones show should find it in one place with a heading on it, rather than
+ * three fields apart in a column of fifteen.
+ */
+const Panel = ({ title, desc, children }: {
+  title: string;
+  desc?: string;
+  children: React.ReactNode;
+}) => (
+  <div className="space-y-4 rounded-xl border border-border bg-muted/30 p-4">
+    <div>
+      <p className="font-sans text-sm font-semibold text-foreground">{title}</p>
+      {desc && <p className="font-sans text-xs text-muted-foreground mt-1">{desc}</p>}
+    </div>
+    {children}
+  </div>
+);
+
+/**
+ * What one screen's background actually looks like, clip and all.
+ *
+ * The phone preview is the one that earns its place: a wide photograph looks
+ * finished in a 16:5 strip and loses half its subject in a phone's tall frame,
+ * and there is no way to know which without seeing it in that shape.
+ */
+const BackgroundPreview = ({ image, video, aspect, width }: {
+  image: string;
+  video: string;
+  aspect: string;
+  width?: number;
+}) => {
+  if (!image && !video) return null;
+  return (
+    <div
+      className="relative rounded-lg overflow-hidden bg-muted border border-border"
+      style={{ aspectRatio: aspect, width, maxWidth: "100%" }}
+    >
+      {image && <img src={image} alt="Hero background preview" className="absolute inset-0 w-full h-full object-cover" />}
+      {video && (
+        <video
+          key={video}
+          src={video}
+          poster={image || undefined}
+          autoPlay muted loop playsInline
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      )}
+    </div>
+  );
+};
+
+export const HeroEditor = ({
   data,
   onChange,
   onSave,
@@ -855,65 +918,189 @@ const HeroEditor = ({
   onSave: () => void;
   saving: boolean;
 }) => {
+  const mobileImage = data.bg_image_mobile_url ?? "";
+  const mobileVideo = data.bg_video_mobile_url ?? "";
+  const desktopVideo = data.bg_video_url ?? "";
+
+  /**
+   * The phone's photograph is never touched from here. It is a photograph an
+   * admin chose, not something derived from this field, so a change on the
+   * desktop side has nothing to invalidate — and silently emptying a URL
+   * somebody typed is the worse failure by far.
+   *
+   * The clip is the one exception, below: the phone encode really can be
+   * derived from the desktop clip, so an encode of a clip that is being
+   * replaced is stale and goes. A different clip chosen for phones stays.
+   */
+  const replaceDesktopImage = (bg_image_url: string) => onChange({ ...data, bg_image_url });
+
+  const replaceDesktopVideo = (bg_video_url: string) => {
+    const derived = isSameVideoAsset(mobileVideo, desktopVideo);
+    const sameAsset = isSameVideoAsset(bg_video_url, desktopVideo);
+    onChange({
+      ...data,
+      bg_video_url,
+      bg_video_mobile_url: derived && !sameAsset ? "" : mobileVideo,
+    });
+  };
+
   return (
     <div className="space-y-6">
       <SectionHeading title="Home Page" desc="The full-screen hero banner at the top of the homepage." />
 
-      <Field label="Headline">
-        <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
-      </Field>
-      <Field label="Subtext">
-        <RichTextarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
-      </Field>
-      <div className="grid grid-cols-2 gap-4">
-        <Field label="CTA Button Text">
-          <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+      {/* ── 1. Words ── */}
+      <Panel title="Text & Button" desc="The headline, the line under it, and where the button goes.">
+        <Field label="Headline">
+          <RichInput value={data.headline} onChange={(e) => onChange({ ...data, headline: e.target.value })} />
         </Field>
-        <Field label="CTA Button Link">
-          <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+        <Field label="Subtext">
+          <RichTextarea rows={2} value={data.subtext} onChange={(e) => onChange({ ...data, subtext: e.target.value })} />
         </Field>
-      </div>
-
-      {/* Background image — direct URL */}
-      <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-4">
-        <p className="font-sans text-sm font-semibold text-foreground">Background Image</p>
-
-        {/* Live preview */}
-        {data.bg_image_url && (
-          <div className="relative rounded-lg overflow-hidden" style={{ aspectRatio: "16/5" }}>
-            <img src={data.bg_image_url} alt="Hero background preview"
-              className="w-full h-full object-cover" />
-          </div>
-        )}
-
-        <Field label="Image URL" hint="Paste a direct link to a hosted image (jpg, png, or webp). The site loads it straight from this URL.">
-          <Input
-            placeholder="https://…"
-            value={data.bg_image_url}
-            onChange={(e) => onChange({ ...data, bg_image_url: e.target.value })}
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="CTA Button Text">
+            <Input value={data.cta_text} onChange={(e) => onChange({ ...data, cta_text: e.target.value })} />
+          </Field>
+          <Field label="CTA Button Link">
+            <Input value={data.cta_href} onChange={(e) => onChange({ ...data, cta_href: e.target.value })} />
+          </Field>
+        </div>
+        <Field
+          label="Tagline Band"
+          hint="The big handwritten line on the cream strip under the hero image. Press Enter to choose where it breaks onto a new line. Leave empty to hide the whole band."
+        >
+          <RichTextarea
+            rows={2}
+            placeholder={"SMELLS LIKE YOUR\nCAFÉ ERA."}
+            value={data.tagline ?? ""}
+            onChange={(e) => onChange({ ...data, tagline: e.target.value })}
           />
         </Field>
-      </div>
+      </Panel>
 
-      {/* Image brightness */}
-      <Field
-        label={`Image brightness: ${Math.round((data.bg_opacity ?? 1.0) * 100)}%`}
-        hint="100% = original photo, no fading. Lower = more faded."
+      {/* ── 2. The background everyone gets ── */}
+      <Panel
+        title="Background — desktop & tablet"
+        desc="The photo behind the headline, and optionally a short clip that plays over it. Phones use this too unless you give them their own below."
       >
-        <input type="range" min={10} max={100}
-          value={Math.round((data.bg_opacity ?? 1.0) * 100)}
-          onChange={e => onChange({ ...data, bg_opacity: Number(e.target.value) / 100 })}
-          className="w-full accent-primary"
-        />
-        <div className="flex justify-between text-xs text-muted-foreground font-sans mt-1">
-          <span>10% (very faded)</span><span>100% (original)</span>
-        </div>
-      </Field>
+        <BackgroundPreview image={data.bg_image_url} video={desktopVideo} aspect="16/5" />
 
-      {/* Tint overlay */}
-      <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-4">
-        <p className="font-sans text-sm font-semibold text-foreground">Colour Tint Overlay</p>
-        <p className="font-sans text-xs text-muted-foreground">Sits over the photo to make text readable. Set strength to 0% to remove.</p>
+        <Field label="Image URL" hint="Paste a direct link to a hosted image (jpg, png, or webp). With a video set, this is the still shown until it starts — and the whole background for anyone whose phone or settings mean it never does.">
+          <Input
+            aria-label="Background image URL"
+            placeholder="https://…"
+            value={data.bg_image_url}
+            onChange={(e) => replaceDesktopImage(e.target.value)}
+          />
+          {/* Spans the whole screen behind the hero — the large tier. */}
+          <ImageOptimiser url={data.bg_image_url} defaultSize="wide" onOptimise={replaceDesktopImage} />
+        </Field>
+
+        <Field
+          label="Video URL (optional)"
+          hint="A short Cloudinary video link (.mp4 / .mov). It plays silently on a loop over the image above. YouTube and Instagram links do not work here."
+        >
+          <Input
+            aria-label="Background video URL"
+            placeholder="https://res.cloudinary.com/…/video/upload/…"
+            value={desktopVideo}
+            onChange={(e) => replaceDesktopVideo(e.target.value)}
+          />
+          <HeroVideoOptimiser
+            url={desktopVideo}
+            onOptimise={({ video, mobile, poster }) => onChange({
+              ...data,
+              bg_video_url: video,
+              // The phone encode of this same clip, unless the admin has already
+              // chosen a different clip for phones — that one is theirs.
+              bg_video_mobile_url: mobileVideo && !isSameVideoAsset(mobileVideo, desktopVideo)
+                ? mobileVideo
+                : mobile,
+              // The still is what carries the hero when the clip is withheld, so
+              // one is filled in from the video's own first frame — but only when
+              // the field is empty. A photo already chosen here is the admin's.
+              bg_image_url: data.bg_image_url?.trim() ? data.bg_image_url : poster,
+            })}
+          />
+        </Field>
+      </Panel>
+
+      {/* ── 3. The background phones get ── */}
+      <Panel
+        title="Background — phones"
+        desc="Optional. A phone's hero is tall and narrow, so a wide shot loses most of its width — this is where you give phones a picture and a clip framed for them. Leave both blank and phones use the desktop background, cropped to fit."
+      >
+        <div className="flex flex-wrap gap-4">
+          <BackgroundPreview
+            image={mobileImage || data.bg_image_url}
+            video={mobileVideo || desktopVideo}
+            aspect="390/440"
+            width={160}
+          />
+          <p className="flex-1 min-w-[200px] font-sans text-xs text-muted-foreground">
+            This is the shape a phone actually paints: {mobileImage || mobileVideo
+              ? "your own phone background."
+              : "the desktop background, cut down to fit. If the subject is off to one side, it is the part that gets lost."}
+          </p>
+        </div>
+
+        <Field
+          label="Photo for phones"
+          hint="A different photograph, framed tall — around 800 × 900 suits a phone. Leave blank and phones get the desktop photo, cut down the middle to fit."
+        >
+          <Input
+            aria-label="Phone background image URL"
+            placeholder="https://…"
+            value={mobileImage}
+            onChange={(e) => onChange({ ...data, bg_image_mobile_url: e.target.value })}
+          />
+          {/* A phone paints ~800px across at 2x, so the medium tier is the fit —
+              the wide tier would be twice the file for pixels it cannot show. */}
+          <ImageOptimiser
+            url={mobileImage}
+            defaultSize="card"
+            onOptimise={(bg_image_mobile_url) => onChange({ ...data, bg_image_mobile_url })}
+          />
+        </Field>
+
+        <Field
+          label="Video for phones (optional)"
+          hint="A different clip, or a tighter cut of the same one. Leave blank and phones get a lighter copy of the desktop clip — which is already the right thing unless the wide framing loses the subject."
+        >
+          <Input
+            aria-label="Phone background video URL"
+            placeholder="https://res.cloudinary.com/…/video/upload/…"
+            value={mobileVideo}
+            onChange={(e) => onChange({ ...data, bg_video_mobile_url: e.target.value })}
+          />
+          <HeroVideoOptimiser
+            url={mobileVideo}
+            target="mobile"
+            onOptimise={({ mobile }) => onChange({ ...data, bg_video_mobile_url: mobile })}
+          />
+          {mobileVideo && isSameVideoAsset(mobileVideo, desktopVideo) && (
+            <p className="mt-2 text-xs font-sans text-muted-foreground">
+              This is a phone-sized copy of the desktop clip, filled in for you. Paste a
+              different link to give phones their own.
+            </p>
+          )}
+        </Field>
+      </Panel>
+
+      {/* ── 4. How the background is treated ── */}
+      <Panel title="Appearance" desc="How far the background is faded, and the colour laid over it so the words stay readable.">
+        <Field
+          label={`Image brightness: ${Math.round((data.bg_opacity ?? 1.0) * 100)}%`}
+          hint="100% = original photo, no fading. Lower = more faded."
+        >
+          <input type="range" min={10} max={100}
+            value={Math.round((data.bg_opacity ?? 1.0) * 100)}
+            onChange={e => onChange({ ...data, bg_opacity: Number(e.target.value) / 100 })}
+            className="w-full accent-primary"
+          />
+          <div className="flex justify-between text-xs text-muted-foreground font-sans mt-1">
+            <span>10% (very faded)</span><span>100% (original)</span>
+          </div>
+        </Field>
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Tint colour">
@@ -939,27 +1126,31 @@ const HeroEditor = ({
             </div>
           </Field>
         </div>
-      </div>
+      </Panel>
 
-      <div className="flex items-center gap-3">
-        <input
-          type="checkbox"
-          id="countdown"
-          checked={data.show_countdown}
-          onChange={(e) => onChange({ ...data, show_countdown: e.target.checked })}
-          className="w-4 h-4 rounded border-border text-primary"
-        />
-        <label htmlFor="countdown" className="text-sm font-sans text-foreground">Show Countdown Timer</label>
-      </div>
-      {data.show_countdown && (
-        <Field label="Launch Date">
-          <Input
-            type="datetime-local"
-            value={data.launch_date || ""}
-            onChange={(e) => onChange({ ...data, launch_date: e.target.value })}
+      {/* ── 5. Countdown ── */}
+      <Panel title="Countdown Timer" desc="A ticking countdown between the subtext and the button.">
+        <div className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            id="countdown"
+            checked={data.show_countdown}
+            onChange={(e) => onChange({ ...data, show_countdown: e.target.checked })}
+            className="w-4 h-4 rounded border-border text-primary"
           />
-        </Field>
-      )}
+          <label htmlFor="countdown" className="text-sm font-sans text-foreground">Show Countdown Timer</label>
+        </div>
+        {data.show_countdown && (
+          <Field label="Launch Date">
+            <Input
+              type="datetime-local"
+              value={data.launch_date || ""}
+              onChange={(e) => onChange({ ...data, launch_date: e.target.value })}
+            />
+          </Field>
+        )}
+      </Panel>
+
       <SaveButton onClick={onSave} saving={saving} />
     </div>
   );
@@ -996,6 +1187,7 @@ const BrandStoryEditor = ({
         value={data.image_url}
         onChange={(e) => onChange({ ...data, image_url: e.target.value })}
       />
+      <ImageOptimiser url={data.image_url} onOptimise={(image_url) => onChange({ ...data, image_url })} />
     </Field>
     <div className="grid grid-cols-2 gap-4">
       <Field label="CTA Button Text">
@@ -1173,6 +1365,11 @@ const ProductsEditor = ({
             <Input placeholder="https://…" value={product.image_url} onChange={(e) => {
               const items = [...data.items];
               items[i] = { ...items[i], image_url: e.target.value };
+              onChange({ ...data, items });
+            }} />
+            <ImageOptimiser url={product.image_url} onOptimise={(image_url) => {
+              const items = [...data.items];
+              items[i] = { ...items[i], image_url };
               onChange({ ...data, items });
             }} />
           </Field>
@@ -1392,6 +1589,8 @@ const WelcomeClubEditor = ({
     </Field>
     <Field label="Founder Photo URL" hint="Circular profile photo — paste a direct image URL">
       <Input placeholder="https://…" value={data.photo_url} onChange={(e) => onChange({ ...data, photo_url: e.target.value })} />
+      {/* Shown in a 120–180px circle, so the small tier is the right default. */}
+      <ImageOptimiser url={data.photo_url} defaultSize="thumb" onOptimise={(photo_url) => onChange({ ...data, photo_url })} />
     </Field>
     <Field label="Name Line" hint={`e.g. "I'm Meghna, the person behind The Olive Goose."`}>
       <RichInput value={data.name_line} onChange={(e) => onChange({ ...data, name_line: e.target.value })} />
@@ -1791,6 +1990,42 @@ const VideosEditor = ({
   );
 };
 
+// How long to wait for Cloudinary to pull a review photo before giving up and
+// storing the plain path. Cloudinary downloads the original — a 2 MB phone photo
+// off a cold backend is not instant — so this is generous, but it is bounded:
+// an admin who pressed a button must never be left with a spinner forever.
+const AVATAR_FETCH_TIMEOUT_MS = 12_000;
+
+/** Whether an image URL actually paints. Cloudinary answers a source it could not
+ *  download with a 1x1 placeholder rather than an error, so the size of what came
+ *  back is the real answer — the same check ImageOptimiser makes before writing a
+ *  URL into a field. */
+const imageLoads = (url: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    const img = new Image();
+    const settle = (ok: boolean) => { img.onload = null; img.onerror = null; resolve(ok); };
+    const timer = setTimeout(() => settle(false), AVATAR_FETCH_TIMEOUT_MS);
+    img.onload = () => { clearTimeout(timer); settle(img.naturalWidth > 1); };
+    img.onerror = () => { clearTimeout(timer); settle(false); };
+    img.src = url;
+  });
+
+/**
+ * The avatar to store for a promoted review: a Cloudinary delivery of the photo
+ * when one can be had, the bare upload path when it cannot.
+ *
+ * The Cloudinary URL is loaded before it is stored, because it is only worth
+ * having if it works — a photo that is heavy is a problem, a photo that is broken
+ * is worse. See src/lib/reviewAvatar.ts for why the raw path is not good enough
+ * to store on its own.
+ */
+const resolveReviewAvatar = async (photoPath: string): Promise<string | undefined> => {
+  const plain = plainAvatarUrl(photoPath);
+  if (!plain) return undefined;
+  const durable = durableAvatarUrl(plain);
+  return durable && (await imageLoads(durable)) ? durable : plain;
+};
+
 // Reviews left through the homepage "Share Your Experience" form. They land in
 // the feedback table rather than in the testimonials content blob, so this panel
 // sits inside the Testimonials editor and lets one click promote a submission
@@ -1799,13 +2034,17 @@ const TestimonialSubmissions = ({
   onPromote,
   existingQuotes,
 }: {
-  onPromote: (f: FeedbackRecord) => void;
+  onPromote: (f: FeedbackRecord, avatarUrl: string | undefined) => void;
   existingQuotes: string[];
 }) => {
   const [items, setItems]     = useState<FeedbackRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [minRating, setMinRating] = useState(4);
+  // Which submission is mid-promote. One at a time: `onPromote` appends to the
+  // testimonial list captured when the button was pressed, so two overlapping
+  // promotes would have the second write a list that predates the first.
+  const [promoting, setPromoting] = useState<string | null>(null);
   const { toast } = useToast();
 
   const load = useCallback(() => {
@@ -1817,7 +2056,12 @@ const TestimonialSubmissions = ({
   useEffect(() => { load(); }, [load]);
 
   const promote = async (f: FeedbackRecord) => {
-    onPromote(f);
+    setPromoting(f.id);
+    try {
+      onPromote(f, await resolveReviewAvatar(f.photo_url));
+    } finally {
+      setPromoting(null);
+    }
     try {
       await setFeedbackPublished(f.id, true);
       setItems(prev => prev.map(x => (x.id === f.id ? { ...x, published: true } : x)));
@@ -1883,9 +2127,9 @@ const TestimonialSubmissions = ({
               </div>
               <p className="font-sans text-sm text-foreground leading-relaxed">{f.message}</p>
               {f.photo_url && <img src={resolveUploadUrl(f.photo_url)} alt="" className="h-16 rounded-lg object-cover" />}
-              <button type="button" onClick={() => promote(f)} disabled={alreadyInList}
+              <button type="button" onClick={() => promote(f)} disabled={alreadyInList || promoting !== null}
                 className="px-3 py-1.5 rounded-lg font-sans text-xs font-medium bg-primary text-primary-foreground disabled:opacity-50">
-                {alreadyInList ? "Already in testimonials" : "Add to testimonials ↑"}
+                {promoting === f.id ? "Adding…" : alreadyInList ? "Already in testimonials" : "Add to testimonials ↑"}
               </button>
             </div>
           );
@@ -1917,7 +2161,7 @@ const TestimonialsEditor = ({
 
     <TestimonialSubmissions
       existingQuotes={data.items.map((t) => t.quote.trim())}
-      onPromote={(f) =>
+      onPromote={(f, avatarUrl) =>
         onChange({
           ...data,
           items: [
@@ -1928,7 +2172,7 @@ const TestimonialsEditor = ({
               author: (f.name || "Anonymous").trim(),
               location: "Verified Customer",
               rating: f.rating,
-              avatarUrl: f.photo_url ? resolveUploadUrl(f.photo_url) : undefined,
+              avatarUrl,
             },
           ],
         })
@@ -1990,6 +2234,15 @@ const TestimonialsEditor = ({
                 onChange({ ...data, items });
               }}
             />
+            {/* Testimonials promoted before this stored a bare `/uploads/…` path,
+                which the optimiser cannot offer to fix because Cloudinary has no
+                way to fetch a path — so those are resolved to their public URL
+                here, and one press converts them. */}
+            <ImageOptimiser url={publicAvatarSource(item.avatarUrl ?? "")} defaultSize="card" onOptimise={(avatarUrl) => {
+              const items = [...data.items];
+              items[i] = { ...items[i], avatarUrl };
+              onChange({ ...data, items });
+            }} />
           </Field>
         </Card>
       ))}
@@ -3378,6 +3631,7 @@ const DiscountCodesPanel = () => {
     discount_type: "percentage" as "percentage" | "fixed",
     discount_value: "",
     max_redemptions: "1",
+    one_per_customer: true,
     label: "",
   });
 
@@ -3402,10 +3656,11 @@ const DiscountCodesPanel = () => {
         discount_type: form.discount_type,
         discount_value: value,
         max_redemptions: maxUses,
+        one_per_customer: form.one_per_customer,
         label: form.label.trim() || undefined,
       });
       setCodes((prev) => [created, ...prev]);
-      setForm({ code: "", discount_type: "percentage", discount_value: "", max_redemptions: "1", label: "" });
+      setForm({ code: "", discount_type: "percentage", discount_value: "", max_redemptions: "1", one_per_customer: true, label: "" });
       toast({ title: `Code ${created.code} created` });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create code");
@@ -3467,6 +3722,22 @@ const DiscountCodesPanel = () => {
             />
           </Field>
         </div>
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.one_per_customer}
+            onChange={(e) => setForm((f) => ({ ...f, one_per_customer: e.target.checked }))}
+            className="mt-0.5"
+          />
+          <span className="font-sans text-sm text-foreground">
+            One use per customer
+            <span className="block text-xs text-muted-foreground">
+              On (recommended): “Max uses” counts customers — nobody can spend the whole
+              campaign on their own orders. Off: the same shopper can reuse this code
+              until the max is reached.
+            </span>
+          </span>
+        </label>
         <Field label="Label" hint="Optional note for your reference (e.g. “Instagram giveaway”).">
           <Input
             placeholder="Optional"
@@ -3509,7 +3780,14 @@ const DiscountCodesPanel = () => {
                   <tr key={c.id} className="border-t border-border">
                     <td className="px-3 py-2 text-xs font-mono text-foreground">{c.code}</td>
                     <td className="px-3 py-2 text-xs font-sans text-foreground">{valueLabel(c)} off</td>
-                    <td className="px-3 py-2 text-xs font-sans text-muted-foreground">{c.redemption_count}/{c.max_redemptions}</td>
+                    <td className="px-3 py-2 text-xs font-sans text-muted-foreground">
+                      {c.redemption_count}/{c.max_redemptions}
+                      {c.max_redemptions > 1 && (
+                        <span className="block text-[11px]">
+                          {c.one_per_customer ? "one per customer" : "reusable per customer"}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-xs font-sans text-muted-foreground truncate max-w-[160px]">{c.label || "—"}</td>
                     <td className="px-3 py-2 text-xs font-sans">
                       {!c.is_active
@@ -3550,6 +3828,8 @@ const SeoImageField = ({
   previewClass,
   onError,
   allowVideo = false,
+  optimiseSize = DEFAULT_IMAGE_SIZE,
+  allowOptimise = true,
 }: {
   label: string;
   hint: string;
@@ -3560,6 +3840,17 @@ const SeoImageField = ({
   /** Diary entries take videos through the same field — the file's own type
       picks the upload endpoint, and the preview follows the URL's kind. */
   allowVideo?: boolean;
+  /** How large this photo is actually shown, so "Optimise for web" offers the
+      right size first. */
+  optimiseSize?: ImageSize;
+  /**
+   * Off for anything a crawler reads rather than a visitor: a favicon, the
+   * structured-data logo, the share image. Those are fetched by Google,
+   * Facebook and WhatsApp, which care about exact dimensions and accept a
+   * narrower set of formats than a browser does — the few kilobytes saved are
+   * not worth a share preview that stops rendering.
+   */
+  allowOptimise?: boolean;
 }) => {
   const [uploading, setUploading] = useState(false);
 
@@ -3609,6 +3900,11 @@ const SeoImageField = ({
             )}
           </div>
           <p className="font-sans text-xs text-muted-foreground">{hint}</p>
+          {/* Videos have their own optimiser on the reel fields; this one is
+              only ever offered for what is actually a photo. */}
+          {allowOptimise && kind === "image" && (
+            <ImageOptimiser url={value} defaultSize={optimiseSize} onOptimise={onChange} />
+          )}
         </div>
       </div>
     </div>
@@ -3689,6 +3985,7 @@ const SeoEditor = ({
       </Field>
 
       <SeoImageField
+        allowOptimise={false}
         label="Search result icon (favicon)"
         hint="Square PNG, at least 48×48 and a multiple of 48 — Google shows it beside the domain. Leave blank to keep the icons shipped with the site."
         value={data.favicon_url}
@@ -3698,6 +3995,7 @@ const SeoEditor = ({
       />
 
       <SeoImageField
+        allowOptimise={false}
         label="Organization logo"
         hint="Used in structured data — this is the logo Google can show in rich results and the knowledge panel. Square or wide, at least 112px tall."
         value={data.logo_url}
@@ -3707,6 +4005,7 @@ const SeoEditor = ({
       />
 
       <SeoImageField
+        allowOptimise={false}
         label="Share image"
         hint="The image attached to a shared link. 1200×630 works best. Facebook, WhatsApp and X don't run the site's code, so they keep showing the image built into the site until it's redeployed — this setting reaches Google and in-browser previews."
         value={data.og_image}

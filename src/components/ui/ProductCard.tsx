@@ -59,10 +59,21 @@ export interface ProductCardProps {
   buttonTextColor?: string;
   density?: ProductCardDensity;
   isDark?: boolean;
+  /**
+   * This card is on screen when the page opens, so its photo is worth fetching
+   * ahead of everything else.
+   *
+   * Off by default, and deliberately: a lazy photo costs nothing until it is
+   * scrolled towards, which is what keeps the rails further down a page free.
+   * Only a grid that *is* the top of the page should turn this on, and only for
+   * the cards actually in the first screen — switching it on for a card below
+   * the fold just moves the cost back to page load.
+   */
+  priority?: boolean;
 }
 
 const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
-  ({ product, idx, accent, buttonTextColor = "var(--btn-dark-text)", density = "regular", isDark = false }, ref) => {
+  ({ product, idx, accent, buttonTextColor = "var(--btn-dark-text)", density = "regular", isDark = false, priority = false }, ref) => {
     const img = product.image_url || FALLBACK_IMGS[idx % 2];
     const d = DENSITY[density];
     const { addToCart } = useCart();
@@ -131,7 +142,16 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
           <img
             src={img}
             alt={`${product.name} — handmade candle by The Olive Goose`}
-            loading="lazy"
+            // A photo the shopper is already looking at must not be fetched
+            // like one they might never reach. `loading="lazy"` is what the
+            // browser reads as "this can wait": it is skipped by the preload
+            // scanner, cannot start until layout has run, and is queued at Low
+            // priority behind every script on the page — which is why the top
+            // of the grid used to fill in a beat after everything else.
+            loading={priority ? "eager" : "lazy"}
+            // React 18 only passes the LCP fetch hint through as a lowercase DOM
+            // attribute (camelCase fetchPriority lands in React 19).
+            {...(priority ? { fetchpriority: "high" } as React.ImgHTMLAttributes<HTMLImageElement> : {})}
             decoding="async"
             style={{
               width: "100%",

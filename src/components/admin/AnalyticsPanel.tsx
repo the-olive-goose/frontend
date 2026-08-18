@@ -421,7 +421,12 @@ const InternalTraffic = () => {
     getAnalyticsInternal().then(setState).catch(() => setNote("Couldn't load these settings."));
   }, []);
 
-  const save = async (patch: { emails?: string[]; networks?: string[] }, message: string) => {
+  // The patch shape is the API function's, not a narrower copy of it: this had
+  // dropped `visitor_id`, which the call below passes and the API and backend
+  // both honour. It reached the server anyway — an excess property survives at
+  // runtime — so the only symptom was a type error saying the field could not
+  // be sent when in fact it was.
+  const save = async (patch: Parameters<typeof saveAnalyticsInternal>[0], message: string) => {
     setBusy(true);
     try {
       const saved = await saveAnalyticsInternal(patch);
@@ -489,10 +494,16 @@ const InternalTraffic = () => {
           <div className="max-w-md">
             <p className="font-sans text-sm font-semibold text-foreground">Your network</p>
             <p className="font-sans text-[11px] text-muted-foreground mt-1">
-              {state?.current_ip_excluded
-                ? <>You're on <span className="font-mono">{state.current_ip}</span>, which is already excluded — every device on it, for everyone in the house.</>
-                : <>You're on <span className="font-mono">{state?.current_ip || "…"}</span>. Excluding it covers every device on this wifi without anyone having to sign in. Each device drops out, and loses the visits it already recorded, the next time it loads the shop.</>}
-              {" "}Home broadband addresses change from time to time; if visits from home start counting again, add the new one here.
+              {/* Blank means the request didn't come through the live site's edge,
+                  which is the only thing that can tell one visitor's network from
+                  another. Saying so beats offering a button that would store a
+                  loopback or proxy address and quietly protect nothing. */}
+              {!state?.current_ip
+                ? <>Your network can't be identified from here — this only works on the live shop at its real address, not on a local or preview copy. Open the admin there to exclude your wifi.</>
+                : state.current_ip_excluded
+                  ? <>You're on <span className="font-mono">{state.current_ip}</span>, which is already excluded — every device on it, for everyone in the house.</>
+                  : <>You're on <span className="font-mono">{state.current_ip}</span>. Excluding it covers every device on this wifi without anyone having to sign in. Each device drops out, and loses the visits it already recorded, the next time it loads the shop.</>}
+              {!!state?.current_ip && <>{" "}Home broadband addresses change from time to time; if visits from home start counting again, add the new one here.</>}
             </p>
           </div>
           {state?.current_ip && (
@@ -611,6 +622,7 @@ const InternalTraffic = () => {
 
 const AnalyticsPanel = () => {
   const { pills, calendar } = useMemo(buildPeriods, []);
+  const todayIso = useMemo(() => isoLocal(new Date()), []);
   const [period, setPeriod] = useState<Period>(pills[1]); // default: last 30 days
   const [device, setDevice] = useState("");
   const [source, setSource] = useState("");
@@ -623,6 +635,9 @@ const AnalyticsPanel = () => {
   const [data, setData] = useState<AnalyticsOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // Bumped by "Try again" — a failed load clears the screen, so there has to be
+  // a way back that doesn't mean picking a different period and picking back.
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -633,15 +648,26 @@ const AnalyticsPanel = () => {
         setData(d);
         setError("");
         // Grow the source dropdown from unfiltered loads only, so picking a
-        // source doesn't collapse the options to just itself.
+        // source doesn't collapse the options to just itself. The table's two
+        // synthetic rows — the "+ N more" fold and the carried-over bucket —
+        // are not sources anyone can filter by, so they're kept out of it.
         if (!source && d.filters.attr === "source") {
-          setSourceOptions(prev => [...new Set([...prev, ...d.sources.map(s => s.source)])].sort());
+          const real = d.sources.map(s => s.source).filter(s => !/^[(+]/.test(s));
+          setSourceOptions(prev => [...new Set([...prev, ...real])].sort());
         }
       })
-      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load analytics"); })
+      .catch(err => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load analytics");
+        // Drop what's on screen. It was measured over a DIFFERENT period, and
+        // left in place under the newly-picked dates it is not stale data — it
+        // is wrong data, indistinguishable from a real answer. A failed load
+        // must look like a failed load.
+        setData(null);
+      })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [period, device, source, attr]);
+  }, [period, device, source, attr, reloadKey]);
 
   // Live "who's on the site now" — polled every 30s while the panel is open.
   useEffect(() => {
@@ -652,10 +678,29 @@ const AnalyticsPanel = () => {
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
+  // The window the figures on screen were actually measured over. Falls back to
+  // the requested one only while the first load is in flight — there is nothing
+  // on screen to mislabel then.
+  const measured = data ? { start: data.start, end: data.end } : { start: period.start, end: period.end };
+
+  const customInvalid =
+    !customStart || !customEnd ? "" :
+    customEnd < customStart ? "The end date is before the start date." :
+    customStart > todayIso ? "That start date is in the future." : "";
+
   const applyCustom = () => {
-    if (!customStart || !customEnd || customEnd < customStart) return;
-    setPeriod({ key: `custom-${customStart}-${customEnd}`, label: "Custom range", start: customStart, end: customEnd });
+    if (!customStart || !customEnd || customInvalid) return;
+    // Never ask for days that haven't happened: an end date in the future adds
+    // empty days to the window, which drags every per-day average down.
+    const end = customEnd > todayIso ? todayIso : customEnd;
+    setPeriod({ key: `custom-${customStart}-${end}`, label: "Custom range", start: customStart, end });
+    setCustomOpen(false);
   };
+
+  // Sessions the attribution table can place, and the ones it can't — see the
+  // note under that table, and the caveat that ships with the CSV.
+  const sourceSessions = data?.sources.reduce((n, s) => n + s.sessions, 0) ?? 0;
+  const carriedOverSessions = Math.max((data?.traffic.sessions ?? 0) - sourceSessions, 0);
 
   // Everything currently on screen, as one spreadsheet-friendly CSV.
   const exportCsv = () => {
@@ -702,11 +747,27 @@ const AnalyticsPanel = () => {
     for (const n of data.measurement_notes) {
       section("Measurement change", ["date", "note"], [[n.date, n.note]]);
     }
+    // Every caveat the panel shows travels with the file. A spreadsheet gets
+    // forwarded, quoted and totted up long after the screen it came from is
+    // closed, so a figure that needs a qualifier has to carry it.
     if (data.sales.orders > data.sales.attributed_orders) {
       section("Caveat", ["note"], [[
-        `${data.sales.orders - data.sales.attributed_orders} paid order(s) have no tracked session — funnel, session conversion and attribution cover ${data.sales.attributed_orders} of ${data.sales.orders} orders.`,
+        `${data.sales.orders - data.sales.attributed_orders} paid order(s) have no tracked session — funnel, session conversion, attribution and locations cover ${data.sales.attributed_orders} of ${data.sales.orders} orders.`,
       ]]);
     }
+    if (data.clamped) {
+      section("Caveat", ["note"], [[
+        `The requested range was longer than two years, so it was measured from ${data.start} to ${data.end}.`,
+      ]]);
+    }
+    if (carriedOverSessions > 0) {
+      section("Caveat", ["note"], [[
+        `Attribution covers ${sourceSessions} of ${data.traffic.sessions} sessions — the other ${carriedOverSessions} began before this period and have no source inside it. Their orders are on the "(visit began before this period)" row.`,
+      ]]);
+    }
+    section("Caveat", ["note"], [[
+      "Daily rows count each day's own unique visitors and sessions, so they add up to more than the period totals above.",
+    ]]);
     section("Funnel", ["stage", "sessions"], data.funnel.map(f => [f.stage, f.sessions]));
     section("Daily", ["day", "visitors", "sessions", "pageviews", "orders", "revenue"], data.daily.map(r => [r.day, r.visitors, r.sessions, r.pageviews, r.orders, r.revenue]));
     section(
@@ -771,7 +832,15 @@ const AnalyticsPanel = () => {
           {calendar.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
         </select>
         <button
-          onClick={() => setCustomOpen(o => !o)}
+          onClick={() => {
+            // Open on the period already showing, so the first click gives you
+            // something to adjust rather than two empty fields.
+            if (!customOpen && !customStart && !customEnd) {
+              setCustomStart(period.start);
+              setCustomEnd(period.end);
+            }
+            setCustomOpen(o => !o);
+          }}
           className={`px-3.5 py-1.5 rounded-full font-sans text-xs font-semibold border transition-colors ${
             period.key.startsWith("custom-")
               ? "bg-primary text-primary-foreground border-primary"
@@ -802,18 +871,23 @@ const AnalyticsPanel = () => {
 
       {customOpen && (
         <div className="flex items-center gap-2 mb-2 flex-wrap">
-          <input type="date" value={customStart} max={customEnd || undefined} onChange={e => setCustomStart(e.target.value)}
+          {/* Both ends are capped at today. A future date isn't a smaller
+              window, it's empty days folded into every average. */}
+          <input type="date" aria-label="Start date" value={customStart} max={customEnd || todayIso}
+            onChange={e => setCustomStart(e.target.value)}
             className="px-3 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40" />
           <span className="font-sans text-xs text-muted-foreground">to</span>
-          <input type="date" value={customEnd} min={customStart || undefined} onChange={e => setCustomEnd(e.target.value)}
+          <input type="date" aria-label="End date" value={customEnd} min={customStart || undefined} max={todayIso}
+            onChange={e => setCustomEnd(e.target.value)}
             className="px-3 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40" />
           <button
             onClick={applyCustom}
-            disabled={!customStart || !customEnd || customEnd < customStart}
+            disabled={!customStart || !customEnd || !!customInvalid}
             className="px-3.5 py-1.5 rounded-full font-sans text-xs font-semibold bg-primary text-primary-foreground disabled:opacity-50"
           >
             Apply
           </button>
+          {customInvalid && <span className="font-sans text-xs text-destructive">{customInvalid}</span>}
         </div>
       )}
 
@@ -839,17 +913,44 @@ const AnalyticsPanel = () => {
         {loading && data && <span className="font-sans text-xs text-muted-foreground ml-2">Updating…</span>}
       </div>
 
+      {/* The dates below are the ones the SERVER measured, never the ones the
+          picker is set to. They are usually the same — and on the one occasion
+          they aren't (a range past the two-year cap), printing the request
+          instead would label a shortened window with the dates the reader
+          chose, and the missing months would read as a collapse in trade. */}
       <p className="font-sans text-xs text-muted-foreground mb-6">
-        {period.label} · {fmtRange(period.start, period.end)} — compared with the {data?.days ?? ""}-day period before it
+        {period.label} · {fmtRange(measured.start, measured.end)}
+        {data && <> — compared with the {data.days}-day period before it</>}
         {data?.timezone && <> · days run {data.timezone.replace("_", " ")} time</>}
         {device && <> · device: <span className="font-semibold text-foreground">{device}</span></>}
         {source && <> · source: <span className="font-semibold text-foreground">{source}</span></>}
         {data?.attributed && <> · limited to orders from matching sessions</>}
       </p>
 
+      {data?.clamped && (
+        <div className="rounded-xl border border-border bg-card p-4 mb-6">
+          <p className="font-sans text-sm text-foreground">
+            ⓘ That range is longer than two years, so it was measured from {fmtRange(data.start, data.end)}.
+          </p>
+          <p className="font-sans text-xs text-muted-foreground mt-1">
+            The figures below cover that shortened window — the earlier months are not missing trade, they were not asked for.
+          </p>
+        </div>
+      )}
+
       {error && (
         <div className="rounded-xl border border-border bg-card p-4 mb-6">
           <p className="font-sans text-sm text-destructive">{error}</p>
+          <p className="font-sans text-xs text-muted-foreground mt-1">
+            Nothing is shown for {fmtRange(period.start, period.end)} — the last figures on screen were measured over a
+            different period, so they've been cleared rather than left under these dates.
+          </p>
+          <button
+            onClick={() => setReloadKey(k => k + 1)}
+            className="mt-3 px-3.5 py-1.5 rounded-full font-sans text-xs font-semibold bg-primary text-primary-foreground"
+          >
+            Try again
+          </button>
         </div>
       )}
 
@@ -887,7 +988,7 @@ const AnalyticsPanel = () => {
               </p>
               <p className="font-sans text-xs text-muted-foreground mt-1">
                 Revenue, Orders, AOV and the customer figures are complete — they come from the orders table.
-                The funnel, session conversion and attribution table cover the {fmtInt(data.sales.attributed_orders)} linked
+                The funnel, session conversion, attribution and location tables cover the {fmtInt(data.sales.attributed_orders)} linked
                 {" "}order{data.sales.attributed_orders === 1 ? "" : "s"} only, so treat them as a floor, not a total.
               </p>
             </div>
@@ -948,6 +1049,15 @@ const AnalyticsPanel = () => {
                 </LineChart>
               </ResponsiveContainer>
               <LegendKey items={[{ label: "Sessions", color: SERIES.blue }, { label: "Visitors", color: SERIES.aqua }]} />
+              {/* Each day counts its own uniques, so the days deliberately add
+                  up to more than the period: someone who came back on Tuesday
+                  is one visitor in the tile and a visitor on both days here.
+                  Without saying so, adding up the chart and finding it exceeds
+                  the Visitors tile looks like one of the two is wrong. */}
+              <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                Each day counts its own unique visitors and sessions, so the days add up to more than the
+                period's totals — a visitor who returns is counted once above and on each day here.
+              </p>
             </Card>
           </div>
 
@@ -1071,6 +1181,8 @@ const AnalyticsPanel = () => {
                 View→cart is the share of sessions that saw the product page and added it; cart→buy is the share
                 of those that went on to pay. A low view→cart means the page isn't convincing; a healthy
                 view→cart with a low cart→buy means the loss is at checkout, not on the product.
+                Carts can exceed views — a product added straight from the shop grid never opens its own page —
+                so the rates count only the sessions that did both, and stay shares.
                 Revenue shares each order's discount across its lines, so it adds up to Revenue minus shipping.
               </p>
             </Card>
@@ -1096,6 +1208,19 @@ const AnalyticsPanel = () => {
                 rows={data.sources.map(s => [s.source, fmtInt(s.sessions), fmtInt(s.orders), fmtEur(s.revenue)])}
                 empty="No sessions recorded in this period yet."
               />
+              {/* A session is attributed to where it LANDED, so a visit that
+                  began before this period has no source inside it. Its orders
+                  are still in the table (see the row for them) but its session
+                  is not, which leaves this column short of the Sessions tile by
+                  exactly that many. Printing the difference is the only way a
+                  reader can tell that apart from a table that lost rows. */}
+              {carriedOverSessions > 0 && (
+                <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                  Adds up to {fmtInt(sourceSessions)} of the {fmtInt(data.traffic.sessions)} sessions —
+                  the other {fmtInt(carriedOverSessions)} began before this period, so they have no source
+                  inside it. Anything they bought is still counted, on its own row.
+                </p>
+              )}
             </Card>
           </div>
 
@@ -1117,8 +1242,14 @@ const AnalyticsPanel = () => {
               <Card title="Where visitors are" desc="Sessions and revenue by city">
                 <DataTable
                   cols={[{ label: "Location" }, { label: "Sessions", align: "right" }, { label: "Orders", align: "right" }, { label: "Revenue", align: "right" }]}
+                  // The country is printed even when the city is unknown. Rows
+                  // are grouped by city AND country, so hiding it rendered a
+                  // known-country-unknown-city visit as a second row labelled
+                  // plain "Unknown" — two rows, the same label, different
+                  // numbers, and no way to tell which was which. "Unknown, DE"
+                  // says exactly what is and isn't known.
                   rows={data.locations.map(l => [
-                    l.city === "Unknown" ? "Unknown" : `${l.city}${l.country ? `, ${l.country}` : ""}`,
+                    `${l.city}${l.country ? `, ${l.country}` : ""}`,
                     fmtInt(l.sessions), fmtInt(l.orders), fmtEur(l.revenue),
                   ])}
                   empty="No locations recorded in this period yet."

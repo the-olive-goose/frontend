@@ -455,6 +455,27 @@ export const validateDiscountCode = async (code: string): Promise<DiscountValida
   return data;
 };
 
+export interface MyDiscountCode {
+  code: string;
+  discount_type: 'percentage' | 'fixed';
+  discount_value: number;
+}
+
+// The signed-in shopper's own unspent welcome code, so checkout can offer it
+// instead of relying on them still having the email it was sent in. Returns null
+// when there's nothing to offer — including on any error, because a failed
+// lookup of a *bonus* is not something to interrupt a checkout with.
+export const fetchMyDiscountCode = async (): Promise<MyDiscountCode | null> => {
+  try {
+    const res = await fetchWithTimeout(`${API_URL}/api/discount/mine`, { credentials: CREDENTIALS });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.code ? data as MyDiscountCode : null;
+  } catch {
+    return null;
+  }
+};
+
 // Starts a Stripe Checkout session for the current basket and returns the hosted
 // payment page URL to redirect the browser to. No order is created yet — that
 // only happens once Stripe confirms the charge (see getCheckoutSession).

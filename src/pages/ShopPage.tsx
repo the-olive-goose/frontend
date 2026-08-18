@@ -318,6 +318,11 @@ const ShopPage = () => {
                     accent={resolveCardAccent(cardTheme, activeCat)}
                     buttonTextColor={cardTheme.buttonTextColor}
                     density="regular"
+                    // The grid is why anyone opens this page, and the first two
+                    // rows of it are on screen the moment they arrive — two per
+                    // row on a phone, four across at the widest. Those photos
+                    // are fetched straight away; the rest wait to be scrolled to.
+                    priority={i < 4}
                   />
                 ))}
               </AnimatePresence>

@@ -11,6 +11,11 @@ import type { VideosContent } from "@/lib/defaults";
  * that will give a tab neither, which is what crashed mobile browsers mid-scroll.
  * The rule that replaced it — only reels in view get a player, everything else
  * gets a ~40 KB still — is what these tests hold in place.
+ *
+ * "In view" is two tests, not one, and both are held here: the card has to be
+ * the one being looked at *along the rail*, and the rail has to be on screen at
+ * all. The second was missing for a while, which put ~15 MB of video and a live
+ * decoder behind a section 2,700 px below the fold on every first load.
  */
 
 const CLOUDINARY = "https://res.cloudinary.com/asravqmm/video/upload";
@@ -34,11 +39,35 @@ const setViewport = (width: number) => {
   Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: width });
 };
 
+/**
+ * What the stubbed observer reports. The rail asks it whether the section is on
+ * screen, so a test that wants the un-scrolled-to homepage flips this to false
+ * before rendering.
+ */
+let onScreen = true;
+
+/** Every rootMargin the rail asked for, so the warm-up distance is testable. */
+let observerMargins: string[] = [];
+
 beforeEach(() => {
-  // jsdom has neither of these, and DirectVideo uses both to keep the reel in
-  // focus playing when the phone tries to pause it.
+  // jsdom has no IntersectionObserver. Two things here want one: the rail, to
+  // decide whether any player is worth mounting, and DirectVideo, to keep the
+  // reel in focus playing when the phone tries to pause it. Reporting through
+  // to the callback rather than swallowing it is what makes the rail's gate
+  // testable at all.
+  onScreen = true;
+  observerMargins = [];
   vi.stubGlobal("IntersectionObserver", class {
-    observe() {} unobserve() {} disconnect() {} takeRecords() { return []; }
+    constructor(private readonly callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+      if (options?.rootMargin) observerMargins.push(options.rootMargin);
+    }
+    observe(target: Element) {
+      this.callback(
+        [{ isIntersecting: onScreen, target } as IntersectionObserverEntry],
+        this as unknown as IntersectionObserver,
+      );
+    }
+    unobserve() {} disconnect() {} takeRecords() { return []; }
   });
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
@@ -53,13 +82,15 @@ const players = (container: HTMLElement) => container.querySelectorAll("video, i
 const posters = (container: HTMLElement) => container.querySelectorAll("img");
 
 describe("VideosSection reel rail", () => {
-  it("mounts one player on a phone no matter how many reels there are", () => {
+  it("plays the reel in focus and warms the next, on a phone", () => {
     setViewport(375);
     const { container } = render(<VideosSection data={content(6)} />);
 
-    // The reel in focus, and only it.
-    expect(players(container)).toHaveLength(1);
-    // Every card still shows something — five stills plus the focused card's own.
+    // The reel being looked at, plus the one the next swipe will land on. A
+    // player downloads nothing until it exists, so a reel mounted only once it
+    // has been swiped to can never start instantly.
+    expect(players(container)).toHaveLength(2);
+    // Every card still shows something — the rest are ~40 KB stills.
     expect(posters(container).length).toBeGreaterThanOrEqual(5);
   });
 
@@ -67,7 +98,9 @@ describe("VideosSection reel rail", () => {
     setViewport(375);
     for (const count of [3, 6, 12, 40]) {
       const { container, unmount } = render(<VideosSection data={content(count)} />);
-      expect(players(container), `${count} reels`).toHaveLength(1);
+      // Two on a phone however long the rail is — the budget is what stops a
+      // rail of forty reels from being forty downloads and forty decoders.
+      expect(players(container), `${count} reels`).toHaveLength(2);
       unmount();
     }
   });
@@ -78,6 +111,75 @@ describe("VideosSection reel rail", () => {
     // Focused card plus one either side — capped, so a long rail stays bounded.
     expect(players(container).length).toBeLessThanOrEqual(3);
     expect(players(container).length).toBeGreaterThan(1);
+  });
+
+  it("mounts no player at all while the rail is still below the fold", () => {
+    setViewport(375);
+    onScreen = false;
+    const { container } = render(<VideosSection data={content(6)} />);
+
+    // A visitor who has only ever seen the hero pays for stills and nothing
+    // else — no download, no decoder, for a section they have not reached.
+    expect(container.querySelectorAll("video")).toHaveLength(0);
+    expect(posters(container).length).toBe(6);
+  });
+
+  it("mounts no player below the fold on a wide screen either", () => {
+    setViewport(1280);
+    onScreen = false;
+    const { container } = render(<VideosSection data={content(6)} />);
+    expect(players(container)).toHaveLength(0);
+  });
+
+  it("starts loading well before the rail arrives, not as it lands", () => {
+    setViewport(375);
+    render(<VideosSection data={content(6)} />);
+
+    // A player only begins downloading once it is mounted, so mounting as the
+    // rail touches the screen leaves the first reel a frozen still while the
+    // visitor is already looking at it — measured at 1.6s on a 4G phone. Two
+    // viewports of lead is what a brisk thumb flick needs to cover the distance
+    // and still arrive on something moving. As a percentage, so it scales with
+    // the device instead of assuming a phone.
+    expect(observerMargins.some((margin) => /^\d+%/.test(margin) && parseInt(margin) >= 200)).toBe(true);
+  });
+
+  it("restarts a reel that is on screen but has stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      setViewport(375);
+      const play = HTMLMediaElement.prototype.play as unknown as ReturnType<typeof vi.fn>;
+      const { container } = render(<VideosSection data={content(6)} />);
+      const video = container.querySelector("video")!;
+      // Whatever the browser did on mount, we start counting from here.
+      play.mockClear();
+
+      // The card is on screen and the reel is not moving. Nothing raises an
+      // event to say so — an autoplay policy or a power-saving mode simply
+      // refuses, and that is precisely the case a listener cannot catch.
+      Object.defineProperty(video, "paused", { configurable: true, value: true });
+
+      vi.advanceTimersByTime(3000);
+      expect(play).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops watching a reel once it has left the screen", () => {
+    vi.useFakeTimers();
+    try {
+      setViewport(375);
+      onScreen = false;
+      const play = HTMLMediaElement.prototype.play as unknown as ReturnType<typeof vi.fn>;
+      render(<VideosSection data={content(6)} />);
+      play.mockClear();
+      // Nothing is mounted below the fold, so nothing should be ticking.
+      vi.advanceTimersByTime(5000);
+      expect(play).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives unmounted cards a still derived from the video", () => {

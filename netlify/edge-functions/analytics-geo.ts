@@ -36,9 +36,23 @@ export default async (request: Request, context: Context) => {
     // already carrying them is a client claiming to be somewhere it isn't.
     headers.delete('x-og-geo-city');
     headers.delete('x-og-geo-country');
+    headers.delete('x-og-client-ip');
 
     const city = context.geo?.city;
     const country = context.geo?.country?.code;
+
+    // The visitor's actual address, as the edge sees it before any proxy hop.
+    //
+    // The backend cannot work this out for itself: requests reach it through TWO
+    // proxies (Netlify, then Railway), so its own view of "the client" is really
+    // the address of whichever proxy spoke to it last. Excluding "your network"
+    // on that basis would have matched a shared edge address — and therefore
+    // every shopper on the site at once, silently reporting an empty shop.
+    //
+    // Used only to compare against the owner's own excluded networks, in memory,
+    // and then discarded. Nothing here is written down: see ipIsInternal and
+    // geoFromHeaders in backend/index.js.
+    if (context.ip) headers.set('x-og-client-ip', context.ip);
 
     // encodeURIComponent because a header value must be Latin-1 and city names
     // are not: "Málaga" or "München" would throw and cost us the whole request.
@@ -53,5 +67,8 @@ export default async (request: Request, context: Context) => {
 };
 
 export const config: Config = {
-  path: '/api/analytics/events',
+  // Ingestion, plus the one admin route that has to show the owner which network
+  // they are on in order to offer to exclude it. Nothing else — checkout,
+  // sign-in and order lookups never pass through this code.
+  path: ['/api/analytics/events', '/api/admin/analytics/internal'],
 };

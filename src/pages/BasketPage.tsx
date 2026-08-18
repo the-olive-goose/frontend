@@ -89,7 +89,10 @@ const BasketPage = () => {
       total: +estimatedTotalNum.toFixed(2),
       items: count,
     });
-    requireAuth(() => navigate("/checkout"));
+    // The path is repeated for the OAuth case: "Continue with Google" leaves the
+    // site entirely, so the callback needs the destination written down — without
+    // it the shopper comes back signed in but stranded on the homepage.
+    requireAuth(() => navigate("/checkout"), "/checkout");
   };
 
   return (

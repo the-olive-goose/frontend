@@ -100,17 +100,30 @@ const useReelRail = (count: number, initialIndex = 0) => {
  * looping, no chrome. The viewer hands over controls and asks for sound, and
  * falls back to muted when the browser refuses autoplay-with-sound (most do).
  *
- * Only the slide being read is allowed to fetch anything: a neighbour sits on
- * its poster until it is the one being read, because `preload="metadata"` on an
- * untransformed phone capture is not the small request it sounds like — the
- * index of a QuickTime recording can live at the end of the file, so asking for
- * metadata can drag in most of the video.
+ * The slide being read, and the one directly after it, are allowed to fetch:
+ * measured on a 4G phone, a video that started loading only once it became the
+ * active slide sat on its still for about 1.5 seconds before the first frame,
+ * which reads as a broken reel rather than a slow one. Buffering the next slide
+ * is what makes a flick land on something already moving.
+ *
+ * It is exactly one slide ahead, not a window: these are 1080p captures, and
+ * the reason this file has a preload rule at all is that a stack of them
+ * downloading at once is what a phone cannot take. The slide *behind* is
+ * deliberately not warmed — flicking back lands on its poster, which is the
+ * cheaper mistake.
+ *
+ * The old rule warmed nothing, on the grounds that `preload` on an untransformed
+ * phone capture could drag in most of the file. That was true of the originals;
+ * the diary now stores Cloudinary-transformed mp4s, which are web-encoded and
+ * seekable from the front.
  */
-const DiaryVideo = ({ src, poster, label, active, interactive }: {
+const DiaryVideo = ({ src, poster, label, active, warm, interactive }: {
   src: string;
   poster: string;
   label: string;
   active: boolean;
+  /** The very next slide: buffered now so the flick lands on a moving frame. */
+  warm: boolean;
   interactive: boolean;
 }) => {
   const ref = useRef<HTMLVideoElement>(null);
@@ -137,7 +150,7 @@ const DiaryVideo = ({ src, poster, label, active, interactive }: {
       playsInline
       muted={!interactive}
       controls={interactive}
-      preload={active ? "auto" : "none"}
+      preload={active || warm ? "auto" : "none"}
     />
   );
 };
@@ -191,6 +204,7 @@ const ReelSlides = ({ photos, handle, priority, interactive = false }: ReelSlide
               poster={poster}
               label={label}
               active={active}
+              warm={index === priority + 1}
               interactive={interactive}
             />
           ) : poster ? (

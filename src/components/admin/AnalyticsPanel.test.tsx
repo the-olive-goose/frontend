@@ -432,4 +432,208 @@ describe("AnalyticsPanel", () => {
       expect(screen.queryByText("Other addresses seen")).not.toBeInTheDocument();
     });
   });
+
+  // ── Totals that have to reconcile ─────────────────────────────────────────
+  // Every card re-derives its own row set, so each one is a chance to present a
+  // total that quietly disagrees with the tile above it. Where a card genuinely
+  // cannot cover everything, the shortfall is printed rather than left for the
+  // reader to notice by adding up a column.
+  describe("reconciliation", () => {
+    it("says how many sessions the attribution table cannot place", async () => {
+      mocked.mockResolvedValue(overview({
+        // 6 sessions in the tile; the table can place 4. The other 2 began
+        // before this period, so they landed somewhere outside it.
+        sources: [
+          { source: "google", sessions: 3, orders: 1, revenue: 100 },
+          { source: "direct", sessions: 1, orders: 0, revenue: 0 },
+          { source: "(visit began before this period)", sessions: 0, orders: 1, revenue: 80 },
+        ],
+      }));
+      render(<AnalyticsPanel />);
+
+      expect(await screen.findByText(/Adds up to 4 of the 6 sessions/i)).toBeInTheDocument();
+      // The carried-over orders keep their own row in the table…
+      expect(screen.getByRole("cell", { name: "(visit began before this period)" })).toBeInTheDocument();
+      // …but it is not a source anyone can filter the dashboard by.
+      expect(screen.queryByRole("option", { name: "(visit began before this period)" })).not.toBeInTheDocument();
+    });
+
+    it("stays quiet when the attribution table covers every session", async () => {
+      mocked.mockResolvedValue(overview({
+        sources: [{ source: "google", sessions: 6, orders: 1, revenue: 100 }],
+      }));
+      render(<AnalyticsPanel />);
+
+      await screen.findByText("Attribution");
+      expect(screen.queryByText(/Adds up to \d+ of the/i)).not.toBeInTheDocument();
+    });
+
+    it("never prints two location rows under the same label", async () => {
+      mocked.mockResolvedValue(overview({
+        locations: [
+          { city: "Unknown", country: "", sessions: 28, orders: 3, revenue: 190 },
+          { city: "Unknown", country: "DE", sessions: 1, orders: 0, revenue: 0 },
+          { city: "Dublin", country: "IE", sessions: 4, orders: 2, revenue: 120 },
+        ],
+      }));
+      render(<AnalyticsPanel />);
+
+      // Rows are grouped by city AND country, so an unknown city with a known
+      // country is a different row — and two rows both labelled "Unknown" with
+      // different numbers is unreadable.
+      await screen.findByText("Where visitors are");
+      expect(screen.getByRole("cell", { name: "Unknown, DE" })).toBeInTheDocument();
+      expect(screen.getAllByRole("cell", { name: "Unknown" })).toHaveLength(1);
+    });
+
+    it("explains why the daily chart adds up to more than the period", async () => {
+      mocked.mockResolvedValue(overview());
+      render(<AnalyticsPanel />);
+
+      // Per-day uniques exceed the period's uniques by design. Unexplained, the
+      // chart and the Visitors tile look like they contradict each other.
+      expect(await screen.findByText(/Each day counts its own unique visitors and sessions/i)).toBeInTheDocument();
+    });
+  });
+
+  // ── The exported file ─────────────────────────────────────────────────────
+  // The CSV is the panel's only output that outlives the screen: it gets
+  // forwarded, quoted and totted up by people who never saw the caveats. So a
+  // figure that needs a qualifier has to carry it into the file.
+  describe("CSV export", () => {
+    /** Clicks Export CSV and returns the text the file would contain. */
+    const exportedCsv = (): string => {
+      // jsdom's Blob has no .text(), so the parts are captured on the way in.
+      // URL.createObjectURL doesn't exist there either, and the anchor click
+      // must not try to navigate.
+      const written: string[] = [];
+      class CapturingBlob {
+        constructor(parts: unknown[]) { written.push(parts.join("")); }
+      }
+      vi.stubGlobal("Blob", CapturingBlob);
+      Object.assign(URL, { createObjectURL: vi.fn(() => "blob:mock"), revokeObjectURL: vi.fn() });
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+      fireEvent.click(screen.getByRole("button", { name: /export csv/i }));
+      vi.unstubAllGlobals();
+      expect(written).toHaveLength(1);
+      return written[0];
+    };
+
+    it("carries the same caveats the screen shows", async () => {
+      mocked.mockResolvedValue(overview({
+        clamped: true,
+        start: "2024-08-17", end: "2026-08-17", days: 731,
+        sources: [
+          { source: "google", sessions: 4, orders: 1, revenue: 100 },
+          { source: "(visit began before this period)", sessions: 0, orders: 1, revenue: 80 },
+        ],
+      }));
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+
+      const csv = exportedCsv();
+      // The window that was measured, not the one requested.
+      expect(csv).toMatch(/2024-08-17 to 2026-08-17/);
+      expect(csv).toMatch(/longer than two years/i);
+      // The tracking gap, the attribution shortfall, and the daily-uniques rule.
+      expect(csv).toMatch(/have no tracked session/i);
+      expect(csv).toMatch(/Attribution covers 4 of 6 sessions/i);
+      expect(csv).toMatch(/add up to more than the period totals/i);
+    });
+
+    it("exports the same product rates the table renders", async () => {
+      mocked.mockResolvedValue(overview({
+        top_products: [{
+          name: "Candle A", units: 3, revenue: 300, add_to_carts: 2,
+          views: 2, view_to_cart_pct: 100, cart_to_buy_pct: 50,
+        }],
+      }));
+      render(<AnalyticsPanel />);
+      await screen.findByText("Top products");
+
+      const csv = exportedCsv();
+      expect(csv).toMatch(/Candle A,2,2,100,50,3,300/);
+    });
+  });
+
+  // ── The date range ────────────────────────────────────────────────────────
+  // The reported symptom was "I pick dates and nothing on the page changes".
+  // Every case below is a way that could happen while each individual piece
+  // looked like it was working: the request never carrying the dates, a failed
+  // load leaving the last period's figures sitting under the new ones, or the
+  // heading naming a window the numbers were not measured over.
+  describe("date range", () => {
+    const openCustom = () => fireEvent.click(screen.getByRole("button", { name: "Custom…" }));
+
+    it("asks the server for exactly the dates that were picked", async () => {
+      mocked.mockResolvedValue(overview());
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+
+      openCustom();
+      fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-04-01" } });
+      fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-06-30" } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+      await waitFor(() => expect(mocked).toHaveBeenLastCalledWith(
+        expect.objectContaining({ start: "2026-04-01", end: "2026-06-30" })
+      ));
+    });
+
+    it("clears the figures when a range fails to load, instead of leaving the last ones on screen", async () => {
+      mocked.mockResolvedValueOnce(overview());
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+
+      mocked.mockRejectedValueOnce(new Error("Request timed out — check your connection and try again."));
+      openCustom();
+      fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-04-01" } });
+      fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-06-30" } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+      // Numbers measured over July must not be sitting under April–June dates:
+      // left in place they are not stale, they are wrong, and nothing on screen
+      // distinguishes them from a real answer for the new range.
+      expect(await screen.findByText(/Request timed out/i)).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText("Session conversion")).not.toBeInTheDocument());
+      expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+    });
+
+    it("heads the page with the window the server measured, not the one requested", async () => {
+      // The server shortens anything past two years. Printing the request would
+      // caption a 731-day window with a 5-year range, and the months that were
+      // never measured would read as a collapse in trade.
+      mocked.mockResolvedValue(overview({ start: "2024-08-17", end: "2026-08-17", days: 731, clamped: true }));
+      render(<AnalyticsPanel />);
+
+      expect(await screen.findByText(/longer than two years/i)).toBeInTheDocument();
+      expect(screen.getByText(/not missing trade/i)).toBeInTheDocument();
+      // The heading carries the measured window, alongside the period's name.
+      const heading = screen.getAllByText(
+        (_, el) => el?.tagName === "P" && /Last 30 days.*17 Aug 2024 – 17 Aug 2026/.test(el.textContent ?? "")
+      );
+      expect(heading.length).toBeGreaterThan(0);
+    });
+
+    it("refuses to ask for days that haven't happened yet", async () => {
+      mocked.mockResolvedValue(overview());
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+
+      const today = new Date();
+      const iso = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const nextYear = iso(new Date(today.getFullYear() + 1, today.getMonth(), today.getDate()));
+
+      openCustom();
+      fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-01-01" } });
+      fireEvent.change(screen.getByLabelText("End date"), { target: { value: nextYear } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+      // Empty future days in the window drag every per-day average down.
+      await waitFor(() => expect(mocked).toHaveBeenLastCalledWith(
+        expect.objectContaining({ start: "2026-01-01", end: iso(today) })
+      ));
+    });
+  });
 });

@@ -6,6 +6,7 @@ import {
   logoutUser,
   type AppUser, type ProfileUpdate,
 } from "@/lib/userApi";
+import { rememberAuthReturn, clearAuthReturn } from "@/lib/authReturn";
 
 // Bumped in localStorage on every sign-in/out so OTHER tabs notice and re-sync —
 // carries no secret (the real session lives in an httpOnly cookie), it's just a signal.
@@ -34,7 +35,11 @@ interface AuthContextType {
   // If signed in, runs `action` right away. Otherwise opens the sign-in modal and
   // runs `action` automatically the moment sign-in succeeds — so a user who gets
   // bounced mid-checkout (or any auth-gated action) resumes right where they left off.
-  requireAuth: (action: () => void) => void;
+  // `resumePath` covers the one case the callback can't: signing in with Google is
+  // a full-page round trip that destroys `action`, so a gate that was sending the
+  // shopper somewhere else (basket → /checkout) names that destination here and
+  // /auth/callback lands them on it. Omit it when the action stays on this page.
+  requireAuth: (action: () => void, resumePath?: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -51,6 +56,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
   const pendingActionRef = useRef<(() => void) | null>(null);
+  // The destination behind the pending action, kept separately because it has to
+  // survive what the action can't: the full-page hop to an OAuth provider.
+  const pendingPathRef   = useRef<string | null>(null);
   // Guards the revalidation below: a shopper flicking between tabs shouldn't
   // fire a /me per switch.
   const lastCheckRef = useRef(0);
@@ -140,14 +148,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setSessionExpired(false);
     lastCheckRef.current = Date.now();
     broadcastAuthChange();
+    // Signed in without leaving the page, so the stored OAuth destination (if a
+    // provider button was tapped and abandoned earlier) is stale — drop it before
+    // it can hijack some later callback.
+    pendingPathRef.current = null;
+    clearAuthReturn();
     const action = pendingActionRef.current;
     pendingActionRef.current = null;
     if (action) action();
   };
 
-  const requireAuth = (action: () => void) => {
+  const requireAuth = (action: () => void, resumePath?: string) => {
     if (user) { action(); return; }
     pendingActionRef.current = action;
+    pendingPathRef.current   = resumePath ?? null;
     setShowAuthModal(true);
   };
 
@@ -168,8 +182,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   // OAuth — full-page redirect to backend, which sets the session cookie itself
   // and redirects back to /auth/callback (no token ever touches the URL/frontend).
-  const signInWithGoogle   = () => { window.location.href = googleOAuthUrl(); };
-  const signInWithFacebook = () => { window.location.href = facebookOAuthUrl(); };
+  // Nothing in React survives that round trip, so where the shopper was headed is
+  // written to sessionStorage first and read back by the callback screen.
+  const startOAuth = (url: string) => {
+    rememberAuthReturn(pendingPathRef.current);
+    window.location.href = url;
+  };
+  const signInWithGoogle   = () => { startOAuth(googleOAuthUrl()); };
+  const signInWithFacebook = () => { startOAuth(facebookOAuthUrl()); };
 
   // Called from /auth/callback once the backend has already set the cookie.
   const completeOAuthLogin = async () => {
@@ -220,7 +240,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       signOut, completeOAuthLogin, updateProfile,
       showAuthModal, sessionExpired,
       openAuthModal:  () => setShowAuthModal(true),
-      closeAuthModal: () => { setShowAuthModal(false); setSessionExpired(false); pendingActionRef.current = null; },
+      closeAuthModal: () => {
+        setShowAuthModal(false);
+        setSessionExpired(false);
+        pendingActionRef.current = null;
+        pendingPathRef.current   = null;
+        clearAuthReturn();
+      },
       requireAuth,
     }}>
       {children}

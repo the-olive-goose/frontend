@@ -69,6 +69,10 @@ const Gallery = ({ product }: { product: Product }) => {
             src={shots[active]}
             alt={`${product.name} — handmade candle by The Olive Goose`}
             className="w-full h-full object-cover"
+            // The shot is the whole point of this page — it should not queue
+            // behind anything. React 18 only passes the LCP fetch hint through
+            // as a lowercase DOM attribute (camelCase lands in React 19).
+            {...({ fetchpriority: "high" } as React.ImgHTMLAttributes<HTMLImageElement>)}
             decoding="async"
           />
         </motion.div>

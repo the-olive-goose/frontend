@@ -11,6 +11,17 @@ export default defineConfig(({ mode: _mode }) => ({
     hmr: {
       overlay: true,
     },
+    // Uploaded files are the one thing dev cannot reach on its own. API calls in
+    // dev go to an absolute VITE_API_URL (src/lib/apiBase.ts), but an uploaded
+    // photo is stored as the bare `/uploads/…` path the server issued — that is
+    // deliberate, because the value an admin saves is the value the live site
+    // ships, and it is same-origin there. Without this hop that path resolves
+    // against the dev server, which has no such route, so Vite's SPA fallback
+    // answers with index.html and every uploaded photo renders as a broken
+    // image in dev while being perfectly correct in production.
+    proxy: {
+      "/uploads": { target: process.env.VITE_API_URL || "http://localhost:3001", changeOrigin: true },
+    },
   },
   // `npm run build && npm run preview` serves the REAL production bundle, which
   // always calls /api on its own origin (see src/lib/apiBase.ts). In production

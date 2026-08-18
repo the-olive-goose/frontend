@@ -253,6 +253,7 @@ export interface DiscountCodeRecord {
   max_redemptions: number;
   redemption_count: number;
   is_active: boolean;
+  one_per_customer: boolean;
   label: string | null;
   source: string;
   redeemed_at: string | null;
@@ -271,6 +272,8 @@ export interface CreateDiscountCodeInput {
   discount_type: 'percentage' | 'fixed';
   discount_value: number;
   max_redemptions?: number;
+  // Defaults to true server-side: max uses then counts customers, not orders.
+  one_per_customer?: boolean;
   label?: string;
 }
 
@@ -682,9 +685,14 @@ export const getResolvedDecisions = async (): Promise<(AdminDecision & { resolve
 // ── Analytics (admin) ───────────────────────────────────────────────────────────
 
 export interface AnalyticsOverview {
+  // The window that was actually measured — NOT necessarily the one requested
+  // (a range longer than two years is shortened). The panel prints these, so a
+  // shortened window can never be read as a fall in trade.
   start: string; // YYYY-MM-DD, inclusive
   end: string;   // YYYY-MM-DD, inclusive
   days: number;
+  /** True when the requested range was longer than the 2-year cap and was cut. */
+  clamped?: boolean;
   timezone: string; // IANA zone every day boundary was resolved in
   filters: { device: string | null; source: string | null; attr: 'source' | 'medium' | 'campaign' };
   // True when device/source filters are active — sales then cover only the
@@ -761,13 +769,32 @@ export interface AnalyticsQuery {
 
 // Fetch analytics for an explicit calendar window (both dates inclusive) — the
 // backend compares it against the equally-sized period immediately before it.
+//
+// Given its own generous timeout: this one request runs fifteen aggregates over
+// the whole event history, and a year-long window on a cold Railway instance
+// takes far longer than an ordinary API call. On the shared 10s budget those
+// windows aborted, and an aborted load left the panel showing the PREVIOUS
+// period's numbers under the newly-picked dates — the failure mode that reads,
+// from the outside, as "the date picker does nothing".
+const ANALYTICS_TIMEOUT_MS = 60_000;
+
 export const getAdminAnalytics = async (q: AnalyticsQuery): Promise<AnalyticsOverview> => {
   const params = new URLSearchParams({ start: q.start, end: q.end });
   if (q.device) params.set('device', q.device);
   if (q.source) params.set('source', q.source);
   if (q.attr) params.set('attr', q.attr);
-  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics?${params}`, { headers: authHeaders(true) }));
-  if (!res.ok) throw new Error('Failed to load analytics');
+  const res = await checkStatus(await fetchWithTimeout(
+    `${API_URL}/api/admin/analytics?${params}`,
+    { headers: authHeaders(true) },
+    ANALYTICS_TIMEOUT_MS,
+  ));
+  if (!res.ok) {
+    // Surface the server's own reason (an invalid range is a 400 with a message)
+    // rather than a blanket failure the reader can't act on.
+    let msg = 'Failed to load analytics';
+    try { const body = await res.json(); if (body?.error) msg = body.error; } catch { /* keep the default */ }
+    throw new Error(msg);
+  }
   return res.json();
 };
 

@@ -1274,3 +1274,39 @@
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
+
+/* ── Hero tint ────────────────────────────────────────────────────────────────
+   A vignette: the photograph clear through the middle, the tint drawing in from
+   every edge. The three stop colours are set inline by HeroSection, because the
+   colour and its strength are the admin's to choose; what lives here is the
+   *geometry*, because that is a property of the frame rather than of the paint.
+
+   `farthest-side` ends the ramp at the middle of each edge, which is what makes
+   the four sides equally deep — sized to the corners (the default) the ramp is
+   still climbing when it crosses the left and right edges, and the sides come
+   out visibly thinner than the top and bottom. */
+.og-hero-tint {
+  background: radial-gradient(ellipse farthest-side at center,
+    var(--og-tint-clear) 32%,
+    var(--og-tint-mid)   68%,
+    var(--og-tint-edge)  100%);
+}
+
+/* Phones get their own stops, and need them, because they are not looking at
+   the same picture. The hero is 440px tall against the full width, so the photo
+   is cropped to well under half its width and the subject fills far more of the
+   frame than it does on a desktop. Run the desktop stops over that and the tint
+   closes in over the subject itself instead of settling around it.
+
+   So the clear middle is pushed out and the ramp packed into the last quarter:
+   the same effect — a clear centre inside a tinted rim — measured against what
+   is actually in the frame. 639px, matching the `(max-width: 639px)` band that
+   decides which crop a phone is sent in the first place. */
+@media (max-width: 639px) {
+  .og-hero-tint {
+    background: radial-gradient(ellipse farthest-side at center,
+      var(--og-tint-clear) 46%,
+      var(--og-tint-mid)   78%,
+      var(--og-tint-edge)  100%);
+  }
+}

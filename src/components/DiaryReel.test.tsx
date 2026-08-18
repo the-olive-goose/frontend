@@ -89,16 +89,31 @@ describe("DiaryReel load budget", () => {
     expect(stills.some((src) => src.endsWith(".mov"))).toBe(false);
   });
 
-  it("only the slide being read may fetch a video, and only it preloads", () => {
+  it("buffers the very next slide, so a flick lands on a moving frame", () => {
     const { container } = render(
       <DiaryReel photos={mixedDiary()} handle="The Olive Goose" onExpand={() => {}} />,
     );
 
     const videos = [...container.querySelectorAll("video")];
     expect(videos).toHaveLength(1); // the neighbour at index 1
-    // It is a neighbour, not the slide being read, so it sits on its poster.
-    expect(videos[0].getAttribute("preload")).toBe("none");
+    // The diary opens on slide 0 (a photo), so slide 1 is the next thing the
+    // visitor will see. A video that only starts loading once it becomes the
+    // active slide sits on its still for over a second — long enough to read as
+    // broken — so the slide about to arrive is warmed now.
+    expect(videos[0].getAttribute("preload")).toBe("auto");
+    // The still stays underneath regardless, so there is never a black frame.
     expect(videos[0].getAttribute("poster")).toContain("so_0,f_jpg");
+  });
+
+  it("warms exactly one slide ahead, never a window of them", () => {
+    // Opening deep into the diary puts videos on both sides of the reader.
+    // Only the one ahead may buffer: these are 1080p captures, and a stack of
+    // them downloading at once is the thing a phone cannot take.
+    const { container } = render(
+      <DiaryReelViewer photos={mixedDiary()} handle="The Olive Goose" index={2} onClose={() => {}} />,
+    );
+    const preloads = [...container.querySelectorAll("video")].map((v) => v.getAttribute("preload"));
+    expect(preloads.filter((p) => p === "auto").length).toBeLessThanOrEqual(2);
   });
 
   it("opens the viewer on the photo asked for, not on the first one", () => {

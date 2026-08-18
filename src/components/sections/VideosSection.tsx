@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { VideosContent, VideoItem, toEmbedUrl, isEmbedUrl, isDirectVideo, isVideosEnabled, youtubeThumbnailUrl } from "@/lib/defaults";
-import { buildPosterUrl } from "@/lib/cloudinaryVideo";
+import { buildPosterUrl, buildRailVideoUrl } from "@/lib/cloudinaryVideo";
 import RichText, { stripRichText } from "@/lib/richtext";
 import useIsMobile from "@/hooks/useIsMobile";
+import useInViewport from "@/hooks/useInViewport";
 import useSwipe from "@/hooks/useSwipe";
 import useBodyScrollLock from "@/hooks/useBodyScrollLock";
 import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
@@ -62,9 +63,15 @@ const DirectVideo = ({ src, interactive, poster }: { src: string; interactive: b
     const video = ref.current;
     if (!video) return;
     video.muted = !interactive;
+    // React sets `muted` as a property but never writes the attribute, so the
+    // markup a browser inspects says nothing about being muted. `defaultMuted`
+    // is the one that reflects, and an autoplay policy that reads the attribute
+    // rather than the property is exactly the kind of thing that leaves a rail
+    // sitting still on someone else's machine and nowhere else.
+    video.defaultMuted = !interactive;
     video.play().catch(() => {
       video.muted = true;
-      video.play().catch(() => { /* nothing more to try; controls are there */ });
+      video.play().catch(() => { /* nothing more to try; the watchdog retries */ });
     });
   }, [interactive, src]);
 
@@ -82,8 +89,27 @@ const DirectVideo = ({ src, interactive, poster }: { src: string; interactive: b
       video.play().catch(() => { /* refused; the next trigger can try again */ });
     };
 
+    // A reel being looked at while sitting perfectly still is the one state this
+    // must never settle into. Every trigger below is an *event* — the card
+    // scrolled into view, the browser paused it, the tab came back — and the
+    // reasons playback gets refused do not all raise one: an autoplay policy
+    // reading the muted attribute, a power-saving mode, a phone taking its
+    // decoder back. So while the card is on screen its state is checked rather
+    // than assumed, and `resume` is cheap to call: it returns immediately when
+    // the reel is already moving.
+    let watchdog = 0;
+    const stopWatchdog = () => { if (watchdog) { window.clearInterval(watchdog); watchdog = 0; } };
+
     const observer = new IntersectionObserver(
-      entries => { if (entries.some(e => e.isIntersecting)) resume(); },
+      entries => {
+        if (entries.some(e => e.isIntersecting)) {
+          resume();
+          if (!watchdog) watchdog = window.setInterval(resume, 1000);
+        } else {
+          // Off screen it is not worth watching, and it should not be playing.
+          stopWatchdog();
+        }
+      },
       { threshold: 0.15 },
     );
     observer.observe(video);
@@ -91,6 +117,7 @@ const DirectVideo = ({ src, interactive, poster }: { src: string; interactive: b
     document.addEventListener("visibilitychange", resume);
 
     return () => {
+      stopWatchdog();
       observer.disconnect();
       video.removeEventListener("pause", resume);
       document.removeEventListener("visibilitychange", resume);
@@ -194,7 +221,9 @@ const ReelMedia = ({ item, interactive }: { item: VideoItem; interactive: boolea
   }
 
   if (embed && isDirectVideo(embed)) {
-    return <DirectVideo src={embed} interactive={interactive} poster={posterFor(item)} />;
+    // The rail plays a thumbnail-weight cut; full screen plays what was saved.
+    const src = interactive ? embed : buildRailVideoUrl(embed);
+    return <DirectVideo src={src} interactive={interactive} poster={posterFor(item)} />;
   }
 
   return (
@@ -279,6 +308,12 @@ const ReelCard = ({
    * once is roughly a third of a gigabyte of video and six hardware decoders,
    * which is what used to take phone browsers down mid-scroll — so only the
    * reels in view are ever mounted, and the rest are ~40 KB images.
+   *
+   * "In view" means both ways: the right card along the rail, *and* the rail
+   * itself on screen. The rail sits about 2,700 px down the homepage, so
+   * without the second half of that test a visitor who has never scrolled past
+   * the hero was still made to download ~15 MB of 1080x1920 video and hold a
+   * decoder open for it.
    */
   isMounted: boolean;
   onOpen: () => void;
@@ -449,6 +484,14 @@ const VideosSection = ({ data, ready = true }: Props) => {
   const isMobile = useIsMobile();
 
   const railRef = useRef<HTMLDivElement>(null);
+  // Warmed a full screen before the rail arrives. A reel is meant to be moving
+  // by the time it is looked at, and a player only starts downloading once it
+  // is mounted — measured on a 4G phone, mounting 300px out left the first reel
+  // sitting on its still for 1.6s after it came into view. One viewport of lead
+  // is the honest amount: it is the distance a visitor covers between "not yet
+  // on screen" and "looking at it", and it is expressed as a percentage so it
+  // scales with the device rather than assuming a phone.
+  const { ref: railInViewRef, inView } = useInViewport("200% 0px");
   const [active, setActive] = useState(0);
   const [edges, setEdges] = useState({ start: true, end: false, overflowing: false });
   const [open, setOpen] = useState<number | null>(null);
@@ -564,7 +607,7 @@ const VideosSection = ({ data, ready = true }: Props) => {
 
         {/* ── Rail — native scroll-snap, so momentum, rubber-banding and
              direction changes are the phone's own, not a re-implementation ── */}
-        <div className="og-reel-rail-wrap">
+        <div className="og-reel-rail-wrap" ref={railInViewRef}>
           <div ref={railRef} className="og-reel-rail no-scrollbar">
             {items.map((item, i) => (
               <ReelCard
@@ -574,10 +617,23 @@ const VideosSection = ({ data, ready = true }: Props) => {
                 total={items.length}
                 isFocused={!isMobile || i === active}
                 isCue={i === active}
-                // A phone shows one reel at a time, so it plays one. A wide
-                // screen fits three side by side, and a card that is fully in
-                // view but frozen reads as broken — so the neighbours play too.
-                isMounted={Math.abs(i - active) <= (isMobile ? 0 : 1)}
+                // A wide screen fits three cards side by side, so all three
+                // play — one fully in view but frozen reads as broken. A phone
+                // shows one at a time, and plays that one *and the next*: a
+                // reel that only starts loading once it has been swiped to
+                // cannot start instantly, because a player downloads nothing
+                // until it exists. Warming the one behind the finger is what
+                // makes the swipe land on something already moving.
+                //
+                // Ahead only, never behind, and never a wider window than this:
+                // the reason this rule exists is that six players at once is a
+                // third of a gigabyte and six decoders, which is what took
+                // phone browsers down. Swiping back lands on a still, which is
+                // the cheaper of the two mistakes.
+                //
+                // And none of them until the rail is on screen: a reel nobody
+                // can see is a download and a decoder spent on nothing.
+                isMounted={inView && (isMobile ? i - active >= 0 && i - active <= 1 : Math.abs(i - active) <= 1)}
                 onOpen={() => setOpen(i)}
               />
             ))}

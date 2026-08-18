@@ -6,10 +6,11 @@ import { useCart } from "@/contexts/CartContext";
 import { getContent } from "@/lib/api";
 import { useContent } from "@/hooks/useContent";
 import {
-  createCheckoutSession, validateDiscountCode, SessionExpiredError,
+  createCheckoutSession, validateDiscountCode, fetchMyDiscountCode, SessionExpiredError,
   fetchAddresses, createAddress, updateAddress,
-  type DeliveryAddress, type FulfillmentType, type SavedAddress,
+  type DeliveryAddress, type FulfillmentType, type MyDiscountCode, type SavedAddress,
 } from "@/lib/userApi";
+import { readAppliedDiscount, writeAppliedDiscount, type AppliedDiscount } from "@/lib/appliedDiscount";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
 import { cartSubtotal, formatPrice, MIN_CHARGE_EUR } from "@/lib/cart";
 import { computeBundleSavings } from "@/lib/bundleSavings";
@@ -105,9 +106,12 @@ const CheckoutPage = () => {
     };
   }, [user, items.length]);
   const [codeInput, setCodeInput] = useState("");
-  const [appliedCode, setAppliedCode] = useState<{ code: string; type: "percentage" | "fixed"; value: number } | null>(null);
+  const [appliedCode, setAppliedCodeState] = useState<AppliedDiscount | null>(null);
   const [codeError, setCodeError] = useState("");
   const [validatingCode, setValidatingCode] = useState(false);
+  // A welcome code this account holds but hasn't applied — offered as one tap so
+  // it doesn't depend on the shopper still having the email it arrived in.
+  const [offeredCode, setOfferedCode] = useState<MyDiscountCode | null>(null);
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState(
     searchParams.get("canceled") ? "Payment was canceled — your basket is still here whenever you're ready." : ""
@@ -117,6 +121,54 @@ const CheckoutPage = () => {
     getContent<DealsContent>("deals", DEFAULT_DEALS).then(d => setBundles(d?.bundles ?? []));
     getContent("products", DEFAULT_CONTENT.products).then(d => setAllProducts(d?.items ?? []));
   }, []);
+
+  // Every path that changes the applied code goes through here, so what the order
+  // summary shows and what survives a reload can never drift apart.
+  const setAppliedCode = (next: AppliedDiscount | null) => {
+    setAppliedCodeState(next);
+    writeAppliedDiscount(next);
+  };
+
+  // Restore a code applied before a reload, a trip back to the basket, or the
+  // back button on Stripe's payment page — re-validated against the server, never
+  // trusted straight out of storage. A code the server now refuses is dropped
+  // silently: the shopper did nothing wrong, and the summary just shows the real
+  // price rather than an error about a code they don't remember typing. A
+  // validate that *fails to answer* (offline, timeout) keeps the code applied —
+  // checkout re-checks it authoritatively before any money moves, so the safe
+  // default is the one that doesn't quietly charge full price.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const remembered = readAppliedDiscount();
+
+    (async () => {
+      let restored = false;
+      if (remembered) {
+        try {
+          const result = await validateDiscountCode(remembered.code);
+          const value = result.discount_value ?? result.discount_percent;
+          if (cancelled) return;
+          if (result.valid && value != null) {
+            setAppliedCode({ code: result.code ?? remembered.code, type: result.discount_type ?? "percentage", value });
+            restored = true;
+          } else {
+            setAppliedCode(null);
+          }
+        } catch {
+          if (cancelled) return;
+          setAppliedCodeState(remembered);
+          restored = true;
+        }
+      }
+      // Nothing applied — offer the welcome code this account is still holding.
+      if (restored) return;
+      const mine = await fetchMyDiscountCode();
+      if (!cancelled) setOfferedCode(mine);
+    })();
+
+    return () => { cancelled = true; };
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user) return;
@@ -262,8 +314,10 @@ const CheckoutPage = () => {
   // so only the top-ranked bundle nudge is surfaced here (see getBundleNudges).
   const [bestNudge] = getBundleNudges(bundles, items, allProducts, 1);
 
-  const applyCode = async () => {
-    const code = codeInput.trim();
+  // `explicit` is the one-tap path for a code the shopper already holds (the
+  // welcome-code offer below); everything else applies whatever is in the field.
+  const applyCode = async (explicit?: string) => {
+    const code = (explicit ?? codeInput).trim();
     if (!code) return;
     setValidatingCode(true);
     setCodeError("");
@@ -281,7 +335,7 @@ const CheckoutPage = () => {
       }
     } catch (err) {
       if (err instanceof SessionExpiredError) {
-        requireAuth(() => applyCode());
+        requireAuth(() => applyCode(code));
       } else {
         setCodeError(err instanceof Error ? err.message : "Could not validate code");
       }
@@ -290,6 +344,9 @@ const CheckoutPage = () => {
     }
   };
 
+  // Local only — a code is never spent by applying it, so removing one puts it
+  // straight back in the shopper's pocket (and back in the offer below if it's
+  // their welcome code).
   const removeCode = () => {
     setAppliedCode(null);
     setCodeError("");
@@ -686,6 +743,27 @@ const CheckoutPage = () => {
                     ) : (
                       <div>
                         <label className="font-sans text-xs font-semibold block mb-1" style={{ color: "#555" }}>Discount code</label>
+                        {/* The welcome code this account already holds. It was only
+                            ever emailed, so without this a shopper who lost that
+                            email quietly paid full price. One tap applies it. */}
+                        {offeredCode && (
+                          <button
+                            onClick={() => applyCode(offeredCode.code)}
+                            disabled={validatingCode}
+                            className="og-tap w-full mb-2 px-3 py-2 rounded-lg text-left transition-all hover:brightness-95 active:scale-[0.99] disabled:opacity-50"
+                            style={{ background: "#eef6ee", border: "1px dashed #cfe6cf" }}>
+                            <span className="font-sans text-xs font-semibold" style={{ color: "#007600" }}>
+                              🎁 You have a{" "}
+                              {offeredCode.discount_type === "fixed"
+                                ? `€${Number(offeredCode.discount_value).toFixed(2)}`
+                                : `${Number(offeredCode.discount_value)}%`}{" "}
+                              welcome discount
+                            </span>
+                            <span className="font-sans text-xs block underline" style={{ color: "#555" }}>
+                              Tap to apply {offeredCode.code}
+                            </span>
+                          </button>
+                        )}
                         <div className="flex gap-2">
                           <input
                             value={codeInput}
@@ -695,7 +773,7 @@ const CheckoutPage = () => {
                             className="flex-1 min-w-0 px-3 py-2 rounded-lg font-sans text-sm outline-none uppercase"
                             style={inputStyle}
                           />
-                          <button onClick={applyCode} disabled={validatingCode || !codeInput.trim()}
+                          <button onClick={() => applyCode()} disabled={validatingCode || !codeInput.trim()}
                             className="og-tap justify-center shrink-0 font-sans text-xs font-bold px-4 py-2 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-50"
                             style={{ background: "#e7e7e7", border: "1px solid #ccc", color: "#111" }}>
                             {validatingCode ? "…" : "Apply"}
