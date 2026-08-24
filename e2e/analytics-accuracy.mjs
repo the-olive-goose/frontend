@@ -256,6 +256,11 @@ async function main() {
       ADMIN_EMAIL: ADMIN.email, ADMIN_PASSWORD_HASH: ADMIN_HASH, RESEND_API_KEY: "",
       STRIPE_SECRET_KEY: "", FRONTEND_URL: `http://localhost:8081,${COUNTED_ORIGIN}`, ANALYTICS_TZ: TZ,
       API_RATE_LIMIT_MAX: "100000", AUTH_RATE_LIMIT_MAX: "100000",
+      // Left DELIBERATELY low so the per-visitor bucketing can be exercised for
+      // real at the end of this file. High enough that the ~60 ingest calls the
+      // rest of the suite makes (all on the no-edge-address fallback key) never
+      // come near it.
+      ANALYTICS_RATE_LIMIT_MAX: "200",
       // Stands in for theolivegoose.ie, so the origin gate is exercised against a
       // fixed value rather than whatever the live domain happens to be.
       ANALYTICS_ORIGINS: COUNTED_ORIGIN,
@@ -857,6 +862,198 @@ async function main() {
   eq("removing every network releases the visitors it hid",
     released.excluded_visitors.some(v => v.reason === "own network"), false);
 
+
+  // ── Exclusions that reach backwards ─────────────────────────────────────────
+  // Every control on the card is described to the owner as "your own visits stop
+  // counting", and two of them quietly meant "…from the next visit onwards":
+  //
+  //   • naming an account did nothing at all to what that account had already
+  //     browsed, because the exclusion list is written at INGEST — so the test
+  //     checkouts it was added to hide stayed in the numbers, and the panel said
+  //     they were gone;
+  //   • removing one of two excluded networks released NOTHING, because the
+  //     release only ran when the last one went. Real shoppers stayed hidden
+  //     permanently, which is the one direction of error no other figure on the
+  //     dashboard can reveal — the count only ever looks calm.
+  console.log("\n\x1b[1mexclusions reach backwards\x1b[0m");
+
+  const setInternal = (patch) => fetch(`${API}/api/admin/analytics/internal`, {
+    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  }).then(r => r.json());
+
+  // A visit shaped like every test checkout: anonymous browsing, a sign-in, then
+  // more anonymous browsing. Only the middle of it carries the account, so an
+  // exclusion that keys on the account alone would leave two thirds behind.
+  const lateId = (await pool.query(
+    `INSERT INTO users (email, full_name) VALUES ('late@test.local','Late') RETURNING id`
+  )).rows[0].id;
+  await send("late-browser", COUNTED_ORIGIN);
+  await send("late-browser", COUNTED_ORIGIN, { Cookie: sessionCookie(lateId) });
+  await send("late-browser", COUNTED_ORIGIN);
+
+  const beforeLate = await visitors();
+  eq("an account not yet on the list is an ordinary visitor", await rowsFor("late-browser"), 3);
+
+  await setInternal({ emails: ["owner@test.local", "@olivegoose-test.local", "late@test.local"] });
+  eq("naming the account afterwards retires what it ALREADY browsed",
+    await visitors(), beforeLate - 1);
+  // The exclusion must hide the visit, never delete it: an undo that cannot get
+  // the rows back is data loss with a checkbox in front of it.
+  eq("…without destroying a single row", await rowsFor("late-browser"), 3);
+  // The anonymous page views either side of the sign-in carry no account at all,
+  // so only retiring the VISITOR takes the whole visit.
+  eq("…including the anonymous browsing either side of the sign-in",
+    (await pool.query(
+      `SELECT COUNT(*)::int AS n FROM analytics_internal_visitors WHERE visitor_id = 'late-browser'`
+    )).rows[0].n, 1);
+
+  // The mark has to survive an unrelated save. Once a browser is marked,
+  // ingestion DROPS its batches — so a browser that has only ever visited while
+  // its account was already listed has NO stored events naming that account, and
+  // a release that looked only for events would throw the mark away the next
+  // time any setting was touched. The owner would watch a morning of their own
+  // testing walk back into the numbers with nothing on screen to explain it.
+  const heldByAccount = await visitors();
+  await send("late-browser", COUNTED_ORIGIN, { Cookie: sessionCookie(lateId) }); // dropped, not stored
+  await setInternal({ networks: [] });                                          // an unrelated save
+  eq("an unrelated save does not hand the account's browsing back",
+    await visitors(), heldByAccount);
+  eq("…because the mark records which account made it",
+    (await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json())
+      .excluded_visitors.find(v => v.visitor_id === "late-browser")?.detail, lateId);
+
+  await setInternal({ emails: ["owner@test.local", "@olivegoose-test.local"] });
+  eq("removing the account gives its browsing back", await visitors(), beforeLate);
+
+  // Two networks, then one removed. The released set must be exactly the one
+  // that was removed — releasing both would put the owner's own household back
+  // in the numbers, releasing neither is what shipped.
+  await fromIp("net-a-device", "192.0.2.10");
+  await fromIp("net-b-device", "198.51.100.20");
+  const beforeNets = await visitors();
+  await setInternal({ networks: ["192.0.2.10", "198.51.100.20"] });
+  // Neither device is excluded yet — no address is stored, so nothing can be
+  // matched retroactively. Each drops out on its own next visit.
+  await fromIp("net-a-device", "192.0.2.10");
+  await fromIp("net-b-device", "198.51.100.20");
+  eq("both networks' devices drop out as they return", await visitors(), beforeNets - 2);
+
+  await setInternal({ networks: ["198.51.100.20"] });
+  eq("removing ONE network releases exactly its own devices", await visitors(), beforeNets - 1);
+  const afterOne = await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json();
+  eq("…and the network still on the list keeps hiding its own",
+    afterOne.excluded_visitors.some(v => v.visitor_id === "net-b-device"), true);
+  eq("…and records which network hid it, so this stays reversible",
+    afterOne.excluded_visitors.find(v => v.visitor_id === "net-b-device")?.detail, "198.51.100.20");
+
+  await setInternal({ networks: [] });
+  eq("removing the last one releases the rest", await visitors(), beforeNets);
+
+  // ── Retiring a visit after the fact ─────────────────────────────────────────
+  // The gap none of the rules above can close. A VPN puts the owner's laptop on
+  // an address in another country, so the home network never matches and the
+  // visit lands in the numbers as a shopper in Stockholm — with nothing anywhere
+  // that could say otherwise afterwards.
+  console.log("\n\x1b[1mretiring a visit after the fact\x1b[0m");
+
+  await send("vpn-laptop", COUNTED_ORIGIN, {
+    "X-Og-Client-Ip": "203.0.113.200",          // a VPN exit node, not the house
+    "X-Og-Geo-City": encodeURIComponent("Stockholm"),
+    "X-Og-Geo-Country": "SE",
+  });
+  const beforeVpn = await visitors();
+
+  const listSessions = async (q = "") =>
+    (await (await fetch(`${API}/api/admin/analytics/sessions?days=7${q}`, { headers: auth })).json()).sessions;
+
+  const listed = await listSessions();
+  const vpnRow = listed.find(r => r.visitor_id === "vpn-laptop");
+  eq("the visit is listed, with enough of it to be recognised", !!vpnRow, true);
+  eq("…showing where it surfaced", `${vpnRow?.city}, ${vpnRow?.country}`, "Stockholm, SE");
+  eq("…and that nothing had excluded it", vpnRow?.excluded, false);
+
+  const retire = (visitorId, enabled) => fetch(`${API}/api/admin/analytics/internal/visitor`, {
+    method: "POST", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ visitor_id: visitorId, enabled }),
+  });
+
+  eq("retiring it succeeds", (await retire("vpn-laptop", true)).status, 200);
+  eq("…and it leaves the numbers", await visitors(), beforeVpn - 1);
+  eq("…and stops being recorded at all", await send("vpn-laptop", COUNTED_ORIGIN), 1);
+  eq("…and is still listed, so the decision can be undone",
+    (await listSessions()).find(r => r.visitor_id === "vpn-laptop")?.excluded, true);
+  eq("…and shows up under the retired filter",
+    (await listSessions("&only=excluded")).some(r => r.visitor_id === "vpn-laptop"), true);
+  eq("…and not under the counted one",
+    (await listSessions("&only=counted")).some(r => r.visitor_id === "vpn-laptop"), false);
+
+  await retire("vpn-laptop", false);
+  eq("putting it back counts it again", await visitors(), beforeVpn);
+
+  // An account excluded by the LIST cannot be released from this button — the
+  // list is where that decision lives, and a control that silently fails is
+  // worse than one that isn't offered.
+  await setInternal({ emails: ["owner@test.local", "@olivegoose-test.local", "late@test.local"] });
+  const held = await visitors();
+  await retire("late-browser", false);
+  eq("a visit excluded by the account list is not released by this button",
+    await visitors(), held);
+  await setInternal({ emails: ["owner@test.local", "@olivegoose-test.local"] });
+
+  // ── Where a visit came from ─────────────────────────────────────────────────
+  // The source is the referrer's HOST. It used to be produced with
+  // regexp_replace, which returns the subject unchanged when the pattern misses
+  // — so any referrer that wasn't a plain http(s) URL became a "source" spelled
+  // out as an entire URL, one row per distinct link, each of them pushing a real
+  // source out of a top-ten table.
+  console.log("\n\x1b[1mwhere a visit came from\x1b[0m");
+
+  const rev = (sid, vid, ref) => pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, referrer, visitor_scope, created_at)
+     VALUES ($1,$2,'page_view','/',$3,'persistent',NOW())`, [vid, sid, ref]);
+
+  await rev("ref-s1", "ref-v1", "https://t.co/abc?utm=1");
+  await rev("ref-s2", "ref-v2", "https://t.co/def?utm=2");
+  await rev("ref-s3", "ref-v3", "https://www.t.co/ghi");
+  eq("a query string is not part of the site that referred them",
+    (await get("&source=t.co")).traffic.sessions, 3);
+
+  await rev("ref-s4", "ref-v4", "android-app://com.google.android.gm/");
+  eq("an app referral keeps its identity instead of becoming a URL",
+    (await get("&source=com.google.android.gm")).traffic.sessions, 1);
+
+  await rev("ref-s5", "ref-v5", "not a url at all");
+  eq("an unreadable referrer is labelled, not counted as direct",
+    (await get("&source=(unrecognised referrer)")).traffic.sessions, 1);
+
+  // ── What shoppers searched for ──────────────────────────────────────────────
+  // Recorded since the search event shipped and reported nowhere. It is the only
+  // place a shopper says what they wanted in their own words, and a term that
+  // finds nothing leaves no other trace on the whole dashboard: no product row,
+  // no lost basket, no funnel step — the visit simply ends.
+  console.log("\n\x1b[1mwhat shoppers searched for\x1b[0m");
+
+  const sev = (sid, vid, query, results) => pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, visitor_scope, created_at)
+     VALUES ($1,$2,'search','/',$3,'persistent',NOW())`,
+    [vid, sid, JSON.stringify({ query, results })]);
+
+  await sev("srch-s1", "srch-v1", "lavender", 3);
+  await sev("srch-s2", "srch-v2", "Lavender ", 3);   // same search, different typing
+  await sev("srch-s3", "srch-v3", "beeswax", 0);
+  await sev("srch-s3", "srch-v3", "bees wax", 0);
+
+  const searched = (await get()).searches;
+  const term = (t) => searched.find(r => r.term === t);
+  eq("searches are reported at all", searched.length > 0, true);
+  eq("case and stray spaces are one term, not three", term("lavender")?.searches, 2);
+  eq("…counted by session as well as by search", term("lavender")?.sessions, 2);
+  eq("a term that found nothing is marked as such", term("beeswax")?.no_results, 1);
+  eq("…and one that found something is not", term("lavender")?.no_results, 0);
+  eq("two empty searches in one visit are one shopper, twice",
+    [term("beeswax")?.sessions, term("bees wax")?.sessions], [1, 1]);
+
   // ── Measurement changes are declared, not hidden ────────────────────────────
   // A window spanning the day a metric's definition moved is comparing two
   // different measurements. No query can reconcile that, so the API has to say
@@ -1082,6 +1279,35 @@ async function main() {
     [item("Candle CC")?.views, item("Candle CC")?.view_to_cart_pct, item("Candle CC")?.cart_to_buy_pct], [0, null, null]);
   eq("product revenue adds up to the Revenue tile", total(C.top_products, "revenue"), C.sales.revenue);
 
+  // Landing pages — where visits BEGIN. Not Top pages re-sorted: the busiest
+  // page is usually one everyone passes THROUGH, and the front door is a
+  // different page answering a different question.
+  // A visit that began on the homepage and moved on lands on the HOMEPAGE. The
+  // fixture's midnight-spanning session does exactly that, so if landing pages
+  // were secretly "last page" or "busiest page" this row would not exist.
+  eq("a visit that began on the homepage lands there, wherever it went next",
+    (C.landing_pages.find(p => p.path === "/")?.sessions ?? 0) > 0, true);
+
+  // The invariant that separates this table from Top pages: landing on a page
+  // means visiting it, but visiting it does not mean landing on it. So for every
+  // page, landings can never exceed visits — and where they differ, the two
+  // tables are genuinely answering different questions rather than one being the
+  // other re-sorted.
+  const bySession = new Map(C.top_pages.map(p => [p.path, p.sessions]));
+  const realRows = C.landing_pages.filter(p => !p.path.startsWith("+ "));
+  eq("nobody lands on a page more often than they visit it",
+    realRows.every(p => !bySession.has(p.path) || p.sessions <= bySession.get(p.path)), true);
+  eq("…and the two tables do not agree, because they are not the same question",
+    realRows.some(p => bySession.has(p.path) && p.sessions < bySession.get(p.path)), true);
+
+  // Every landing is a session, so the column can never exceed the tile. It can
+  // fall SHORT of it, and legitimately: a session with no page view at all has no
+  // landing page, which is exactly how GA4 reports it too.
+  eq("landings never exceed the sessions they came from",
+    realRows.reduce((n, p) => n + p.sessions, 0) <= C.traffic.sessions, true);
+  eq("…and the sales credited to landing pages don't exceed the ones measured",
+    realRows.reduce((n, p) => n + p.purchased, 0) <= C.sales.orders, true);
+
   // ── The shape the panel is typed against ───────────────────────────────────
   // AnalyticsOverview in src/lib/api.ts is a hand-written description of this
   // response, and TypeScript cannot check it: nothing type-checks JSON coming
@@ -1091,12 +1317,14 @@ async function main() {
   console.log("\n\x1b[1mresponse shape\x1b[0m");
   const keys = (o) => Object.keys(o).sort();
   eq("top level", keys(C), [
-    "abandoned", "attributed", "clamped", "customers", "daily", "days", "devices", "end",
-    "filters", "funnel", "locations", "measurement_notes", "sales", "signin_wall", "sources",
-    "start", "timezone", "top_pages", "top_products", "traffic", "web_vitals", "web_vitals_by_page",
+    "abandoned", "accounts", "attributed", "clamped", "customers", "daily", "days", "devices",
+    "end", "filters", "funnel", "landing_pages", "locations", "measurement_notes", "sales",
+    "searches", "signin_wall", "sources", "start", "timezone", "top_pages", "top_products",
+    "traffic", "web_vitals", "web_vitals_by_page",
   ]);
   eq("traffic", keys(C.traffic), [
-    "bounce_rate", "identified_visitor_pct", "new_visitors", "pages_per_session", "pageviews",
+    "avg_engagement_seconds", "bounce_rate", "engagement_rate", "identified_visitor_pct",
+    "new_visitors", "pages_per_session", "pageviews",
     "prev", "returning_visitors", "sessions", "visitors",
   ]);
   eq("traffic.prev", keys(C.traffic.prev), ["pageviews", "sessions", "visitors"]);
@@ -1110,11 +1338,16 @@ async function main() {
   eq("filters", keys(C.filters), ["attr", "device", "source"]);
   eq("daily row", keys(C.daily[0]), ["day", "orders", "pageviews", "revenue", "sessions", "visitors"]);
   eq("top_products row", keys(C.top_products[0]), [
-    "add_to_carts", "cart_to_buy_pct", "name", "revenue", "units", "view_to_cart_pct", "views",
+    "add_to_carts", "cart_to_buy_pct", "name", "removals", "revenue", "units", "view_to_cart_pct", "views",
   ]);
+  eq("accounts", keys(C.accounts), ["account_signups", "newsletter_signups", "sign_ins"]);
   eq("sources row", keys(C.sources[0]), ["orders", "revenue", "sessions", "source"]);
   eq("locations row", keys(C.locations[0]), ["city", "country", "orders", "revenue", "sessions"]);
   eq("top_pages row", keys(C.top_pages[0]), ["path", "sessions", "views"]);
+  eq("landing_pages row", keys(C.landing_pages[0] ?? { path: "", purchased: 0, sessions: 0 }),
+    ["path", "purchased", "sessions"]);
+  eq("searches row", keys(C.searches[0] ?? { no_results: 0, searches: 0, sessions: 0, term: "" }),
+    ["no_results", "searches", "sessions", "term"]);
   eq("devices row", keys(C.devices[0]), ["device", "sessions"]);
   eq("funnel row", keys(C.funnel[0]), ["sessions", "stage"]);
   // The gate block is null in this window, so its shape is checked where it exists.
@@ -1124,6 +1357,329 @@ async function main() {
   ]);
   eq("web_vitals row", keys(vitalsWindow.web_vitals[0]), ["metric", "p75", "samples"]);
   eq("web_vitals_by_page row", keys(vitalsWindow.web_vitals_by_page[0]), ["metric", "p75", "path", "samples"]);
+
+
+  // ── Junk in the props cannot take the page down ─────────────────────────────
+  // `props` is whatever a browser posted, and Postgres does not fail softly on a
+  // bad cast: '1.2.3'::numeric RAISES and aborts the whole statement. Every one
+  // of those casts sits inside the admin dashboard's aggregates, and the ingest
+  // route is public and unauthenticated — so ONE request was enough to take
+  // Analytics down permanently for every date range containing the row.
+  //
+  // It didn't even fail honestly. 22P02 is the code sendServerError reports as
+  // 404 "Not found" (right for a mistyped :id in a URL), so a broken dashboard
+  // presented itself as a page that did not exist.
+  console.log("\n\x1b[1mjunk in the props cannot take the page down\x1b[0m");
+
+  const junkProps = async (visitor, type, props) => {
+    await fetch(`${API}/api/analytics/events`, {
+      method: "POST", headers: { "Content-Type": "application/json", Origin: COUNTED_ORIGIN },
+      body: JSON.stringify({
+        visitor_id: visitor, session_id: visitor, visitor_scope: "persistent",
+        events: [{ type, path: "/", props }],
+      }),
+    });
+    return rowsFor(visitor);
+  };
+
+  const cleanBefore = await get();
+  eq("a web vital whose value is not a number is still STORED",
+    await junkProps("junk-lcp", "web_vital", { metric: "LCP", value: "1.2.3" }), 1);
+  const afterJunk1 = await (await fetch(`${API}/api/admin/analytics?start=${start}&end=${today}`, { headers: auth }));
+  eq("…and the dashboard still answers", afterJunk1.status, 200);
+
+  await junkProps("junk-cls", "web_vital", { metric: "CLS", value: "." });
+  await junkProps("junk-inp", "web_vital", { metric: "INP", value: "1e9" });
+  // The shape that catches a MIS-ESCAPED guard, and nothing else does. Written
+  // as a JS template literal, `\.` reaches Postgres as a bare `.` — any
+  // character — so the pattern still rejects "1.2.3" and "." and reads as
+  // correct, while waving "1x9" through into ::numeric and raising the very
+  // error it exists to prevent. This suite caught exactly that.
+  await junkProps("junk-wildcard", "web_vital", { metric: "INP", value: "1x9" });
+  await junkProps("junk-spaced", "web_vital", { metric: "INP", value: "1 9" });
+  await junkProps("junk-total", "begin_checkout", { total: "9.9.9" });
+  await junkProps("junk-neg", "begin_checkout", { total: "-5" });
+  await junkProps("junk-results", "search", { query: "candle", results: "99999999999" });
+  await junkProps("junk-huge", "web_vital", { metric: "LCP", value: "9".repeat(40) });
+
+  const afterJunk = await get();
+  eq("every shape of junk leaves the page working", typeof afterJunk.traffic.sessions, "number");
+  // The unreadable values must be IGNORED, not guessed at — a basket of "9.9.9"
+  // must not become 9.9 in the money the shop believes it lost.
+  eq("…and unreadable numbers are ignored rather than half-read",
+    afterJunk.abandoned.lost_revenue, cleanBefore.abandoned.lost_revenue);
+  eq("…and don't invent a web-vitals sample",
+    afterJunk.web_vitals.reduce((n, v) => n + v.samples, 0),
+    cleanBefore.web_vitals.reduce((n, v) => n + v.samples, 0));
+  // A search with an unreadable result count is still a search someone made.
+  eq("…while a search with an unreadable result count still counts as a search",
+    afterJunk.searches.find(t => t.term === "candle")?.searches, 1);
+  eq("…and is not claimed to have found nothing",
+    afterJunk.searches.find(t => t.term === "candle")?.no_results, 0);
+
+  // ── Traffic that isn't a person ─────────────────────────────────────────────
+  // Ingestion needs a browser that runs JavaScript, which keeps most crawlers out
+  // by construction — but not anything scripted deliberately, and curl,
+  // python-requests and node-fetch all landed in the visitor count as shoppers.
+  //
+  // The other half matters more: every entry in that filter is a chance to throw
+  // away a REAL shopper. `facebook`, `instagram`, `linkedin`, `tiktok` and
+  // `pinterest` all appear in the in-app browsers people actually shop from, and
+  // "Cubot" is a phone, not a robot.
+  console.log("\n\x1b[1mtraffic that isn't a person\x1b[0m");
+
+  const asAgent = async (name, ua, shouldCount) => {
+    // Padded because the ingest route validates the id's SHAPE before anything
+    // else — ids under eight characters are rejected as junk, and "ua-curl" is
+    // seven, which turned a user-agent test into a 400 about something else.
+    const vid = `useragent-${name}`;
+    const n = await send(vid, COUNTED_ORIGIN, { "User-Agent": ua });
+    eq(`${shouldCount ? "counted" : "turned away"} — ${name}`, n > 0, shouldCount);
+  };
+
+  await asAgent("googlebot", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", false);
+  await asAgent("headless-chrome", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 HeadlessChrome/120 Safari/537.36", false);
+  await asAgent("curl", "curl/8.4.0", false);
+  await asAgent("python-requests", "python-requests/2.31.0", false);
+  await asAgent("node-fetch", "node-fetch/1.0", false);
+  await asAgent("facebook-preview", "facebookexternalhit/1.1", false);
+  await asAgent("no-user-agent-at-all", "", false);
+
+  await asAgent("safari-on-a-mac", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15", true);
+  await asAgent("iphone-safari", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1", true);
+  // The four that a careless filter costs you, and every one of them is a
+  // shopper who arrived from the shop's own marketing.
+  await asAgent("instagram-in-app-browser", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Instagram 302.0.0.23.113", true);
+  await asAgent("facebook-in-app-browser", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 [FBAN/FBIOS;FBAV/430.0.0.29.111]", true);
+  await asAgent("tiktok-in-app-browser", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36 BytedanceWebview/d8a21c6", true);
+  await asAgent("a-cubot-phone", "Mozilla/5.0 (Linux; Android 13; Cubot NOTE 30) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36", true);
+
+  // ── The map still adds up past fifteen cities ───────────────────────────────
+  // "Where visitors are" is read as a distribution: the reader tots the Sessions
+  // column and compares it to the Sessions tile. A bare LIMIT 15 silently
+  // dropped every city past the fifteenth, and their orders with them — so the
+  // column stopped adding up to the headline above it, with nothing on screen
+  // to say why. A shop trading in one country and a dozen towns passes fifteen
+  // without noticing.
+  console.log("\n\x1b[1mthe map still adds up past fifteen cities\x1b[0m");
+
+  for (let i = 0; i < 20; i++) {
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, geo_city, geo_country, visitor_scope, created_at)
+       VALUES ($1,$1,'page_view','/',$2,'IE','persistent',NOW())`,
+      [`manycity-v${i}`, `Town${String(i).padStart(2, "0")}`]);
+  }
+  const mapped = await get();
+  eq("the table is capped at fifteen cities plus a fold row", mapped.locations.length, 16);
+  eq("…and the fold names how many it stands for",
+    /^\+ \d+ more$/.test(mapped.locations[mapped.locations.length - 1].city), true);
+  eq("…so every session is still on the map",
+    mapped.locations.reduce((n, l) => n + l.sessions, 0), mapped.traffic.sessions);
+  eq("…and every order",
+    mapped.locations.reduce((n, l) => n + l.orders, 0), mapped.sales.attributed_orders);
+
+
+  // ── How long anyone actually spent here ─────────────────────────────────────
+  // The metric the dashboard had no answer for, and the first one asked after
+  // "how many people". Measured Google's way or it is worthless: a number called
+  // "engagement time" is read against every benchmark the reader has ever seen,
+  // so it has to be FOREGROUND, VISIBLE time rather than wall-clock session
+  // length — a tab left open over lunch is not two hours of interest.
+  console.log("\n\x1b[1mhow long anyone actually spent here\x1b[0m");
+
+  const engaged = (visitor, ms, events) => fetch(`${API}/api/analytics/events`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: COUNTED_ORIGIN },
+    body: JSON.stringify({
+      visitor_id: visitor, session_id: visitor, visitor_scope: "persistent",
+      engagement_ms: ms, events,
+    }),
+  });
+
+  const pv = (path = "/") => ({ type: "page_view", path });
+  const engagementOf = async (visitor) => (await pool.query(
+    `SELECT COALESCE(SUM(engagement_ms), 0)::int AS ms FROM analytics_events WHERE visitor_id = $1`,
+    [visitor])).rows[0].ms;
+
+  await engaged("engagement-one", 12000, [pv("/"), pv("/shop"), pv("/basket")]);
+  // The delta belongs to the BATCH. Written to every row it would be counted
+  // once per event that happened to share a flush, so a busy visit would report
+  // three times the engagement of a quiet one of identical length.
+  eq("a batch's engagement is counted once, not once per event",
+    await engagementOf("engagement-one"), 12000);
+
+  await engaged("engagement-one", 8000, [pv("/checkout")]);
+  eq("…and successive batches add up", await engagementOf("engagement-one"), 20000);
+
+  // An unbounded value here would move the shop's average on its own.
+  await engaged("engagement-huge", 999999999, [pv("/")]);
+  eq("an impossible duration is clamped, not believed", await engagementOf("engagement-huge"), 60 * 60 * 1000);
+  await engaged("engagement-neg", -5000, [pv("/")]);
+  eq("a negative duration is refused", await engagementOf("engagement-neg"), 0);
+  await engaged("engagement-junk", "not-a-number", [pv("/")]);
+  eq("a non-numeric duration is refused", await engagementOf("engagement-junk"), 0);
+
+  // Google's engaged-session rule: ten seconds, OR a second page view, OR a
+  // purchase. Each limb has to work on its own, or the rate is not the rate the
+  // benchmarks are quoted in.
+  await engaged("engagement-brief", 2000, [pv("/")]);            // 2s, one page  -> not engaged
+  await engaged("engagement-ten", 11000, [pv("/")]);             // 11s, one page -> engaged on time
+  await engaged("engagement-pages", 1000, [pv("/"), pv("/shop")]); // 1s, two pages -> engaged on depth
+
+  const eng = await get();
+  eq("engagement rate is reported once there is anything to report",
+    typeof eng.traffic.engagement_rate, "number");
+  eq("…and an average engagement time with it",
+    typeof eng.traffic.avg_engagement_seconds, "number");
+  eq("…as a percentage that cannot exceed one hundred",
+    eng.traffic.engagement_rate <= 100 && eng.traffic.engagement_rate >= 0, true);
+
+  const sessionEngaged = async (sid) => (await pool.query(
+    `SELECT (SUM(engagement_ms) >= 10000
+             OR COUNT(*) FILTER (WHERE event_type = 'page_view') >= 2
+             OR BOOL_OR(event_type = 'purchase')) AS engaged
+       FROM analytics_events WHERE session_id = $1`, [sid])).rows[0].engaged;
+  eq("eleven seconds on one page is an engaged session", await sessionEngaged("engagement-ten"), true);
+  eq("a second page view is an engaged session", await sessionEngaged("engagement-pages"), true);
+  eq("two seconds on one page is not", await sessionEngaged("engagement-brief"), false);
+
+  // A window measured before any of this existed must say "not measured", never
+  // 0%. They are opposite conclusions, and a confident zero gets acted on.
+  const oldWindow = await (await fetch(
+    `${API}/api/admin/analytics?start=2026-01-01&end=2026-01-31`, { headers: auth })).json();
+  eq("a period from before this was measured reports nothing, not zero",
+    [oldWindow.traffic.engagement_rate, oldWindow.traffic.avg_engagement_seconds], [null, null]);
+
+
+  // ── Nothing recorded is reported nowhere ────────────────────────────────────
+  // Five event types were being collected and shown in no section on the page:
+  // taking a product back OUT of the basket, clicking a card in a grid, joining
+  // the list, opening an account, and signing back in. Three of them existed
+  // only inside the bounce rule — used as evidence that SOMETHING deliberate had
+  // happened, with the number itself thrown away.
+  //
+  // Measuring something and never reporting it is the quietest gap of all: it
+  // costs storage and answers nothing, and nobody asks after a number they have
+  // never been shown.
+  console.log("\n\x1b[1mnothing recorded is reported nowhere\x1b[0m");
+
+  const act = (sid, vid, type, props = {}) => pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, visitor_scope, created_at)
+     VALUES ($1,$2,$3,'/',$4,'persistent',NOW())`, [vid, sid, type, JSON.stringify(props)]);
+
+  const beforeAccounts = (await get()).accounts;
+  await act("acct-session-1", "acct-visitor-1", "newsletter_signup");
+  await act("acct-session-1", "acct-visitor-1", "newsletter_signup"); // pressed twice
+  await act("acct-session-2", "acct-visitor-2", "signup", { method: "email" });
+  await act("acct-session-3", "acct-visitor-3", "login", { method: "email" });
+  const afterAccounts = (await get()).accounts;
+
+  eq("joining the list is reported at all",
+    afterAccounts.newsletter_signups, beforeAccounts.newsletter_signups + 1);
+  eq("…counted once per visit, however many times the form was pressed",
+    afterAccounts.newsletter_signups - beforeAccounts.newsletter_signups, 1);
+  eq("opening an account is reported", afterAccounts.account_signups, beforeAccounts.account_signups + 1);
+  eq("coming back to sign in is reported", afterAccounts.sign_ins, beforeAccounts.sign_ins + 1);
+
+  // Putting something back is a different problem from never adding it — price,
+  // delivery cost, or a second look — and it had no column anywhere.
+  await act("putback-session", "putback-visitor", "view_item", { product_id: "pb-1", name: "Putback Candle" });
+  await act("putback-session", "putback-visitor", "add_to_cart", { product_id: "pb-1", name: "Putback Candle" });
+  await act("putback-session", "putback-visitor", "remove_from_cart", { product_id: "pb-1" });
+  const withPutback = await get();
+  const pb = withPutback.top_products.find(p => p.name === "Putback Candle");
+  eq("a product taken back out of the basket is reported", pb?.removals, 1);
+  eq("…without being counted as never added", pb?.add_to_carts, 1);
+
+  // select_item is GA4's own funnel stage and the only thing that separates a
+  // shelf nobody scrolls from one whose products disappoint on the second click.
+  await act("clicked-session", "clicked-visitor", "page_view");
+  await act("clicked-session", "clicked-visitor", "view_item_list", { list_id: "all" });
+  await act("clicked-session", "clicked-visitor", "select_item", { product_id: "pb-1", position: 1 });
+  const withClick = await get();
+  const stages = withClick.funnel.map(f => f.stage);
+  eq("clicking a product is a funnel stage", stages.includes("Clicked a product"), true);
+  eq("…in GA4's order, between the grid and the product page",
+    stages.indexOf("Clicked a product") > stages.indexOf("Browsed a collection")
+      && stages.indexOf("Clicked a product") < stages.indexOf("Viewed a product"), true);
+  // The funnel's whole guarantee is that it cannot widen as it descends.
+  const counts = withClick.funnel.map(f => f.sessions);
+  eq("…and the funnel still never widens",
+    counts.every((n, i) => i === 0 || n <= counts[i - 1]), true);
+
+  // ── Tables that are read as totals must total ───────────────────────────────
+  // Top products sits directly under the Revenue tile and Top pages under Page
+  // views, and both were bare LIMIT 10s. The moment the shop listed an eleventh
+  // product the two columns stopped agreeing, and the difference appeared
+  // nowhere — the same defect already found and fixed on the location table.
+  console.log("\n\x1b[1mtables read as totals must total\x1b[0m");
+
+  const many = async (n, fn) => { for (let i = 0; i < n; i++) await fn(i); };
+  await many(14, async (i) => {
+    const id = `many-${String(i).padStart(2, "0")}`;
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, visitor_scope, created_at)
+       VALUES ($1,$1,'view_item','/products/x',$2,'persistent',NOW())`,
+      [`manyprod-v${i}`, JSON.stringify({ product_id: id, name: `Many Candle ${i}` })]);
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, visitor_scope, created_at)
+       VALUES ($1,$1,'page_view',$2,'persistent',NOW())`, [`manypage-v${i}`, `/page-${i}`]);
+  });
+
+  const wide = await get();
+  const prodFold = wide.top_products[wide.top_products.length - 1];
+  const pageFold = wide.top_pages[wide.top_pages.length - 1];
+  eq("top products folds instead of truncating", /^\+ \d+ more$/.test(prodFold.name), true);
+  eq("…so product revenue still adds up to the Revenue tile",
+    +wide.top_products.reduce((n, p) => n + p.revenue, 0).toFixed(2), wide.sales.revenue);
+  eq("…and the fold quotes no blended rate, which would mean nothing",
+    [prodFold.view_to_cart_pct, prodFold.cart_to_buy_pct], [null, null]);
+  eq("top pages folds instead of truncating", /^\+ \d+ more$/.test(pageFold.path), true);
+  eq("…so views still add up to the Page views tile",
+    wide.top_pages.reduce((n, p) => n + p.views, 0), wide.traffic.pageviews);
+  // Per-page session counts OVERLAP — one visitor reads several pages — so the
+  // fold must refuse to add them rather than print a confident wrong total.
+  eq("…and refuses to total a column that cannot be totalled", pageFold.sessions, null);
+
+  // ── One shopper cannot cost another their measurement ──────────────────────
+  // Ingestion's rate limit was keyed on req.ip, which behind Netlify + Railway is
+  // the SAME address for every visitor — one shared bucket for the whole shop.
+  // Past it, everyone's events were dropped, silently (the storefront swallows
+  // ingestion errors by design), and the dashboard showed plausible-looking
+  // numbers rather than an outage: sessions cut off mid-journey, carts and
+  // checkouts missing while server-written purchases still arrived. It failed
+  // hardest on the busiest days and never on the quiet ones.
+  //
+  // Runs LAST: it deliberately exhausts a bucket, and the rows it writes would
+  // otherwise move the totals every check above is pinned to.
+  console.log("\n\x1b[1mone shopper cannot throttle another\x1b[0m");
+
+  const fromEdge = (edgeIp, n) => fetch(`${API}/api/analytics/events`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json", Origin: COUNTED_ORIGIN,
+      "X-Og-Client-Ip": edgeIp,
+      // Both shoppers arrive through the same pair of proxies, which is the
+      // shape production has and the reason req.ip is useless here.
+      "X-Forwarded-For": `${edgeIp}, 203.0.113.99`,
+    },
+    body: JSON.stringify({
+      visitor_id: `rl-${n}`, session_id: `rl-${n}`, visitor_scope: "persistent",
+      events: [{ type: "page_view", path: "/" }],
+    }),
+  });
+
+  let busyBlocked = 0;
+  for (let i = 0; i < 230; i++) {
+    if ((await fromEdge("198.51.100.11", `busy-${i}`)).status === 429) busyBlocked++;
+  }
+  eq("a single visitor is still capped", busyBlocked > 0, true);
+  eq("…and a different visitor is completely unaffected",
+    (await fromEdge("192.0.2.77", "quiet-1")).status, 204);
+  // The failure this replaces, stated as its own check: before the fix the line
+  // above answered 429 — a shopper who had never visited before, turned away
+  // because someone else had been browsing.
+  eq("…even after the busy one has been cut off",
+    (await fromEdge("192.0.2.77", "quiet-2")).status, 204);
 
   await pool.end();
   console.log(`\n${fails.length ? `\x1b[31m${fails.length} FAILED\x1b[0m` : "\x1b[32mall checks passed\x1b[0m"}`);

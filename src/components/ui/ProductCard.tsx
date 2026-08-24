@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { Product } from "@/lib/defaults";
 import { productPath } from "@/lib/products";
 import { formatPrice } from "@/lib/cart";
+import { track } from "@/lib/analytics";
 import { useCart } from "@/contexts/CartContext";
 import AddToCartButton from "@/components/ui/AddToCartButton";
 import m1 from "@/assets/M1.png";
@@ -91,6 +92,27 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
     const divider  = isDark ? "rgba(255,255,255,0.08)" : "var(--color-border)";
     const btnText  = isDark ? "#0a0a18" : buttonTextColor;
 
+    // select_item — the click that turns a grid of cards into a product page.
+    //
+    // The name has been in the event vocabulary, in the documented funnel and in
+    // the dashboard's own bounce rule since analytics shipped, and nothing in
+    // the storefront has ever fired it: the stage that measures whether the
+    // SHELF works was silently empty. view_item_list says a card was rendered
+    // and view_item says a product page opened, but only this says the shopper
+    // chose that card — the difference between a grid nobody scrolls and one
+    // whose products disappoint on the second click.
+    //
+    // Fires from both links, because both are the same decision. The event is
+    // queued in memory and the navigation is client-side, so nothing is lost
+    // between the click and the flush.
+    const trackSelect = () => track("select_item", {
+      product_id: product.id,
+      name: product.name,
+      price: product.price,
+      // 1-based, so "position 1" reads as the first card rather than the second.
+      position: idx + 1,
+    });
+
     // No sign-in gate: the basket is the shopper's until checkout, where the
     // account is actually needed. A guest's adds live in localStorage and merge
     // into their account the moment they sign in.
@@ -129,6 +151,7 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
         {/* Image — 3/4 ratio, opens the product page */}
         <Link
           to={productPath(product)}
+          onClick={trackSelect}
           aria-label={`View ${product.name}`}
           style={{
             aspectRatio: "3/4",
@@ -172,6 +195,7 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
         <div style={{ padding: d.padding, flex: 1, display: "flex", flexDirection: "column" }}>
           <Link
             to={productPath(product)}
+            onClick={trackSelect}
             style={{
               fontFamily: "'Fredoka',sans-serif",
               fontSize: d.name,

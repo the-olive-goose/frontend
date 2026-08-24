@@ -21,6 +21,7 @@ import path from "path";
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const backendSrc = readFileSync(path.join(REPO, "backend/index.js"), "utf8");
 const clientSrc = readFileSync(path.join(REPO, "src/lib/analytics.ts"), "utf8");
+const apiSrc = readFileSync(path.join(REPO, "src/lib/api.ts"), "utf8");
 
 /** The names the API will accept and store. */
 const serverTypes = (): string[] => {
@@ -60,6 +61,21 @@ describe("analytics event vocabulary", () => {
     // client allow-list — every other name must be something a browser sends.
     const known = new Set([...serverTypes(), "purchase"]);
     expect(engaged.filter(e => !known.has(e))).toEqual([]);
+  });
+
+  it("knows where the admin token is kept", () => {
+    // isAdminBrowser() is what stops the owner's own devices counting as
+    // shoppers, and it works by looking for api.ts's admin token in
+    // localStorage under a key it spells out for itself rather than imports.
+    //
+    // A rename in api.ts would therefore break it in complete silence: no type
+    // error, no failing request, no console warning — just the shop quietly
+    // going back to counting its owner as traffic, which is the one defect
+    // nothing on the dashboard can reveal because the numbers only get bigger.
+    const apiKey = apiSrc.match(/localStorage\.getItem\('([^']+)'\)/)?.[1];
+    const analyticsKey = clientSrc.match(/const ADMIN_TOKEN_KEY = '([^']+)'/)?.[1];
+    expect(apiKey).toBeTruthy();
+    expect(analyticsKey).toBe(apiKey);
   });
 
   it("builds the funnel from events the API accepts", () => {

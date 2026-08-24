@@ -723,6 +723,17 @@ export interface AnalyticsOverview {
     // depend on it — but about browsers that refuse storage outright.
     // null when there were no visitors.
     identified_visitor_pct: number | null;
+    /**
+     * Google Analytics' definitions, so both figures can be read against any
+     * published benchmark: engagement time is FOREGROUND, VISIBLE time (not
+     * wall-clock session length), and a session counts as engaged at ten
+     * seconds, a second page view, or a purchase.
+     *
+     * null — never 0 — for a window that predates the measurement. "Not
+     * measured" and "nobody engaged" are opposite conclusions.
+     */
+    engagement_rate: number | null;
+    avg_engagement_seconds: number | null;
     prev: { visitors: number; sessions: number; pageviews: number };
   };
   sales: {
@@ -741,11 +752,34 @@ export interface AnalyticsOverview {
   daily: Array<{ day: string; visitors: number; sessions: number; pageviews: number; orders: number; revenue: number }>;
   // view_to_cart_pct / cart_to_buy_pct are null when the stage below them had no
   // traffic — "unknown", which must not be rendered as 0%.
+  // `removals` is sessions that took the product back OUT of the basket — a
+  // different problem from never adding it. Everything past the top ten folds
+  // into a "+ N more" row so the revenue column still totals to the Revenue
+  // tile; that row's rates are null, because a rate blended across a dozen
+  // unrelated products is not a number to act on.
   top_products: Array<{
     name: string; units: number; revenue: number; add_to_carts: number;
-    views: number; view_to_cart_pct: number | null; cart_to_buy_pct: number | null;
+    removals: number; views: number;
+    view_to_cart_pct: number | null; cart_to_buy_pct: number | null;
   }>;
-  top_pages: Array<{ path: string; views: number; sessions: number }>;
+  // `sessions` is null on the fold row only: one visitor reads several pages, so
+  // per-page session counts overlap and must never be added together.
+  top_pages: Array<{ path: string; views: number; sessions: number | null }>;
+  /**
+   * Where visits BEGIN, and how many of those visits ended in a sale. Not
+   * top_pages re-sorted — that table is dominated by pages everyone passes
+   * through, this one is the front door. Everything past the top ten is folded
+   * into a "+ N more" row so the column still totals.
+   */
+  landing_pages: Array<{ path: string; sessions: number; purchased: number }>;
+  /**
+   * What shoppers typed into the search box — the only place on the dashboard
+   * where they say what they wanted rather than pick from what was offered.
+   * `no_results` is how many of those searches came back empty.
+   */
+  searches: Array<{ term: string; searches: number; sessions: number | null; no_results: number }>;
+  /** Joining the list, opening an account, signing back in — counted per session. */
+  accounts: { newsletter_signups: number; account_signups: number; sign_ins: number };
   sources: Array<{ source: string; sessions: number; orders: number; revenue: number }>;
   devices: Array<{ device: string; sessions: number }>;
   /**
@@ -820,10 +854,63 @@ export interface AnalyticsInternal {
   /** The address this admin request came from — offered so the owner can exclude it. */
   current_ip: string;
   current_ip_excluded: boolean;
-  excluded_visitors: Array<{ visitor_id: string; reason: string; created_at: string }>;
+  /** `detail` says WHICH network excluded a visitor, so removing it releases them. */
+  excluded_visitors: Array<{ visitor_id: string; reason: string; detail: string; created_at: string }>;
   counted_origins: string[];
   origins_seen: Array<{ origin: string; visitors: number; events: number }>;
 }
+
+// ── Recent visits (admin) ───────────────────────────────────────────────────────
+// One row per session, recent first, so a visit that none of the automatic rules
+// caught can still be recognised and retired by hand. This is what answers "that
+// session from Stockholm was me on a VPN" — no rule can know that, and until
+// there was a list to point at, nothing could act on it either.
+//
+// Deliberately carries no email and no address: `signed_in` is the only new fact
+// about who the visitor was, and it is a yes/no.
+export interface AnalyticsSession {
+  session_id: string;
+  visitor_id: string;
+  started_at: string;
+  last_at: string;
+  pageviews: number;
+  events: number;
+  signed_in: boolean;
+  entry_path: string;
+  device: string;
+  source: string;
+  city: string;
+  country: string;
+  orders: number;
+  revenue: number;
+  /** Already kept out of the numbers — shown anyway, so it can be undone. */
+  excluded: boolean;
+  excluded_reason: string;
+  excluded_detail: string;
+}
+
+export const getAnalyticsSessions = async (
+  opts: { days?: number; limit?: number; only?: 'all' | 'counted' | 'excluded' } = {}
+): Promise<{ days: number; sessions: AnalyticsSession[] }> => {
+  const params = new URLSearchParams();
+  if (opts.days)  params.set('days', String(opts.days));
+  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.only)  params.set('only', opts.only);
+  const res = await checkStatus(await fetchWithTimeout(
+    `${API_URL}/api/admin/analytics/sessions?${params}`, { headers: authHeaders(true) }, 30_000));
+  if (!res.ok) throw new Error('Failed to load recent visits');
+  return res.json();
+};
+
+/** Retire (or restore) one visit's browser by its visitor id. */
+export const setAnalyticsInternalVisitor = async (visitorId: string, enabled: boolean): Promise<void> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics/internal/visitor`, {
+    method: 'POST',
+    headers: { ...authHeaders(true), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId, enabled }),
+  }));
+  if (!res.ok) throw new Error('Failed to update this visit');
+};
 
 export const getAnalyticsInternal = async (): Promise<AnalyticsInternal> => {
   const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/analytics/internal`, { headers: authHeaders(true) }));

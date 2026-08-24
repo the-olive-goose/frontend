@@ -29,6 +29,8 @@ vi.mock("@/lib/api", async () => {
     getAnalyticsInternal: vi.fn(),
     saveAnalyticsInternal: vi.fn(),
     setAnalyticsInternalBrowser: vi.fn().mockResolvedValue(undefined),
+    getAnalyticsSessions: vi.fn().mockResolvedValue({ days: 7, sessions: [] }),
+    setAnalyticsInternalVisitor: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -47,9 +49,15 @@ const overview = (o: Partial<AnalyticsOverview> = {}): AnalyticsOverview => ({
   abandoned: { checkout_sessions: 3, abandoned_sessions: 1, lost_revenue: 75 },
   signin_wall: null,
   measurement_notes: [],
+  searches: [],
+  landing_pages: [],
+  accounts: { newsletter_signups: 4, account_signups: 2, sign_ins: 7 },
   traffic: {
     visitors: 6, sessions: 6, pageviews: 9, pages_per_session: 1.5, bounce_rate: 16.7,
     new_visitors: 6, returning_visitors: 0, identified_visitor_pct: 100,
+    // Deliberately a value nothing else in this file produces: an assertion that
+    // matches two tiles at once passes for the wrong reason, or fails for one.
+    engagement_rate: 58.3, avg_engagement_seconds: 47.2,
     prev: { visitors: 0, sessions: 0, pageviews: 0 },
   },
   sales: {
@@ -74,7 +82,7 @@ const overview = (o: Partial<AnalyticsOverview> = {}): AnalyticsOverview => ({
   ],
   daily: [{ day: "2026-07-30", visitors: 6, sessions: 6, pageviews: 9, orders: 3, revenue: 180 }],
   top_products: [{
-    name: "Candle A", units: 3, revenue: 130, add_to_carts: 2,
+    name: "Candle A", units: 3, revenue: 130, add_to_carts: 2, removals: 0,
     views: 8, view_to_cart_pct: 25, cart_to_buy_pct: 100,
   }],
   top_pages: [{ path: "/shop", views: 4, sessions: 3 }],
@@ -276,7 +284,7 @@ describe("AnalyticsPanel", () => {
   it("shows an unknown per-product rate as a dash, never as 0%", async () => {
     mocked.mockResolvedValue(overview({
       top_products: [{
-        name: "Never viewed", units: 0, revenue: 0, add_to_carts: 0,
+        name: "Never viewed", units: 0, revenue: 0, add_to_carts: 0, removals: 0,
         views: 0, view_to_cart_pct: null, cart_to_buy_pct: null,
       }],
     }));
@@ -544,7 +552,7 @@ describe("AnalyticsPanel", () => {
     it("exports the same product rates the table renders", async () => {
       mocked.mockResolvedValue(overview({
         top_products: [{
-          name: "Candle A", units: 3, revenue: 300, add_to_carts: 2,
+          name: "Candle A", units: 3, revenue: 300, add_to_carts: 2, removals: 1,
           views: 2, view_to_cart_pct: 100, cart_to_buy_pct: 50,
         }],
       }));
@@ -552,7 +560,10 @@ describe("AnalyticsPanel", () => {
       await screen.findByText("Top products");
 
       const csv = exportedCsv();
-      expect(csv).toMatch(/Candle A,2,2,100,50,3,300/);
+      // views, carts, PUT BACK, view→cart, cart→buy, units, revenue — the
+      // removals column travels with the file, or a spreadsheet read next month
+      // is missing the column the screen showed.
+      expect(csv).toMatch(/Candle A,2,2,1,100,50,3,300/);
     });
   });
 

@@ -14,7 +14,8 @@
     "test:e2e": "node e2e/run-e2e.mjs",
     "test:analytics": "node e2e/analytics-accuracy.mjs",
     "e2e:seed": "node e2e/setup/seed.mjs",
-    "og:image": "node scripts/make-og-image.mjs"
+    "og:image": "node scripts/make-og-image.mjs",
+    "analytics:archive": "node scripts/analytics-archive.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

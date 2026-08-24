@@ -6,9 +6,10 @@ import {
 import {
   getAdminAnalytics, getAdminAnalyticsLive,
   getAnalyticsInternal, saveAnalyticsInternal, setAnalyticsInternalBrowser,
-  type AnalyticsOverview, type AnalyticsLive, type AnalyticsInternal,
+  getAnalyticsSessions, setAnalyticsInternalVisitor,
+  type AnalyticsOverview, type AnalyticsLive, type AnalyticsInternal, type AnalyticsSession,
 } from "@/lib/api";
-import { getVisitorId, isInternalBrowser, setInternalBrowser } from "@/lib/analytics";
+import { getVisitorId, isAdminBrowser, isInternalBrowser, setInternalBrowser, INTERNAL_MARK_PARAM } from "@/lib/analytics";
 
 // ── Chart colors ────────────────────────────────────────────────────────────────
 // Validated with the dataviz palette checker against the admin card surface
@@ -28,6 +29,9 @@ const fmtInt = (n: number) => n.toLocaleString("en-IE");
 const fmtEur = (n: number) => `€${n.toLocaleString("en-IE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtCompactEur = (n: number) => (n >= 10000 ? `€${(n / 1000).toFixed(1)}K` : fmtEur(n));
 const fmtDay = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IE", { day: "numeric", month: "short" });
+// Durations read as minutes and seconds past a minute — "2m 14s", not "134.0s".
+const fmtDuration = (s: number) =>
+  s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${s.toFixed(s < 10 ? 1 : 0)}s`;
 
 // ── Stat tile ───────────────────────────────────────────────────────────────────
 // value + optional delta vs the previous period. `invert` flips delta colouring
@@ -410,9 +414,13 @@ const fmtRange = (start: string, end: string) => {
 //
 // Both controls key on the visitor, so switching either on removes what that
 // browser or account already sent, not just what it sends next.
-const InternalTraffic = () => {
+const InternalTraffic = ({ onChanged }: { onChanged: () => void }) => {
   const [state, setState] = useState<AnalyticsInternal | null>(null);
   const [thisBrowser, setThisBrowser] = useState(isInternalBrowser);
+  // A browser signed in to the admin panel is the shop's by definition, and says
+  // so however the toggle is set — see isAdminBrowser. Read once per mount:
+  // whether this device administers the shop does not change mid-screen.
+  const [adminBrowser] = useState(isAdminBrowser);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
@@ -435,13 +443,17 @@ const InternalTraffic = () => {
         current_ip_excluded: saved.networks.includes(s.current_ip),
       } : s));
       setNote(message);
+      // Refetch the figures above rather than asking the reader to. A setting
+      // whose effect only appears after a manual reload reads as one that did
+      // nothing, which is how the owner ends up pressing it twice.
+      onChanged();
     } catch {
       setNote("Couldn't save that.");
     } finally { setBusy(false); }
   };
 
   const saveEmails = (emails: string[]) =>
-    save({ emails }, "Saved. Reload to see the numbers without them.");
+    save({ emails }, "Saved. Everything these accounts have ever browsed is out of the numbers above — including before today.");
 
   const toggleBrowser = async () => {
     const next = !thisBrowser;
@@ -454,10 +466,29 @@ const InternalTraffic = () => {
       setThisBrowser(next);
       setNote(next
         ? "This browser no longer counts as a shopper, including what it recorded before now."
-        : "This browser counts as a shopper again.");
+        : adminBrowser
+          ? "Cleared — but this browser is signed in to the admin panel, so it still doesn't count. Sign out of admin here to have it counted as a shopper."
+          : "This browser counts as a shopper again.");
+      onChanged();
     } catch {
       setNote("Couldn't update this browser.");
     } finally { setBusy(false); }
+  };
+
+  // Built from the origin the admin panel is being served from, which is the
+  // storefront's own — the marker only means anything on the site it marks.
+  const markLink = `${window.location.origin}/?${INTERNAL_MARK_PARAM}=1`;
+  const [copied, setCopied] = useState(false);
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(markLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be refused outright. The link is on screen in full
+      // and selectable, so this is a missing convenience rather than a dead end.
+      setNote("Couldn't copy — select the link and copy it by hand.");
+    }
   };
 
   const strayOrigins = (state?.origins_seen ?? []).filter(
@@ -470,10 +501,20 @@ const InternalTraffic = () => {
         <div className="max-w-md">
           <p className="font-sans text-sm font-semibold text-foreground">This browser</p>
           <p className="font-sans text-[11px] text-muted-foreground mt-1">
-            {thisBrowser
-              ? "Not counted. Anything it browses is treated as your own testing."
-              : "Counted as a shopper. Turn this on for any browser you test the shop in."}
-            {" "}Clearing this browser's site data forgets the setting.
+            {/* The admin signal comes first because it is the one that needed no
+                setting up and holds when the others don't: it lives in this
+                browser's own storage, so a VPN, mobile data or a broadband
+                address change cannot defeat it the way they defeat a rule that
+                matches on where a visit arrived from. */}
+            {adminBrowser
+              ? "Not counted, automatically — you're signed in to the admin panel on this browser, so it's the shop's, wherever it appears to be browsing from."
+              : thisBrowser
+                ? "Not counted. Anything it browses is treated as your own testing."
+                : "Counted as a shopper. Turn this on for any browser you test the shop in."}
+            {" "}
+            {adminBrowser
+              ? "Every device you've opened this panel on excludes itself the same way, and keeps doing so after you sign out."
+              : "Clearing this browser's site data forgets the setting."}
           </p>
         </div>
         <button
@@ -486,9 +527,41 @@ const InternalTraffic = () => {
         </button>
       </div>
 
+      {/* The last device nothing automatic can reach: a household phone that has
+          never opened this panel, never signs in, and is out of the house on
+          mobile data when it looks at the shop. From the outside it is a
+          stranger, and no rule that catches it would spare real shoppers — so it
+          is marked once, by hand, by opening a link. */}
+      <div className="mt-5 pt-5 border-t border-border">
+        <p className="font-sans text-sm font-semibold text-foreground">Your other devices</p>
+        <p className="font-sans text-[11px] text-muted-foreground mt-1">
+          Open this link once on any phone, tablet or laptop and it stops counting for good — no
+          sign-in, no password, nothing to remember. It's the way to cover a device that isn't
+          always on your wifi, which is also the one your wifi setting below can't catch.
+        </p>
+        <div className="flex gap-2 mt-3 items-center flex-wrap">
+          <code className="font-mono text-[11px] text-foreground break-all flex-1 min-w-0 px-2 py-2 rounded-md border border-border bg-background">
+            {markLink}
+          </code>
+          <button
+            type="button"
+            onClick={copyLink}
+            className="font-sans text-xs px-3 py-2 rounded-md border border-border bg-background hover:bg-muted shrink-0 min-h-[44px]"
+          >
+            {copied ? "Copied" : "Copy link"}
+          </button>
+        </div>
+        <p className="font-sans text-[11px] text-muted-foreground mt-2">
+          Safe to send by message or email: the only thing it can do is take the visits of whoever
+          opens it out of the count. Add <span className="font-mono">?{INTERNAL_MARK_PARAM}=0</span>{" "}
+          to a page on that device to undo it.
+        </p>
+      </div>
+
       {/* The broadest signal, and the only one that covers someone else in the
-          house: a home connection is one address for every device on it, so this
-          catches phones and tablets that never sign in and never open admin. */}
+          house without them doing anything at all: a home connection is one
+          address for every device on it, so this catches phones and tablets that
+          never sign in and never open admin — as long as they are on the wifi. */}
       <div className="mt-5 pt-5 border-t border-border">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="max-w-md">
@@ -503,7 +576,13 @@ const InternalTraffic = () => {
                 : state.current_ip_excluded
                   ? <>You're on <span className="font-mono">{state.current_ip}</span>, which is already excluded — every device on it, for everyone in the house.</>
                   : <>You're on <span className="font-mono">{state.current_ip}</span>. Excluding it covers every device on this wifi without anyone having to sign in. Each device drops out, and loses the visits it already recorded, the next time it loads the shop.</>}
-              {!!state?.current_ip && <>{" "}Home broadband addresses change from time to time; if visits from home start counting again, add the new one here.</>}
+              {/* The honest limit of this control, stated where the owner is
+                  standing when they rely on it. It matches on the address a
+                  visit ARRIVES from, so anything that changes that address —
+                  a VPN, a phone stepping off the wifi onto mobile data, the
+                  broadband address rotating — walks straight past it, and the
+                  visit lands in the numbers looking like a stranger. */}
+              {!!state?.current_ip && <>{" "}This matches the address a visit arrives from, so it can't catch one that didn't: a VPN, or a phone on mobile data, arrives from somewhere else entirely. Home broadband addresses also change from time to time — if visits from home start counting again, add the new one here, and retire the ones that slipped through in “Recent visits” above.</>}
             </p>
           </div>
           {state?.current_ip && (
@@ -551,8 +630,10 @@ const InternalTraffic = () => {
       <div className="mt-5 pt-5 border-t border-border">
         <p className="font-sans text-sm font-semibold text-foreground">Your own accounts</p>
         <p className="font-sans text-[11px] text-muted-foreground mt-1">
-          Signing in with one of these marks that browser as yours — which is why a test
-          checkout stops counting from its first page view, not from the sign-in.
+          Anything one of these accounts has ever browsed is out of the numbers — not just from
+          its next visit, but everything already recorded, including the anonymous page views
+          either side of each sign-in. So a test checkout stops counting from its first page
+          view rather than from the moment you signed in.
         </p>
         <ul className="mt-3 space-y-1">
           {(state?.emails ?? []).map(email => (
@@ -614,6 +695,174 @@ const InternalTraffic = () => {
       )}
 
       {note && <p className="font-sans text-[11px] text-muted-foreground mt-4">{note}</p>}
+    </Card>
+  );
+};
+
+// ── Recent visits ───────────────────────────────────────────────────────────────
+// The control every other one leaves a hole under.
+//
+// A browser is excluded by a flag in its own storage; a network by the address a
+// visit arrives from; an account by who is signed in. Each rule decides at the
+// moment the visit happens, and none of them can be applied afterwards — so a
+// visit that matched nothing at the time is in the numbers permanently, however
+// obviously it was the shop's own. That is not an edge case:
+//
+//   • a VPN puts this laptop on an address in another country, so the home
+//     network never matches and the visit lands as a shopper in Stockholm;
+//   • testing means private windows and cleared site data, and each one mints a
+//     brand-new visitor with no marker on it;
+//   • a phone on mobile data has left the wifi the moment it steps outside;
+//   • a friend asked to "have a look at the site" is not a customer either.
+//
+// So this lists what actually arrived, with enough of each visit to recognise it,
+// and retires any one of them — backwards, taking that browser's whole history,
+// exactly like every other exclusion here.
+//
+// Excluded visits are listed too, greyed and reversible. An exclusion nobody can
+// see is one nobody can undo, and hiding real shoppers is the one error the rest
+// of this dashboard has no way to reveal.
+const RecentVisits = ({ onChanged }: { onChanged: () => void }) => {
+  const [rows, setRows] = useState<AnalyticsSession[] | null>(null);
+  const [days, setDays] = useState(7);
+  const [only, setOnly] = useState<"all" | "counted" | "excluded">("all");
+  const [busy, setBusy] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setRows(null);
+    getAnalyticsSessions({ days, limit: 60, only })
+      .then(r => { if (!cancelled) { setRows(r.sessions); setError(""); } })
+      .catch(() => { if (!cancelled) { setRows([]); setError("Couldn't load recent visits."); } });
+    return () => { cancelled = true; };
+  }, [days, only]);
+
+  const toggle = async (row: AnalyticsSession) => {
+    const next = !row.excluded;
+    setBusy(row.session_id);
+    try {
+      await setAnalyticsInternalVisitor(row.visitor_id, next);
+      // Every visit from the SAME browser changes with it — the exclusion is by
+      // visitor, not by session, so showing only the clicked row updated would
+      // misrepresent what just happened.
+      setRows(rs => (rs ?? []).map(r => (r.visitor_id === row.visitor_id
+        ? { ...r, excluded: next, excluded_reason: next ? "marked from recent visits" : "" }
+        : r)));
+      setNote(next
+        ? "Retired. Everything that browser has ever recorded is out of the numbers, not just this visit."
+        : "Counted as a shopper again.");
+      // The tiles above were measured before this changed. Refetching them is
+      // the difference between a control that works and one the owner has to be
+      // told to trust.
+      onChanged();
+    } catch {
+      setNote("Couldn't change that visit.");
+    } finally { setBusy(""); }
+  };
+
+  const when = (iso: string) => new Date(iso).toLocaleString("en-IE", {
+    day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+  });
+
+  const pill = (active: boolean) =>
+    `font-sans text-[11px] px-2.5 py-1.5 rounded-md border min-h-[36px] ${
+      active ? "border-foreground/40 bg-muted text-foreground" : "border-border bg-background text-muted-foreground hover:bg-muted"}`;
+
+  return (
+    <Card
+      title="Recent visits"
+      desc="Every visit as it arrived — retire any one that was you"
+    >
+      <div className="flex items-center gap-2 flex-wrap mb-3">
+        {([7, 30, 90] as const).map(d => (
+          <button key={d} type="button" onClick={() => setDays(d)} className={pill(days === d)}>
+            Last {d} days
+          </button>
+        ))}
+        <span className="w-px h-5 bg-border mx-1" />
+        {([["all", "All"], ["counted", "Counted"], ["excluded", "Retired"]] as const).map(([v, label]) => (
+          <button key={v} type="button" onClick={() => setOnly(v)} className={pill(only === v)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {rows === null ? (
+        <p className="font-sans text-xs text-muted-foreground">Loading…</p>
+      ) : error ? (
+        <p className="font-sans text-xs text-muted-foreground">{error}</p>
+      ) : rows.length === 0 ? (
+        <p className="font-sans text-xs text-muted-foreground">
+          {only === "excluded" ? "No visits have been retired." : "No visits in this window yet."}
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full font-sans text-xs min-w-[720px]">
+            <thead>
+              <tr className="text-muted-foreground border-b border-border">
+                <th className="py-1.5 font-medium text-left">When</th>
+                <th className="py-1.5 font-medium text-left">Where</th>
+                <th className="py-1.5 font-medium text-left">Device</th>
+                <th className="py-1.5 font-medium text-left">Came from</th>
+                <th className="py-1.5 font-medium text-left">Landed on</th>
+                <th className="py-1.5 font-medium text-right">Pages</th>
+                <th className="py-1.5 font-medium text-right">Bought</th>
+                <th className="py-1.5 font-medium text-right">Counts?</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr
+                  key={r.session_id}
+                  className="border-b border-border/50 last:border-0"
+                  style={r.excluded ? { opacity: 0.55 } : undefined}
+                >
+                  <td className="py-1.5 text-foreground whitespace-nowrap">{when(r.started_at)}</td>
+                  <td className="py-1.5 text-foreground">
+                    {r.city}{r.country ? `, ${r.country}` : ""}
+                  </td>
+                  <td className="py-1.5 text-foreground">{r.device}</td>
+                  <td className="py-1.5 text-foreground break-all">{r.source}</td>
+                  <td className="py-1.5 text-foreground break-all">{r.entry_path || "/"}</td>
+                  <td className="py-1.5 text-foreground text-right" style={{ fontVariantNumeric: "tabular-nums" }}>
+                    {fmtInt(r.pageviews)}
+                  </td>
+                  <td className="py-1.5 text-foreground text-right" style={{ fontVariantNumeric: "tabular-nums" }}>
+                    {r.orders > 0 ? fmtEur(r.revenue) : "—"}
+                  </td>
+                  <td className="py-1.5 text-right">
+                    {/* An account on the internal list is excluded by the list
+                        itself, not by a mark on this visit, so this button
+                        cannot release it. Saying so beats a control that
+                        silently does nothing. */}
+                    {r.excluded && r.excluded_reason === "internal account" ? (
+                      <span className="font-sans text-[11px] text-muted-foreground">your account</span>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busy === r.session_id}
+                        onClick={() => toggle(r)}
+                        className="font-sans text-[11px] px-2 py-1.5 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 whitespace-nowrap min-h-[36px]"
+                      >
+                        {r.excluded ? "Count it" : "This was me"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="font-sans text-[11px] text-muted-foreground mt-3">
+        Retiring a visit retires the browser that made it, including everything it recorded before
+        now and anything it records later — the same rule the settings below use. Nothing here
+        identifies anyone: a visit shows where the connection surfaced, not who was on it.
+      </p>
+      {note && <p className="font-sans text-[11px] text-muted-foreground mt-2">{note}</p>}
     </Card>
   );
 };
@@ -727,7 +976,9 @@ const AnalyticsPanel = () => {
         ["Visitors", data.traffic.visitors, data.traffic.prev.visitors],
         ["Sessions", data.traffic.sessions, data.traffic.prev.sessions],
         ["Page views", data.traffic.pageviews, data.traffic.prev.pageviews],
-        ["Bounce rate %", data.traffic.bounce_rate, ""],
+        ["Engagement rate % (Google definition)", data.traffic.engagement_rate ?? "not measured", ""],
+        ["Avg engagement time s (Google definition)", data.traffic.avg_engagement_seconds ?? "not measured", ""],
+        ["Single-page no-interaction visits %", data.traffic.bounce_rate, ""],
         ["New visitors", data.traffic.new_visitors, ""], ["Returning visitors", data.traffic.returning_visitors, ""],
         ["Sessions reaching checkout", data.abandoned.checkout_sessions, ""],
         ["Abandoned at checkout", data.abandoned.abandoned_sessions, ""],
@@ -740,6 +991,9 @@ const AnalyticsPanel = () => {
           ["Pressed checkout already signed in", data.signin_wall.passed_sessions, ""],
           ["…and bought", data.signin_wall.passed_purchased, ""],
         ] : []),
+        ["Newsletter signups", data.accounts.newsletter_signups, ""],
+        ["New accounts", data.accounts.account_signups, ""],
+        ["Sign-ins", data.accounts.sign_ins, ""],
         ["Total customers", data.customers.total_customers, ""], ["New customers", data.customers.new_customers, ""],
         ["Avg lifetime value EUR", data.customers.avg_lifetime_value, ""],
       ]
@@ -772,15 +1026,19 @@ const AnalyticsPanel = () => {
     section("Daily", ["day", "visitors", "sessions", "pageviews", "orders", "revenue"], data.daily.map(r => [r.day, r.visitors, r.sessions, r.pageviews, r.orders, r.revenue]));
     section(
       "Top products (revenue after discount, excl. shipping)",
-      ["product", "views", "sessions_adding", "view_to_cart_pct", "cart_to_buy_pct", "units", "revenue"],
+      ["product", "views", "sessions_adding", "sessions_removing", "view_to_cart_pct", "cart_to_buy_pct", "units", "revenue"],
       data.top_products.map(p => [
-        p.name, p.views, p.add_to_carts,
+        p.name, p.views, p.add_to_carts, p.removals,
         p.view_to_cart_pct ?? "", p.cart_to_buy_pct ?? "",
         p.units, p.revenue,
       ]),
     );
     section(`Attribution by ${data.filters.attr}`, [data.filters.attr, "sessions", "orders", "revenue"], data.sources.map(s => [s.source, s.sessions, s.orders, s.revenue]));
     section("Top pages", ["path", "views", "sessions"], data.top_pages.map(p => [p.path, p.views, p.sessions]));
+    section("Landing pages", ["path", "sessions", "purchased"],
+      data.landing_pages.map(p => [p.path, p.sessions, p.purchased]));
+    section("Searches", ["term", "searches", "sessions", "found_nothing"],
+      data.searches.map(t => [t.term, t.searches, t.sessions, t.no_results]));
     section("Locations", ["city", "country", "sessions", "orders", "revenue"],
       data.locations.map(l => [l.city, l.country, l.sessions, l.orders, l.revenue]));
     section("Devices", ["device", "sessions"], data.devices.map(dv => [dv.device, dv.sessions]));
@@ -1016,7 +1274,27 @@ const AnalyticsPanel = () => {
             <StatTile label="Visitors" value={fmtInt(data.traffic.visitors)} prev={{ current: data.traffic.visitors, previous: data.traffic.prev.visitors }} />
             <StatTile label="Sessions" value={fmtInt(data.traffic.sessions)} prev={{ current: data.traffic.sessions, previous: data.traffic.prev.sessions }} />
             <StatTile label="Page views" value={fmtInt(data.traffic.pageviews)} prev={{ current: data.traffic.pageviews, previous: data.traffic.prev.pageviews }} />
-            <StatTile label="Bounce rate" value={`${data.traffic.bounce_rate}%`} invert sub={`${data.traffic.pages_per_session} pages / session`} />
+            {/* Google's engagement rate, shown in preference to bounce because it
+                is the figure every benchmark a reader has seen is quoted in —
+                and because bounce here means something narrower (a single page
+                with no interaction), which invites a comparison that doesn't
+                hold. Falls back to bounce for windows that predate the
+                measurement rather than printing a confident 0%. */}
+            {data.traffic.engagement_rate !== null ? (
+              <StatTile
+                label="Engagement rate"
+                value={`${data.traffic.engagement_rate}%`}
+                sub={`${data.traffic.avg_engagement_seconds !== null
+                  ? fmtDuration(data.traffic.avg_engagement_seconds) : "—"} average engagement · ${data.traffic.pages_per_session} pages / session`}
+              />
+            ) : (
+              <StatTile
+                label="Bounce rate"
+                value={`${data.traffic.bounce_rate}%`}
+                invert
+                sub={`${data.traffic.pages_per_session} pages / session · engagement not measured this period`}
+              />
+            )}
           </div>
 
           {/* ── Trends — two measures, two charts (never a dual axis) ── */}
@@ -1159,6 +1437,7 @@ const AnalyticsPanel = () => {
                   { label: "Product" },
                   { label: "Views", align: "right" },
                   { label: "Carts", align: "right" },
+                  { label: "Put back", align: "right" },
                   { label: "View→cart", align: "right" },
                   { label: "Cart→buy", align: "right" },
                   { label: "Revenue", align: "right" },
@@ -1167,6 +1446,10 @@ const AnalyticsPanel = () => {
                   p.name,
                   fmtInt(p.views),
                   fmtInt(p.add_to_carts),
+                  // Sessions that took it back out of the basket. Recorded from
+                  // day one and shown nowhere until now — it separates "nobody
+                  // wants this" from "they wanted it until they saw the price".
+                  p.removals > 0 ? fmtInt(p.removals) : "—",
                   // A null rate means the stage below it had no traffic, so the
                   // rate is unknown — shown as "—". Printing 0% instead would
                   // read as "everyone who looked rejected it", which is a very
@@ -1183,6 +1466,8 @@ const AnalyticsPanel = () => {
                 view→cart with a low cart→buy means the loss is at checkout, not on the product.
                 Carts can exceed views — a product added straight from the shop grid never opens its own page —
                 so the rates count only the sessions that did both, and stay shares.
+                “Put back” is sessions that removed it from the basket again: a high number next to a healthy
+                cart→buy usually means the price or delivery cost, not the product.
                 Revenue shares each order's discount across its lines, so it adds up to Revenue minus shipping.
               </p>
             </Card>
@@ -1230,8 +1515,33 @@ const AnalyticsPanel = () => {
               <Card title="Top pages" desc="Most-viewed storefront pages">
                 <DataTable
                   cols={[{ label: "Page" }, { label: "Views", align: "right" }, { label: "Sessions", align: "right" }]}
-                  rows={data.top_pages.map(p => [p.path || "/", fmtInt(p.views), fmtInt(p.sessions)])}
+                  // A dash on the fold row's Sessions: per-page session counts
+                  // overlap (one visitor reads several pages), so they cannot be
+                  // added up. Views can, and do, total to the Page views tile.
+                  rows={data.top_pages.map(p => [
+                    p.path || "/", fmtInt(p.views),
+                    p.sessions === null ? "—" : fmtInt(p.sessions),
+                  ])}
                   empty="No page views recorded in this period yet."
+                />
+              </Card>
+
+              {/* Where visits BEGIN — a different question from which pages get
+                  looked at most, and routinely a different answer. Top pages is
+                  dominated by whatever everyone passes through; this is the front
+                  door, and the conversion column is what says a page brings
+                  people who buy rather than merely people. */}
+              <Card title="Landing pages" desc="Where visits start, and how often they end in a sale">
+                <DataTable
+                  cols={[{ label: "First page seen" }, { label: "Sessions", align: "right" }, { label: "Bought", align: "right" }, { label: "Converted", align: "right" }]}
+                  rows={data.landing_pages.map(p => [
+                    p.path || "/", fmtInt(p.sessions), fmtInt(p.purchased),
+                    // A dash, not 0%. With no sales from a page the rate is
+                    // "none yet", and on a handful of sessions that is not the
+                    // same statement as "this page doesn't convert".
+                    p.purchased > 0 ? `${((p.purchased / p.sessions) * 100).toFixed(1)}%` : "—",
+                  ])}
+                  empty="No landing pages recorded in this period yet."
                 />
               </Card>
 
@@ -1259,6 +1569,45 @@ const AnalyticsPanel = () => {
                   address is looked up, sent anywhere or stored. “Unknown” is a visit that reached the
                   shop without passing through it, which includes anything before this was switched on.
                 </p>
+                {/* The caveat that turns a confusing row into a readable one. A
+                    location is where the CONNECTION surfaced, which is not always
+                    where the person was — and the commonest cause of a surprising
+                    city is the shop's own laptop on a VPN, which also walks past
+                    the home-network rule below for exactly the same reason. */}
+                <p className="font-sans text-[11px] text-muted-foreground mt-2">
+                  This is where the connection surfaced, not necessarily where the person was: a VPN
+                  reports the city it exits in. If a city here looks like one of your own visits,
+                  retire it in “Recent visits” below — excluding your wifi cannot catch a visit that
+                  did not arrive on it.
+                </p>
+              </Card>
+
+              {/* The only place a shopper says what they wanted in their own
+                  words. A term that finds nothing leaves no other trace anywhere
+                  on this page: no product row, no lost basket, no funnel step —
+                  the visit just ends, and the day reads as normally quiet. */}
+              <Card title="What shoppers search for" desc="Terms typed into the search box, and how many found nothing">
+                <DataTable
+                  cols={[{ label: "Search" }, { label: "Searches", align: "right" }, { label: "Sessions", align: "right" }, { label: "Found nothing", align: "right" }]}
+                  rows={data.searches.map(t => [
+                    t.term, fmtInt(t.searches),
+                    // A dash on the fold row: one visitor searches several
+                    // times, so per-term session counts overlap and adding them
+                    // would print more searchers than there were people.
+                    t.sessions === null ? "—" : fmtInt(t.sessions),
+                    // A dash, not a 0. Zero empty searches is the good outcome
+                    // and should read as calm rather than as another number to
+                    // scan past.
+                    t.no_results > 0 ? `${fmtInt(t.no_results)}` : "—",
+                  ])}
+                  empty="No searches in this period yet."
+                />
+                {data.searches.some(t => t.no_results > 0) && (
+                  <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                    A search that finds nothing is either a product to stock or a word your own
+                    listings don't use for something you already sell. Both are fixable today.
+                  </p>
+                )}
               </Card>
             </div>
 
@@ -1270,6 +1619,33 @@ const AnalyticsPanel = () => {
                   browser in a narrow window is a desktop.
                 </p>
               </Card>
+              {/* Joining the list, opening an account, coming back to sign in.
+                  All three were recorded from the first day and lived only
+                  inside the bounce rule — used as evidence that SOMETHING
+                  deliberate happened, with the number itself discarded. The
+                  newsletter one is what a shop can act on when a month is quiet:
+                  the audience either kept growing or it didn't. */}
+              <Card title="Sign-ups" desc="People joining the list, opening an account, or coming back">
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <p className="font-sans text-lg font-semibold text-foreground">{fmtInt(data.accounts.newsletter_signups)}</p>
+                    <p className="font-sans text-xs text-muted-foreground">Joined the list</p>
+                  </div>
+                  <div>
+                    <p className="font-sans text-lg font-semibold text-foreground">{fmtInt(data.accounts.account_signups)}</p>
+                    <p className="font-sans text-xs text-muted-foreground">New accounts</p>
+                  </div>
+                  <div>
+                    <p className="font-sans text-lg font-semibold text-foreground">{fmtInt(data.accounts.sign_ins)}</p>
+                    <p className="font-sans text-xs text-muted-foreground">Sign-ins</p>
+                  </div>
+                </div>
+                <p className="font-sans text-[11px] text-muted-foreground mt-3">
+                  Counted once per visit, so a form submitted twice because the first press didn't look like it
+                  worked is one person. Sign-ins count returning customers, not new ones.
+                </p>
+              </Card>
+
               <Card title="Audience" desc="Visitor mix in this period">
                 <div className="flex items-center gap-6">
                   <div>
@@ -1305,7 +1681,8 @@ const AnalyticsPanel = () => {
           </Card>
 
           {/* ── What these numbers are counting ── */}
-          <InternalTraffic />
+          <RecentVisits onChanged={() => setReloadKey(k => k + 1)} />
+          <InternalTraffic onChanged={() => setReloadKey(k => k + 1)} />
         </div>
       )}
     </div>

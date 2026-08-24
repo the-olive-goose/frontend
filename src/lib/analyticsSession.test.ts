@@ -32,6 +32,9 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   vi.restoreAllMocks();
+  // restoreAllMocks does NOT undo stubGlobal. Without this, the stubbed
+  // location from the marker-link tests would leak into every test after them.
+  vi.unstubAllGlobals();
 });
 
 describe("one session across tabs", () => {
@@ -86,6 +89,76 @@ describe("upgrading from the old tab-scoped id", () => {
     expect((await newTab()).getSessionId()).toBe("legacy-session-id");
     // …and it now lives where every tab can see it.
     expect(localStorage.getItem(SESSION_KEY)).toBe("legacy-session-id");
+  });
+});
+
+// The last device the automatic rules can't reach: a household phone that never
+// opens the admin panel, never signs in, and is on mobile data when it looks at
+// the shop. Opening one link marks it — and the link must not then travel on in
+// a bookmark or a shared URL, or it would silently exclude whoever opened it
+// next, which is an under-count nothing on the dashboard could reveal.
+describe("marking a device with a link", () => {
+  const withUrl = (search: string) => {
+    const replaceState = vi.fn();
+    vi.stubGlobal("location", { href: `https://shop.test/shop${search}`, pathname: "/shop", search, hash: "" });
+    vi.stubGlobal("history", { replaceState });
+    return replaceState;
+  };
+
+  it("marks the browser and takes the parameter back out of the address bar", async () => {
+    const replaceState = withUrl("?not-a-shopper=1");
+    const mod = await newTab();
+    mod.initAnalytics();
+    expect(mod.isInternalBrowser()).toBe(true);
+    expect(replaceState).toHaveBeenCalledWith({}, "", "/shop");
+  });
+
+  it("keeps the rest of the query string", async () => {
+    const replaceState = withUrl("?utm_source=insta&not-a-shopper=1");
+    const mod = await newTab();
+    mod.initAnalytics();
+    expect(replaceState).toHaveBeenCalledWith({}, "", "/shop?utm_source=insta");
+  });
+
+  it("undoes it on that device with =0", async () => {
+    withUrl("?not-a-shopper=1");
+    const first = await newTab();
+    first.initAnalytics();
+    expect(first.isInternalBrowser()).toBe(true);
+
+    withUrl("?not-a-shopper=0");
+    const second = await newTab();
+    second.initAnalytics();
+    expect(second.isInternalBrowser()).toBe(false);
+  });
+
+  it("leaves an ordinary visit alone", async () => {
+    withUrl("?utm_source=insta");
+    const mod = await newTab();
+    mod.initAnalytics();
+    expect(mod.isInternalBrowser()).toBe(false);
+  });
+});
+
+// A browser that has been used to administer the shop is the shop's, wherever it
+// looks like it is browsing from — the one signal a VPN cannot defeat, because
+// it has nothing to do with the address a visit arrives from.
+describe("a browser that administers the shop", () => {
+  it("excludes itself without anyone marking it", async () => {
+    localStorage.setItem("admin_token", "a.b.c");
+    const mod = await newTab();
+    expect(mod.isAdminBrowser()).toBe(true);
+    mod.initAnalytics();
+    // Promoted to the ordinary marker, so it stays excluded after signing out
+    // of admin rather than quietly rejoining the shopper numbers.
+    expect(mod.isInternalBrowser()).toBe(true);
+  });
+
+  it("does not claim an ordinary browser", async () => {
+    const mod = await newTab();
+    expect(mod.isAdminBrowser()).toBe(false);
+    mod.initAnalytics();
+    expect(mod.isInternalBrowser()).toBe(false);
   });
 });
 

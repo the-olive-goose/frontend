@@ -67,3 +67,6 @@ playwright-report/
 .pg-up.mjs
 .q.mjs
 .seed-products.mjs
+
+# Analytics exports from scripts/analytics-archive.mjs — real visitor data, never committed
+analytics-archive/

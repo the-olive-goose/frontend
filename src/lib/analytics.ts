@@ -64,6 +64,7 @@ export type EventType =
   | 'add_shipping_info'   // delivery/pickup chosen and the address accepted
   | 'add_payment_info'    // handed off to Stripe — the last step we can observe
   | 'search'
+  | 'user_engagement'     // carries the last slice of foreground time out — see flush()
   | 'newsletter_signup' | 'signup' | 'login' | 'web_vital';
 
 interface QueuedEvent {
@@ -202,7 +203,10 @@ const getUtm = (): { utm_source: string; utm_medium: string; utm_campaign: strin
     utm_medium: q.get('utm_medium') || '',
     utm_campaign: q.get('utm_campaign') || '',
   };
-  writeEitherStore(UTM_KEY, JSON.stringify(utm));
+  // A prerender is a guess about a page nobody has opened. Writing its campaign
+  // to storage would leave the guess behind after the guess is thrown away, and
+  // the next real visit in the same session window would be credited to it.
+  if (!isPrerendering()) writeEitherStore(UTM_KEY, JSON.stringify(utm));
   return utm;
 };
 
@@ -238,6 +242,98 @@ const getReferrer = (): string => {
   try { return new URL(ref).origin === window.location.origin ? '' : ref; } catch { return ''; }
 };
 
+// ── Pages nobody has actually visited ─────────────────────────────────────────
+// Chrome PRERENDERS a page it predicts you are about to open — from the address
+// bar, from a speculation rule — by loading it fully and running its JavaScript,
+// in a hidden tab that is thrown away if the prediction was wrong.
+//
+// Analytics cannot tell the difference on its own, so a prediction that never
+// came true arrived as a complete phantom visit: a visitor, a session, a page
+// view, a bounce. Someone typing "olive" into the address bar and changing their
+// mind was a shopper. There is no way to spot these afterwards, and they land in
+// exactly the numbers that get quoted.
+//
+// The flush is gated instead of the recording: events are still QUEUED during a
+// prerender, because a page that IS activated must keep the page view that
+// brought the shopper in. Nothing leaves the browser until the visit is real —
+// and if it never becomes real, the hidden page is destroyed and the queue with
+// it, which is precisely the right outcome.
+//
+// `document.prerendering` is undefined everywhere else, so this is inert on
+// every browser that doesn't do it.
+const isPrerendering = () =>
+  (document as Document & { prerendering?: boolean }).prerendering === true;
+
+/**
+ * Milliseconds of prerender that happened before the shopper asked for anything.
+ *
+ * Every paint timestamp is measured from the moment the PRERENDER started, so on
+ * an activated page they include time the shopper never waited through. Without
+ * this, prerendering — a feature that makes the site feel instant — makes its
+ * own Core Web Vitals look worse, and the shop chases a slow LCP that no visitor
+ * has ever experienced.
+ */
+const activationStart = (): number => {
+  try {
+    const nav = performance.getEntriesByType('navigation')[0] as
+      (PerformanceNavigationTiming & { activationStart?: number }) | undefined;
+    return nav?.activationStart ?? 0;
+  } catch { return 0; }
+};
+
+// ── How long anyone actually spent here ───────────────────────────────────────
+// The metric this dashboard had no answer for at all, and the first one a leader
+// asks about after "how many people".
+//
+// Measured GA4's way, because a number called "engagement time" has to mean what
+// every benchmark it will be compared against means: time the page was in the
+// FOREGROUND AND VISIBLE. Not time since the session started — a tab left open
+// over lunch is not two hours of interest, and counting it that way is how
+// dashboards end up reporting engagement that nobody would recognise.
+//
+// The accumulator is sent as a DELTA with each batch and reset, so the server
+// only ever adds up; a dropped batch loses that slice rather than double-counting
+// the rest. A prerendered page never becomes visible, so it accumulates nothing —
+// the gate is automatic rather than another special case.
+let engagedMs = 0;
+let activeSince: number | null = null;
+
+const isVisible = () => {
+  try { return document.visibilityState === 'visible'; } catch { return false; }
+};
+
+/** Fold the open interval, if any, into the accumulator. */
+const pauseEngagement = () => {
+  if (activeSince === null) return;
+  engagedMs += Math.max(0, Date.now() - activeSince);
+  activeSince = null;
+};
+
+const resumeEngagement = () => {
+  if (activeSince === null && isVisible()) activeSince = Date.now();
+};
+
+/**
+ * Everything accumulated since the last call, in milliseconds, and reset.
+ *
+ * Clamped at an hour: this is a delta between two flushes of the same page, and
+ * a value larger than that means a clock change or a machine resumed from sleep,
+ * neither of which is someone reading about candles.
+ */
+const takeEngagement = (): number => {
+  const now = Date.now();
+  if (activeSince !== null) {
+    engagedMs += Math.max(0, now - activeSince);
+    activeSince = now;
+  }
+  const total = Math.min(Math.round(engagedMs), 60 * 60 * 1000);
+  engagedMs = 0;
+  return total;
+};
+
+/** Whether any foreground time is waiting to be reported. */
+const hasPendingEngagement = () => engagedMs > 0 || activeSince !== null;
+
 const queue: QueuedEvent[] = [];
 
 // 'persistent' — the visitor id survives in localStorage, so this person is
@@ -264,13 +360,45 @@ const visitorScope = () => (canPersist() ? 'persistent' : 'session');
 // needs the visitor id to exclude what this browser already sent, not just what
 // it sends next.
 
+// Where api.ts keeps the admin session token. Duplicated rather than imported so
+// this file stays free of the API layer; analyticsEventParity.test.ts pins the
+// two spellings together, because a rename here would fail silently — the shop
+// would simply go back to counting its own owner.
+const ADMIN_TOKEN_KEY = 'admin_token';
+
+/**
+ * A browser that is signed in to the admin panel is, definitionally, the shop's.
+ *
+ * This is the signal that needed no setting up, and its absence is why the
+ * owner's own visits kept appearing. Every other route can be defeated by an
+ * ordinary afternoon: the marker flag is per-browser and per-origin and dies
+ * with a cleared cache or a private window; the account list only catches the
+ * part of a visit spent signed in as a CUSTOMER, which the owner rarely is; and
+ * the home-network rule matches on the address a visit arrives from, so a VPN —
+ * or a phone that dropped to mobile data — walks straight past it and lands in
+ * the numbers as a stranger in whichever city the exit node was in.
+ *
+ * Nothing about a VPN changes what is in this browser's own storage. So the
+ * moment a device has been used to administer the shop, it stops counting as a
+ * shopper on that device, wherever it appears to be and whoever is signed in.
+ */
+export const isAdminBrowser = (): boolean => readStore('local', ADMIN_TOKEN_KEY) !== null;
+
 /**
  * Whether this browser has been marked as the shop's own in Admin → Analytics.
  * Checks both stores: a browser that refuses localStorage still gets to exclude
  * itself for the life of the tab rather than not at all.
+ *
+ * Deliberately does NOT fold in isAdminBrowser(): this is the state the panel's
+ * toggle owns and reports, and conflating the two would show the owner a switch
+ * that reads "on" and cannot be turned off. What ingestion asks is the OR of
+ * both — see countsAsInternal.
  */
 export const isInternalBrowser = (): boolean =>
   readStore('local', INTERNAL_KEY) === '1' || readStore('session', INTERNAL_KEY) === '1';
+
+/** What ingestion is told: marked by hand, or signed in to admin right now. */
+const countsAsInternal = (): boolean => isInternalBrowser() || isAdminBrowser();
 
 /** Mark or release this browser. Returns false if storage refused the change. */
 export const setInternalBrowser = (internal: boolean): boolean => {
@@ -281,16 +409,72 @@ export const setInternalBrowser = (internal: boolean): boolean => {
   return writeStore('local', INTERNAL_KEY, '1') || writeStore('session', INTERNAL_KEY, '1');
 };
 
+/**
+ * The query parameter that marks whatever browser opens the link.
+ *
+ * The last device that nothing else can reach. A browser signed in to admin
+ * excludes itself; a named account excludes itself; a device on the home wifi
+ * excludes itself. What none of those covers is the household phone that has
+ * never opened the admin panel, never signs in, and is out of the house on
+ * mobile data — or on a VPN — when it looks at the shop. From the outside it is
+ * indistinguishable from a stranger, and no rule can be written that catches it
+ * without also catching real shoppers.
+ *
+ * So it is marked by hand, once, by opening a link: the owner sends it to the
+ * phone, the tablet, a partner's laptop, and each one drops out for good without
+ * anyone needing the admin password. `?not-a-shopper=0` undoes it on that device.
+ *
+ * Sharing the link costs nothing worth protecting: the only thing anyone can do
+ * with it is remove THEIR OWN visits from the count. There is no way to use it
+ * to add traffic, to see anything, or to affect anyone else's measurement.
+ */
+export const INTERNAL_MARK_PARAM = 'not-a-shopper';
+
+/**
+ * Honour that link, then take it back out of the address bar — so the marker
+ * isn't carried into a shared URL, a bookmark or a referrer, where it would
+ * silently exclude whoever opened it next.
+ */
+const applyInternalMarkLink = () => {
+  try {
+    const url = new URL(window.location.href);
+    const value = url.searchParams.get(INTERNAL_MARK_PARAM);
+    if (value === null) return;
+    setInternalBrowser(value !== '0');
+    url.searchParams.delete(INTERNAL_MARK_PARAM);
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  } catch { /* a URL we can't parse is not worth a broken page */ }
+};
+
 const payload = () => JSON.stringify({
   visitor_id: getVisitorId(),
   session_id: getSessionId(),
   visitor_scope: visitorScope(),
-  internal: isInternalBrowser(),
+  internal: countsAsInternal(),
+  // Foreground time since the last batch. The server sums these per session.
+  engagement_ms: takeEngagement(),
   events: queue.splice(0, MAX_BATCH),
 });
 
 const flush = (useBeacon = false) => {
-  if (!queue.length) return;
+  // Not a visit yet — see isPrerendering. Keeps the queue for activation.
+  if (isPrerendering()) return;
+  if (!queue.length) {
+    // The last slice of engagement has nothing to travel with.
+    //
+    // Time keeps accruing after the final event of a visit, and that slice is
+    // usually the biggest one — it is the dwell time on the page someone
+    // actually leaves from, the article they finished, the product they thought
+    // about. With no event left to carry it, every visit lost its tail and the
+    // shop's average engagement time was systematically short.
+    //
+    // GA4 solves this with an event whose only job is to carry the number, and
+    // this is that event, under the same name. Sent only on the way out, and
+    // only when there is something to say.
+    if (!useBeacon || !hasPendingEngagement()) return;
+    track('user_engagement', {});
+    if (!queue.length) return; // refused (an admin page) — nothing to send
+  }
   const body = payload();
   const url = `${API_URL}/api/analytics/events`;
   if (useBeacon && navigator.sendBeacon) {
@@ -416,7 +600,12 @@ const observeWebVitals = () => {
     new PerformanceObserver(list => {
       const entries = list.getEntries();
       const last = entries[entries.length - 1];
-      if (last) vitals.LCP = Math.round(last.startTime);
+      // Measured from ACTIVATION on a prerendered page, which is the only moment
+      // the shopper started waiting — the raw timestamp counts the prerender
+      // too, and reports a page as slow precisely because it was made fast.
+      // Google's own definition subtracts this; ours must, or the number stops
+      // meaning what Search Console and PageSpeed mean by it.
+      if (last) vitals.LCP = Math.max(0, Math.round(last.startTime - activationStart()));
     }).observe({ type: 'largest-contentful-paint', buffered: true });
   } catch { /* unsupported */ }
 
@@ -468,10 +657,7 @@ const observeWebVitals = () => {
     // activationStart is non-zero only on a prerendered page, where the clock
     // starts before the shopper asked for anything; without it a prerender that
     // did its work early reports a TTFB of several seconds it never cost anyone.
-    if (nav) {
-      const activation = (nav as PerformanceNavigationTiming & { activationStart?: number }).activationStart ?? 0;
-      vitals.TTFB = Math.max(0, Math.round(nav.responseStart - activation));
-    }
+    if (nav) vitals.TTFB = Math.max(0, Math.round(nav.responseStart - activationStart()));
   } catch { /* unsupported */ }
 
   let reported = false;
@@ -496,6 +682,20 @@ let initialized = false;
 export const initAnalytics = () => {
   if (initialized || typeof window === 'undefined') return;
   initialized = true;
+  // Before anything is queued, so a device arriving on the marker link is never
+  // counted even once.
+  applyInternalMarkLink();
+  // Make the admin signal STICK. Signing in to the admin panel excludes this
+  // browser from the moment it happens (see countsAsInternal), but signing out
+  // again would hand it straight back to the shopper numbers — and a device the
+  // owner administers the shop from is still theirs the next morning. Promoting
+  // it to the ordinary marker flag once per load is what makes it permanent,
+  // and it stays undoable from the panel's own toggle.
+  if (isAdminBrowser()) setInternalBrowser(true);
+  // Start the engagement clock if the page is already in front. A prerendered
+  // page is 'hidden' until activation, so this is a no-op there and starts on
+  // the visibilitychange that activation fires.
+  resumeEngagement();
   setInterval(() => flush(), FLUSH_INTERVAL_MS);
   // Vitals are wired up FIRST so its hide/pagehide listeners run before the
   // flush listeners registered below — same events, and listeners fire in
@@ -503,10 +703,18 @@ export const initAnalytics = () => {
   // sitting in it, so every sample from a closing tab was dropped and the p75s
   // were built from whoever happened to switch tabs and come back.
   observeWebVitals();
+  // The moment a prediction turns into a real visit, send what was queued during
+  // it rather than waiting out the interval — a shopper who lands and leaves
+  // inside five seconds would otherwise be lost on the way back out.
+  document.addEventListener('prerenderingchange', () => { resumeEngagement(); flush(); }, { once: true });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flush(true);
+    // Order matters: stop the clock BEFORE flushing, so the slice that just
+    // ended travels with this batch instead of waiting for a batch that may
+    // never come — the tab is being hidden, and most of them never come back.
+    if (document.visibilityState === 'hidden') { pauseEngagement(); flush(true); }
+    else resumeEngagement();
   });
-  window.addEventListener('pagehide', () => flush(true));
+  window.addEventListener('pagehide', () => { pauseEngagement(); flush(true); });
 };
 
 /** Ids the checkout flow forwards so the backend can attribute the purchase. */
