@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, Fragment } from "react";
+import { getVisitorId, isAdminBrowser, setInternalBrowser } from "@/lib/analytics";
 import {
   isLoggedIn,
   logout,
@@ -54,6 +55,7 @@ import {
   type OpsOverview,
   type AutomationSettings,
   type AdminDecision,
+  setAnalyticsInternalBrowser,
 } from "@/lib/api";
 import { formatAddressBlock, formatPhoneDisplay } from "@/lib/addressValidation";
 import {
@@ -5643,6 +5645,29 @@ const AdminDashboard = () => {
 
   useEffect(() => {
     setSession(isLoggedIn());
+  }, []);
+
+  // Tell the server this browser is the shop's, the moment the admin panel opens.
+  //
+  // THE HOLE THIS CLOSES. Signing in to admin marks the browser locally, and
+  // every batch it sends afterwards carries that mark — but track() refuses to
+  // record anything on an /admin path, so the admin panel never SENDS a batch,
+  // so the server never learns the visitor id. The exclusion therefore only took
+  // effect the next time that browser loaded a storefront page.
+  //
+  // Which is precisely the wrong way round for the commonest sequence there is:
+  // deploy, open the shop to check it works, THEN open admin to look at the
+  // numbers. That storefront visit was recorded before the browser had any mark
+  // on it, and sat in the figures — one visitor, one session, one page view —
+  // until the owner happened to browse the shop again.
+  //
+  // One call fixes it: the mark is by visitor and reaches backwards, so this
+  // retires that visit and everything else this browser ever did. Fire-and-forget
+  // and silent — analytics housekeeping must never interrupt the admin panel.
+  useEffect(() => {
+    if (!isAdminBrowser()) return;
+    setInternalBrowser(true);
+    setAnalyticsInternalBrowser(getVisitorId(), true).catch(() => { /* next load will retry */ });
   }, []);
 
   const loadData = useCallback(async () => {

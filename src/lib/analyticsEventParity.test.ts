@@ -22,6 +22,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const backendSrc = readFileSync(path.join(REPO, "backend/index.js"), "utf8");
 const clientSrc = readFileSync(path.join(REPO, "src/lib/analytics.ts"), "utf8");
 const apiSrc = readFileSync(path.join(REPO, "src/lib/api.ts"), "utf8");
+const adminSrc = readFileSync(path.join(REPO, "src/pages/AdminDashboard.tsx"), "utf8");
 
 /** The names the API will accept and store. */
 const serverTypes = (): string[] => {
@@ -76,6 +77,24 @@ describe("analytics event vocabulary", () => {
     const analyticsKey = clientSrc.match(/const ADMIN_TOKEN_KEY = '([^']+)'/)?.[1];
     expect(apiKey).toBeTruthy();
     expect(analyticsKey).toBe(apiKey);
+  });
+
+  it("has the admin panel tell the server which browser it is", () => {
+    // track() refuses to record anything on an /admin path, so the admin panel
+    // never SENDS an ingest batch — which means signing in to admin marks the
+    // browser locally and the server never hears about it. The exclusion then
+    // only lands the next time that browser loads a storefront page.
+    //
+    // That is backwards for the commonest sequence there is: deploy, open the
+    // shop to check it works, then open admin to look at the numbers. The
+    // storefront visit is recorded before the browser carries any mark, and sits
+    // in the figures as one visitor, one session, one page view.
+    //
+    // So AdminDashboard registers the visitor id on mount. Pinned here because
+    // deleting those three lines breaks nothing visible, fails no other test,
+    // and quietly puts the owner back in their own traffic.
+    expect(adminSrc).toMatch(/isAdminBrowser\(\)/);
+    expect(adminSrc).toMatch(/setAnalyticsInternalBrowser\(\s*getVisitorId\(\)\s*,\s*true\s*\)/);
   });
 
   it("builds the funnel from events the API accepts", () => {
