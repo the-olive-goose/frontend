@@ -11,6 +11,7 @@ import {
   type ProductCardTheme,
 } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
+import { ProductListScope } from "@/components/ProductListScope";
 import { SkelBlock } from "@/components/ui/ContentSkeleton";
 import {
   CandleCard,
@@ -214,30 +215,38 @@ const NewArrivalsSection = () => {
                 </div>
               </div>
 
-              {/* Cards — swipeable; the arrows above are the pointer equivalent */}
-              <div
-                {...swipe}
-                style={{display:"flex", gap:"clamp(8px,1.4vw,14px)", alignItems:"stretch", ...swipe.style}}
-              >
-                {products.length === 0 ? (
-                  <>
-                    {["add products via\nAdmin → Shop By Category", "they'll appear\nhere automatically", "assign products\nto this category"]
-                      .slice(0, perView)
-                      .map(label => (
-                        <PlaceholderCard key={label} accent={cat.accent_color} isDark={isDark} label={label} />
-                      ))}
-                  </>
-                ) : (
-                  <AnimatePresence mode="sync">
-                    {visible.map((p,i) => (
-                      <CandleCard key={p.id} product={p} accent={cardAccent} isDark={isDark} idx={candleOffset+i} buttonTextColor={cardTheme.buttonTextColor} />
-                    ))}
-                    {Array.from({length: perView - visible.length}).map((_,i) => (
-                      <div key={`spacer-${i}`} style={{flex:"1 1 0", minWidth:0}} />
-                    ))}
-                  </AnimatePresence>
+              {/* Cards — swipeable; the arrows above are the pointer equivalent.
+                  The rail sits well below the fold, so its impressions are
+                  reported when it is actually scrolled to, and only for the
+                  cards in the current window. */}
+              <ProductListScope id="new_arrivals" name={`New arrivals: ${cat.name}`} products={visible}>
+                {(listRef) => (
+                  <div
+                    {...swipe}
+                    ref={listRef}
+                    style={{display:"flex", gap:"clamp(8px,1.4vw,14px)", alignItems:"stretch", ...swipe.style}}
+                  >
+                    {products.length === 0 ? (
+                      <>
+                        {["add products via\nAdmin → Shop By Category", "they'll appear\nhere automatically", "assign products\nto this category"]
+                          .slice(0, perView)
+                          .map(label => (
+                            <PlaceholderCard key={label} accent={cat.accent_color} isDark={isDark} label={label} />
+                          ))}
+                      </>
+                    ) : (
+                      <AnimatePresence mode="sync">
+                        {visible.map((p,i) => (
+                          <CandleCard key={p.id} product={p} accent={cardAccent} isDark={isDark} idx={candleOffset+i} buttonTextColor={cardTheme.buttonTextColor} />
+                        ))}
+                        {Array.from({length: perView - visible.length}).map((_,i) => (
+                          <div key={`spacer-${i}`} style={{flex:"1 1 0", minWidth:0}} />
+                        ))}
+                      </AnimatePresence>
+                    )}
+                  </div>
                 )}
-              </div>
+              </ProductListScope>
 
               {/* Dots — the dot stays 6px tall, but the button around it carries
                   transparent padding so a fingertip can actually land on it */}

@@ -12,6 +12,7 @@ import {
 } from "@/lib/defaults";
 import RichText from "@/lib/richtext";
 import ProductCard from "@/components/ui/ProductCard";
+import { ProductListScope } from "@/components/ProductListScope";
 import { SkelBlock } from "@/components/ui/ContentSkeleton";
 import { useContent } from "@/hooks/useContent";
 
@@ -244,30 +245,41 @@ export const CategoryPage = ({ cat, products, candleOffset, setCandleOffset, int
           )}
         </div>
 
-        {/* Cards row */}
-        <div
-          {...cardSwipe}
-          style={{ flex:1, display:"flex", gap:"clamp(6px,1.4vw,14px)", alignItems:"stretch", minHeight:0, ...cardSwipe.style }}
-        >
-          {products.length === 0 ? (
-            <>
-              {["add products via\nAdmin → Shop By Category", "they'll appear\nhere automatically"]
-                .slice(0, perView)
-                .map(label => (
-                  <PlaceholderCard key={label} accent={cat.accent_color} isDark={isDark} label={label} />
-                ))}
-            </>
-          ) : (
-            <AnimatePresence mode="sync">
-              {visible.map((p, i) => (
-                <CandleCard key={p.id} product={p} accent={cardAccent} isDark={isDark} idx={candleOffset + i} buttonTextColor={cardTheme?.buttonTextColor} />
-              ))}
-              {Array.from({ length: perView - visible.length }).map((_, i) => (
-                <div key={`spacer-${i}`} style={{ flex:"1 1 0", minWidth:0 }} />
-              ))}
-            </AnimatePresence>
+        {/* Cards row.
+            `visible` and not `products`: this is a carousel, and only the cards
+            in the current window were ever on screen. Reporting the whole
+            category would credit impressions to candles nobody swiped to.
+            Swiping reports the new window, which is a real impression. The ref
+            goes on the row itself — it is the element that has to be on screen
+            for these cards to count as seen. */}
+        <ProductListScope id={`category_${cat.slug}`} name={cat.name} products={visible}>
+          {(listRef) => (
+            <div
+              {...cardSwipe}
+              ref={listRef}
+              style={{ flex:1, display:"flex", gap:"clamp(6px,1.4vw,14px)", alignItems:"stretch", minHeight:0, ...cardSwipe.style }}
+            >
+              {products.length === 0 ? (
+                <>
+                  {["add products via\nAdmin → Shop By Category", "they'll appear\nhere automatically"]
+                    .slice(0, perView)
+                    .map(label => (
+                      <PlaceholderCard key={label} accent={cat.accent_color} isDark={isDark} label={label} />
+                    ))}
+                </>
+              ) : (
+                <AnimatePresence mode="sync">
+                  {visible.map((p, i) => (
+                    <CandleCard key={p.id} product={p} accent={cardAccent} isDark={isDark} idx={candleOffset + i} buttonTextColor={cardTheme?.buttonTextColor} />
+                  ))}
+                  {Array.from({ length: perView - visible.length }).map((_, i) => (
+                    <div key={`spacer-${i}`} style={{ flex:"1 1 0", minWidth:0 }} />
+                  ))}
+                </AnimatePresence>
+              )}
+            </div>
           )}
-        </div>
+        </ProductListScope>
 
         {/* Dots — small dot, finger-sized button around it */}
         {products.length > perView && (

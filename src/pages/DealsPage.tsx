@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, DEFAULT_PRODUCT_CARD_THEME, resolveCardAccent, type Product, type Bundle, type DealsContent, type ProductCardTheme } from "@/lib/defaults";
 import useIsMobile from "@/hooks/useIsMobile";
 import { useCart } from "@/contexts/CartContext";
+import { ProductListScope, trackSelectItem } from "@/components/ProductListScope";
 import { formatPrice } from "@/lib/cart";
 import { productPath } from "@/lib/products";
 import { useJsonLd } from "@/hooks/useJsonLd";
@@ -118,16 +119,24 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
       {/* Divider */}
       <div style={{ margin: "0 clamp(16px,3.5vw,32px)", height: 1, background: `${accent}18` }} />
 
-      {/* Products */}
-      <div style={{ display: "flex", gap: "clamp(8px,1.5vw,16px)", padding: "clamp(12px,2.5vw,24px) clamp(16px,3.5vw,32px)", position: "relative", zIndex: 2, background: "#f5e8d8", borderTop: "none" }}>
+      {/* Products.
+          Each bundle is its own item list: that is what the shopper is actually
+          looking at, and it makes the report answer the question the page is
+          for — which bundle's candles get clicked through to. */}
+      <ProductListScope id={`bundle_${bundle.id}`} name={bundle.name} products={bundleProducts}>
+        {(listRef) => (
+      <div ref={listRef} style={{ display: "flex", gap: "clamp(8px,1.5vw,16px)", padding: "clamp(12px,2.5vw,24px) clamp(16px,3.5vw,32px)", position: "relative", zIndex: 2, background: "#f5e8d8", borderTop: "none" }}>
         {bundleProducts.map((p, i) => {
           const img = p.image_url || FALLBACK_IMGS[i % 2];
+          // Both links are the same decision, so both report it — exactly as
+          // the shared ProductCard does.
+          const select = () => trackSelectItem(p, i, { id: `bundle_${bundle.id}`, name: bundle.name });
           return (
             <div key={p.id} style={{ flex: "1 1 0", minWidth: 0, textAlign: "center", position: "relative" }}>
-              <Link to={productPath(p)} style={{ display: "block", aspectRatio: "3/4", borderRadius: 10, overflow: "hidden", marginBottom: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+              <Link to={productPath(p)} onClick={select} style={{ display: "block", aspectRatio: "3/4", borderRadius: 10, overflow: "hidden", marginBottom: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
                 <img src={img} alt={`${p.name} — handmade candle by The Olive Goose`} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", mixBlendMode: "multiply" }} />
               </Link>
-              <Link to={productPath(p)} style={{ display: "block", fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.82rem,1.3vw,1rem)", color: accent, lineHeight: 1.1, marginBottom: 2 }}>{p.name}</Link>
+              <Link to={productPath(p)} onClick={select} style={{ display: "block", fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.82rem,1.3vw,1rem)", color: accent, lineHeight: 1.1, marginBottom: 2 }}>{p.name}</Link>
               <p style={{ fontFamily: "'Fredoka',sans-serif", fontSize: "clamp(0.72rem,1.1vw,0.88rem)", color: "rgba(30,20,10,0.55)", textDecoration: "line-through" }}>{formatPrice(p.price)}</p>
               {/* "+" between two candles. It anchors to this product cell (which
                   is `position: relative`) and centres itself in the gap — before,
@@ -140,6 +149,8 @@ const BundleCard = ({ bundle, allProducts, idx, accent, buttonTextColor }: { bun
           );
         })}
       </div>
+        )}
+      </ProductListScope>
 
       {/* Pricing + CTA */}
       <div style={{ padding: "clamp(12px,2vw,20px) clamp(16px,3.5vw,32px)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, position: "relative", zIndex: 2 }}>

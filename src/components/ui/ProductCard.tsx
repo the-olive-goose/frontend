@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import type { Product } from "@/lib/defaults";
 import { productPath } from "@/lib/products";
 import { formatPrice } from "@/lib/cart";
-import { track } from "@/lib/analytics";
+import { useProductList, trackSelectItem } from "@/components/ProductListScope";
 import { useCart } from "@/contexts/CartContext";
 import AddToCartButton from "@/components/ui/AddToCartButton";
 import m1 from "@/assets/M1.png";
@@ -78,6 +78,7 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
     const img = product.image_url || FALLBACK_IMGS[idx % 2];
     const d = DENSITY[density];
     const { addToCart } = useCart();
+    const list = useProductList();
 
     // undefined/null stock = "not tracked", always purchasable — only an explicit
     // 0 blocks the button. Checkout enforces this authoritatively either way.
@@ -102,16 +103,14 @@ const ProductCard = forwardRef<HTMLDivElement, ProductCardProps>(
     // chose that card — the difference between a grid nobody scrolls and one
     // whose products disappoint on the second click.
     //
+    // The list comes from whichever <ProductListScope> this card is inside, so
+    // the click can be joined back to the impression that earned it. A card
+    // rendered outside one still reports the click, just without attribution.
+    //
     // Fires from both links, because both are the same decision. The event is
     // queued in memory and the navigation is client-side, so nothing is lost
     // between the click and the flush.
-    const trackSelect = () => track("select_item", {
-      product_id: product.id,
-      name: product.name,
-      price: product.price,
-      // 1-based, so "position 1" reads as the first card rather than the second.
-      position: idx + 1,
-    });
+    const trackSelect = () => trackSelectItem(product, idx, list);
 
     // No sign-in gate: the basket is the shopper's until checkout, where the
     // account is actually needed. A guest's adds live in localStorage and merge

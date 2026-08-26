@@ -16,7 +16,8 @@ import {
 } from "@/lib/products";
 import { useCart } from "@/contexts/CartContext";
 import { track } from "@/lib/analytics";
-import { formatPrice, MAX_CART_QTY } from "@/lib/cart";
+import { ProductListScope, useProductList, trackSelectItem } from "@/components/ProductListScope";
+import { formatPrice, MAX_CART_QTY, priceToNumber } from "@/lib/cart";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { applyMeta, SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import FooterSection from "@/components/sections/FooterSection";
@@ -386,9 +387,12 @@ const CircleSignup = ({ data }: { data: ProductPageContent["circle"] }) => {
 
 // ── Recommendation card ────────────────────────────────────────────────────────
 
-const RecommendationCard = ({ product }: { product: Product }) => (
+const RecommendationCard = ({ product, idx }: { product: Product; idx: number }) => {
+  const list = useProductList();
+  return (
   <Link
     to={productPath(product)}
+    onClick={() => trackSelectItem(product, idx, list)}
     className="group flex flex-col transition-transform duration-300 hover:-translate-y-1.5"
   >
     <div
@@ -421,7 +425,8 @@ const RecommendationCard = ({ product }: { product: Product }) => (
       </p>
     </div>
   </Link>
-);
+  );
+};
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
@@ -490,7 +495,7 @@ const ProductDetailPage = () => {
     track("view_item", {
       product_id: product.id,
       name: product.name,
-      price: product.price,
+      price: priceToNumber(product.price),
       category: categories.find(c => c.product_ids?.includes(product.id))?.name || "",
     });
   }, [product?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -776,9 +781,15 @@ const ProductDetailPage = () => {
             >
               <RichText text={pageCopy.recommendations_headline} />
             </h2>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
-              {recommendations.map(p => <RecommendationCard key={p.id} product={p} />)}
-            </div>
+            {/* The rail is at the bottom of a long page, so its impressions
+                are reported only once someone actually scrolls to it. */}
+            <ProductListScope id="recommendations" name="You may also like" products={recommendations}>
+              {(listRef) => (
+                <div ref={listRef} className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+                  {recommendations.map((p, i) => <RecommendationCard key={p.id} product={p} idx={i} />)}
+                </div>
+              )}
+            </ProductListScope>
           </section>
         )}
       </div>

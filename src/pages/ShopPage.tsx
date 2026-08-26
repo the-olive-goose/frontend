@@ -11,6 +11,7 @@ import {
 } from "@/lib/defaults";
 import { productPath } from "@/lib/products";
 import { track } from "@/lib/analytics";
+import { ProductListScope } from "@/components/ProductListScope";
 import { useJsonLd } from "@/hooks/useJsonLd";
 import { SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } from "@/lib/seo";
 import ProductCard from "@/components/ui/ProductCard";
@@ -73,22 +74,13 @@ const ShopPage = () => {
   const isAllView = !searchTerm && activeSlug === "all";
 
   // view_item_list — the funnel stage that used to be guessed from the URL.
-  // A page_view on /shop only proves the route was entered; this fires when a
-  // grid of products was actually rendered, so an empty category or a search
-  // with no hits is correctly NOT counted as browsing the catalogue.
-  //
-  // Keyed on the list's identity rather than on visibleProducts, which is
-  // rebuilt on every render and would re-fire the event continuously. `loading`
-  // is in the key so the real list is recorded, not the empty pre-fetch state.
-  const listKey = `${activeSlug}|${searchTerm}`;
-  useEffect(() => {
-    if (loading || visibleProducts.length === 0) return;
-    track("view_item_list", {
-      list_id: searchTerm ? "search" : activeSlug,
-      list_name: searchTerm ? `Search: ${searchTerm}` : (activeCat?.name || "All candles"),
-      item_count: visibleProducts.length,
-    });
-  }, [listKey, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A page_view on /shop only proves the route was entered; the grid reports
+  // itself when it is actually on screen, so an empty category or a search with
+  // no hits is correctly NOT counted as browsing the catalogue. That is
+  // <ProductListScope>'s job now — see the grid below — which also tells each
+  // card which list it is in, so a click can be joined to its impression.
+  const listId = searchTerm ? "search" : activeSlug;
+  const listName = searchTerm ? `Search: ${searchTerm}` : (activeCat?.name || "All candles");
 
   // Categories are often saved with all their moods in one "• a • b • c" string.
   // Split those back out so each mood is its own pill instead of one long pill
@@ -308,25 +300,29 @@ const ShopPage = () => {
             </p>
             {/* Two per row on a phone: the whole catalogue is scannable at a
                 glance and a tap opens the one that catches the eye. */}
-            <motion.div layout className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
-              <AnimatePresence mode="popLayout">
-                {visibleProducts.map((p, i) => (
-                  <ProductCard
-                    key={p.id}
-                    product={p}
-                    idx={i}
-                    accent={resolveCardAccent(cardTheme, activeCat)}
-                    buttonTextColor={cardTheme.buttonTextColor}
-                    density="regular"
-                    // The grid is why anyone opens this page, and the first two
-                    // rows of it are on screen the moment they arrive — two per
-                    // row on a phone, four across at the widest. Those photos
-                    // are fetched straight away; the rest wait to be scrolled to.
-                    priority={i < 4}
-                  />
-                ))}
-              </AnimatePresence>
-            </motion.div>
+            <ProductListScope id={listId} name={listName} products={visibleProducts}>
+              {(listRef) => (
+                <motion.div ref={listRef} layout className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
+                  <AnimatePresence mode="popLayout">
+                    {visibleProducts.map((p, i) => (
+                      <ProductCard
+                        key={p.id}
+                        product={p}
+                        idx={i}
+                        accent={resolveCardAccent(cardTheme, activeCat)}
+                        buttonTextColor={cardTheme.buttonTextColor}
+                        density="regular"
+                        // The grid is why anyone opens this page, and the first two
+                        // rows of it are on screen the moment they arrive — two per
+                        // row on a phone, four across at the widest. Those photos
+                        // are fetched straight away; the rest wait to be scrolled to.
+                        priority={i < 4}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </motion.div>
+              )}
+            </ProductListScope>
           </>
         )}
       </div>
