@@ -14,7 +14,9 @@ import { readAppliedDiscount, writeAppliedDiscount, type AppliedDiscount } from 
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type PickupSettingsContent, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
 import { cartSubtotal, formatPrice, MIN_CHARGE_EUR } from "@/lib/cart";
 import { computeBundleSavings } from "@/lib/bundleSavings";
-import { track, getAnalyticsIds } from "@/lib/analytics";
+import { track, lineItems, getAnalyticsIds, flushBeforeLeaving } from "@/lib/analytics";
+import { getGaIds, awaitGaDelivery } from "@/lib/ga";
+import { getMetaIds } from "@/lib/meta";
 import { getBundleNudges } from "@/lib/bundleNudges";
 import {
   validateDeliveryAddress, normalizeAddress, phoneError, formatAddressBlock, formatAddressOneLine,
@@ -274,12 +276,22 @@ const CheckoutPage = () => {
   useEffect(() => {
     if (checkoutStarted.current || items.length === 0) return;
     checkoutStarted.current = true;
+    // `total` is what the shopper would pay; `line_items` carry list prices.
+    // Those two can only be reconciled if what sits between them travels with
+    // them — otherwise GA4 shows an event whose value doesn't match its own
+    // items and nothing explains the gap. Same shape the purchase event uses.
     track("begin_checkout", {
       total: +grandTotal.toFixed(2),
       items: count,
       fulfillment_type: fulfillment,
+      line_items: lineItems(items),
+      shipping: +shipping.toFixed(2),
+      discount: +discountAmount.toFixed(2),
+      coupon: appliedCode?.code ?? "",
     });
-  }, [items.length, count, grandTotal, fulfillment]);
+    // `items` rather than `items.length`: the basket itself is read now, not
+    // just its size. The ref guard above still means this fires exactly once.
+  }, [items, count, grandTotal, fulfillment]);
 
   // An address saved before these rules existed can be junk ("4444", no county, an
   // undialable phone). It must not sail through just because it's on file — so a
@@ -394,6 +406,10 @@ const CheckoutPage = () => {
       total: +grandTotal.toFixed(2),
       items: count,
       fulfillment_type: fulfillment,
+      line_items: lineItems(items),
+      shipping: +shipping.toFixed(2),
+      discount: +discountAmount.toFixed(2),
+      coupon: appliedCode?.code ?? "",
     });
     try {
       // Persist the address-book side first, if the shopper opted in. Best-effort:
@@ -415,7 +431,15 @@ const CheckoutPage = () => {
         shipping_address: isPickup ? undefined : normalized,
         contact_phone: isPickup ? contactPhone : undefined,
         discount_code: appliedCode?.code,
-        analytics: getAnalyticsIds(),
+        // The purchase event is written server-side when Stripe confirms payment
+        // — by which point this browser has been redirected away and may never
+        // come back — so both measurement systems' ids for this visit have to
+        // travel with the checkout. getGaIds() returns nothing when the GA4 tag
+        // isn't running (off, or cookies declined), and the backend simply
+        // doesn't report that purchase to Google. getMetaIds() is the same
+        // contract for the Meta Pixel — nothing, or the permission plus the two
+        // cookies that let Meta credit the sale to the ad that earned it.
+        analytics: { ...getAnalyticsIds(), ...getGaIds(), ...getMetaIds() },
       });
       // Stripe accepted the session and we are about to hand the shopper over.
       // Sent before the redirect, and flushed by the pagehide beacon that the
@@ -425,7 +449,24 @@ const CheckoutPage = () => {
         total: +grandTotal.toFixed(2),
         items: count,
         fulfillment_type: fulfillment,
+        line_items: lineItems(items),
+        shipping: +shipping.toFixed(2),
+        discount: +discountAmount.toFixed(2),
+        coupon: appliedCode?.code ?? "",
       });
+      // Both measurement systems are holding events that were recorded
+      // milliseconds ago, and the next line destroys this document. Neither
+      // system's unload handling reliably wins that race — measured, not
+      // assumed: a completed checkout lost add_shipping_info and
+      // add_payment_info every time, while the same journey with the redirect
+      // blocked recorded both.
+      //
+      // So the queues are emptied deliberately before leaving. The first-party
+      // beacon is a hard guarantee (the browser owns it once handed over); the
+      // GA4 wait is capped and best-effort, because no measurement call may
+      // stand between a shopper and the payment page.
+      flushBeforeLeaving();
+      await awaitGaDelivery();
       window.location.href = url;
     } catch (err) {
       if (err instanceof SessionExpiredError) {

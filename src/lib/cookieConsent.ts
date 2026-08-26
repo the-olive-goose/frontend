@@ -60,9 +60,23 @@ export const cookiesAccepted = () => readCookieConsent() === 'accepted';
 /** True once the visitor has answered the banner, either way. */
 export const cookieBannerAnswered = () => readCookieConsent() !== null;
 
+/**
+ * Broadcast when the visitor answers the banner.
+ *
+ * Anything gated on consent has to react in the same moment they press the
+ * button, not on the next page load — a shopper who accepts and then buys
+ * something in the same visit would otherwise be missing from Google Analytics
+ * entirely, which is the visit that matters most. An event rather than a direct
+ * call keeps this module unaware of who is listening.
+ */
+export const CONSENT_EVENT = 'og:cookie-consent';
+
 export const writeCookieConsent = (choice: CookieChoice) => {
   try {
     localStorage.setItem(CONSENT_KEY, choice);
     localStorage.setItem(CONSENT_AT_KEY, String(Date.now()));
   } catch { /* best effort — a blocked store simply means we ask again */ }
+  try {
+    window.dispatchEvent(new CustomEvent<CookieChoice>(CONSENT_EVENT, { detail: choice }));
+  } catch { /* no window (tests, SSR) — nothing is listening anyway */ }
 };

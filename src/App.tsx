@@ -9,6 +9,8 @@ import { CartProvider } from "@/contexts/CartContext";
 import AnalyticsTracker from "@/components/AnalyticsTracker";
 import AuthModal from "@/components/AuthModal";
 import CookieConsent from "@/components/CookieConsent";
+import GoogleAnalytics from "@/components/GoogleAnalytics";
+import MetaPixel from "@/components/MetaPixel";
 import Layout from "@/components/Layout";
 import ScrollToTop from "@/components/ScrollToTop";
 import SeoManager from "@/components/SeoManager";
@@ -127,8 +129,14 @@ const App = () => (
         <ScrollToTop />
         <SeoManager />
         <AnalyticsTracker />
+        <GoogleAnalytics />
         <RoutePrefetcher />
         <AuthProvider>
+          {/* Inside AuthProvider, unlike GoogleAnalytics above: the pixel hands
+              Meta the signed-in shopper's hashed email so an ad seen on a phone
+              can be matched to a purchase made on a laptop, and that means it
+              has to be able to read the auth context. */}
+          <MetaPixel />
           <CartProvider>
             {/* One boundary around the whole table: the navbar and footer live
                 in Layout and stay put, so a route still resolving leaves the

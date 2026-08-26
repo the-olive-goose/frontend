@@ -121,6 +121,8 @@ import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
 import { RichInput, RichTextarea } from "@/components/admin/RichTextInput";
 import AnalyticsPanel from "@/components/admin/AnalyticsPanel";
+import GoogleAnalyticsPanel from "@/components/admin/GoogleAnalyticsPanel";
+import MetaPixelPanel from "@/components/admin/MetaPixelPanel";
 import logo from "@/assets/logo.jpg";
 import { DEFAULT_SCRAPBOOK_SETTINGS, type ScrapbookSettings } from "@/components/sections/ScrapbookSection";
 
@@ -5531,6 +5533,8 @@ type TabId =
   | "ops"
   | "discountCodes"
   | "analytics"
+  | "googleAnalytics"
+  | "metaPixel"
   | "seo";
 
 type NavItem = { id: TabId; label: string; icon: string };
@@ -5607,13 +5611,28 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    // Measurement has its own section rather than a line in Ops. There are three
+    // systems now — the shop's own figures, a Google Analytics property and a
+    // Meta Pixel — and they answer overlapping questions with deliberately
+    // different numbers, so they belong next to each other where that can be
+    // explained once. The shop's own count is first and is the one to believe:
+    // the two below it are subsets, each missing everyone who declined cookies.
+    id: "analytics",
+    label: "Analytics",
+    icon: "📈",
+    items: [
+      { id: "analytics",       label: "Analytics",        icon: "📊" },
+      { id: "googleAnalytics", label: "Google Analytics", icon: "🌐" },
+      { id: "metaPixel",       label: "Meta Pixel",       icon: "◼" },
+    ],
+  },
+  {
     id: "ops",
     label: "Ops",
     icon: "⚙️",
     items: [
       { id: "ops", label: "Ops Overview", icon: "📊" },
       { id: "discountCodes", label: "Discount Codes", icon: "🏷️" },
-      { id: "analytics", label: "Analytics", icon: "📈" },
       { id: "seo", label: "SEO", icon: "🔍" },
       { id: "subscribers", label: "Subscribers & Signup Popup", icon: "◉" },
       { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
@@ -5673,7 +5692,7 @@ const AdminDashboard = () => {
   const loadData = useCallback(async () => {
     // ── Content sections (getContentFresh bypasses the storefront cache: the
     //    editor must always load what is actually stored) ──
-    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo] =
+    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, googleAnalytics, metaPixel, seo] =
       await Promise.all([
         getContentFresh("announcementBar", DEFAULT_CONTENT.announcementBar),
         getContentFresh("navbar",          DEFAULT_CONTENT.navbar),
@@ -5700,9 +5719,11 @@ const AdminDashboard = () => {
         getContentFresh("privacyPolicy",   DEFAULT_CONTENT.privacyPolicy),
         getContentFresh("termsOfService",  DEFAULT_CONTENT.termsOfService),
         getContentFresh("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
+        getContentFresh("googleAnalytics", DEFAULT_CONTENT.googleAnalytics),
+        getContentFresh("metaPixel",       DEFAULT_CONTENT.metaPixel),
         getContentFresh("seo",             DEFAULT_CONTENT.seo),
       ]);
-    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, seo });
+    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, googleAnalytics, metaPixel, seo });
 
     // ── Shop categories ───────────────────────────────────────────────────────
     try {
@@ -5897,6 +5918,8 @@ const AdminDashboard = () => {
             {activeTab === "ops"          && <OpsPanel />}
             {activeTab === "discountCodes" && <DiscountCodesPanel />}
             {activeTab === "analytics"    && <AnalyticsPanel />}
+            {activeTab === "googleAnalytics" && <GoogleAnalyticsPanel data={content.googleAnalytics} onChange={update("googleAnalytics")} onSave={() => handleSave("googleAnalytics")} saving={saving} />}
+            {activeTab === "metaPixel"    && <MetaPixelPanel data={content.metaPixel} onChange={update("metaPixel")} onSave={() => handleSave("metaPixel")} saving={saving} />}
             {activeTab === "seo"          && <SeoEditor data={content.seo} site={content} onChange={update("seo")} onSave={() => handleSave("seo")} saving={saving} onError={(m) => toast({ title: "Error", description: m, variant: "destructive" })} />}
           </div>
         </main>

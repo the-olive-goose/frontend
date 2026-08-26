@@ -21,6 +21,7 @@
 // Stripe confirms the order (see finalizeCheckoutSession in backend/index.js).
 
 import { API_URL } from './apiBase';
+import { priceToNumber } from './cart';
 
 const VISITOR_KEY = 'og_analytics_vid';
 const SESSION_KEY = 'og_analytics_sid';
@@ -236,10 +237,46 @@ const getDeviceHint = (): string => {
 // External referrer only — internal navigation is already captured as the
 // pageview sequence, and a same-origin referrer would misfile sessions as
 // "referral" traffic from ourselves.
+/**
+ * Hosts we deliberately send the shopper to and expect back — our own checkout,
+ * continued on someone else's domain.
+ *
+ * A shopper returning from paying is not a new visitor referred by Stripe, and
+ * counting them as one is the classic self-referral defect: it invents a traffic
+ * source out of our own funnel, and it does it on the highest-value sessions
+ * there are — the ones that just paid. Left in, "checkout.stripe.com" climbs the
+ * source report until it looks like the shop's best channel, and the campaign
+ * that actually won the sale is the one that looks worthless.
+ *
+ * Session source is resolved from a session's LANDING event, so most returns are
+ * already safe. This covers the case that isn't: a payment slow enough (3-D
+ * Secure, a bank app, a distracted shopper) that the session rotated while they
+ * were away, making the return the landing event of a brand-new session.
+ */
+export const PAYMENT_REDIRECT_HOSTS = [
+  'checkout.stripe.com',
+  'pay.stripe.com',
+  'hooks.stripe.com',
+];
+
+/** True when this document was opened by coming back from paying. */
+export const isPaymentReturn = (): boolean => {
+  try {
+    if (!document.referrer) return false;
+    return PAYMENT_REDIRECT_HOSTS.includes(new URL(document.referrer).hostname);
+  } catch { return false; }
+};
+
 const getReferrer = (): string => {
   const ref = document.referrer;
   if (!ref) return '';
-  try { return new URL(ref).origin === window.location.origin ? '' : ref; } catch { return ''; }
+  try {
+    const url = new URL(ref);
+    if (url.origin === window.location.origin) return '';
+    // Our own checkout, finished on Stripe's domain — not a referral.
+    if (PAYMENT_REDIRECT_HOSTS.includes(url.hostname)) return '';
+    return ref;
+  } catch { return ''; }
 };
 
 // ── Pages nobody has actually visited ─────────────────────────────────────────
@@ -512,8 +549,44 @@ export const track = (type: EventType, props: Record<string, unknown> = {}, path
       device: getDeviceHint(),
       props,
     });
+    notifyObservers(type, props, at);
     if (queue.length >= MAX_BATCH) flush();
   } catch { /* ignore */ }
+};
+
+/**
+ * Watch every event this module records, without this module knowing who is
+ * watching.
+ *
+ * Exists so the optional GA4 tag (lib/ga.ts) can mirror the funnel without a
+ * single `track(...)` call site having to fire twice — one list of call sites,
+ * one vocabulary, and no chance of the two systems drifting because someone
+ * added an event to one and forgot the other.
+ *
+ * It is an observer rather than a direct call for a reason worth keeping: this
+ * file must not import the third-party tag. Everything here is first-party by
+ * construction, and an import edge pointing at Google would make that
+ * accidental rather than structural — as well as putting gtag in the bundle for
+ * every visitor, including the ones who will never consent to it.
+ *
+ * Observers are called inside track()'s try, so a throwing observer can't lose
+ * the first-party event; each is also wrapped on its own so one bad observer
+ * can't silence the others.
+ */
+export type TrackObserver = (type: EventType, props: Record<string, unknown>, path: string) => void;
+
+const observers = new Set<TrackObserver>();
+
+/** Register an observer. Returns the function that removes it again. */
+export const onTrack = (fn: TrackObserver): (() => void) => {
+  observers.add(fn);
+  return () => { observers.delete(fn); };
+};
+
+const notifyObservers = (type: EventType, props: Record<string, unknown>, path: string) => {
+  for (const fn of observers) {
+    try { fn(type, props, path); } catch { /* a mirror must never break the original */ }
+  }
 };
 
 export const trackPageView = (path: string) => {
@@ -716,6 +789,58 @@ export const initAnalytics = () => {
   });
   window.addEventListener('pagehide', () => { pauseEngagement(); flush(true); });
 };
+
+/**
+ * Send everything queued, right now, before the page is deliberately abandoned.
+ *
+ * The unload listeners below are not enough on their own, and this was measured
+ * rather than assumed: a checkout that reaches Stripe loses `add_shipping_info`
+ * and `add_payment_info` every time, while the same journey with the redirect
+ * blocked records both. The two stages closest to the money, missing from every
+ * completed order — which is precisely the population that matters.
+ *
+ * The events are queued milliseconds before `window.location.href` hands the
+ * shopper to Stripe, so the interval flush has not come round and the pagehide
+ * beacon does not reliably win the race against a cross-origin navigation.
+ * Calling this first removes the race: sendBeacon is handed to the browser
+ * process and survives the document being torn down.
+ *
+ * Deliberately exported for exactly one caller — the checkout handover. It is
+ * not a general-purpose "flush now"; ordinary events are better off batched.
+ */
+export const flushBeforeLeaving = () => flush(true);
+
+/**
+ * The products in a basket (or a grid), in the shape every event here uses for
+ * them: `line_items`, never `items`.
+ *
+ * The name is forced. `view_cart` and `begin_checkout` have carried an `items`
+ * prop since the first day, and it is a COUNT — reusing it for an array would
+ * silently change the type of a field the dashboard's SQL already reads.
+ *
+ * CAPPED AT TEN, and the ceiling is not a matter of taste. Ingestion truncates
+ * each event's props to 2000 characters and then re-parses them —
+ * `JSON.stringify(props).slice(0, 2000)` — so a payload that runs over does not
+ * lose its tail: the truncation breaks the JSON, the parse fails, and the whole
+ * props object is replaced with `{}`. Every field goes, silently, and the event
+ * still records. Twenty lines of UUID-keyed items measures ~2700 characters and
+ * takes `total`, `fulfillment_type` and the rest down with it.
+ *
+ * Ten lines of the worst realistic shape measures ~1400. Raising this means
+ * re-checking that arithmetic against backend/index.js's limit, not guessing —
+ * and src/lib/analytics.test.ts holds it to the same number.
+ */
+export const lineItems = (
+  entries: Array<{ product: { id: string; name: string; price: string | number | null }; quantity?: number }>
+) =>
+  entries.slice(0, 10).map(({ product, quantity }) => ({
+    product_id: product.id,
+    name: product.name,
+    // priceToNumber, never Number(): prices are admin free text and arrive as
+    // "€38". Number("€38") is NaN and `|| 0` would price the candle at nothing.
+    price: priceToNumber(product.price),
+    ...(quantity === undefined ? {} : { quantity }),
+  }));
 
 /** Ids the checkout flow forwards so the backend can attribute the purchase. */
 export const getAnalyticsIds = () => ({ visitor_id: getVisitorId(), session_id: getSessionId() });

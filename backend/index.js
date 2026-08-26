@@ -23,6 +23,10 @@ import {
   validateAddress, normalizeAddress, toE164, phoneError as validatePhone,
   nameError as validateName, tidy, ACCOUNT_NAME_COPY,
 } from './addressRules.js';
+// The Meta Conversions API's matching rules — pure, exacting, and silently
+// destructive when wrong, so they live on their own where the unit suite can
+// reach them. See backend/metaCapi.js.
+import { metaPixelId, metaBrowserId, metaTestCode, metaUserData, hashExternalId } from './metaCapi.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -34,9 +38,11 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 
 // ── Security headers ───────────────────────────────────────────────────────────
 // Applied to every response (API + the SPA this server also serves). Scripts are
-// locked to 'self' and nothing else — the Vite bundle has no inline scripts and
-// the shop's analytics is first-party — while inline styles (React style props)
-// and Google Fonts stay allowed so the site keeps rendering.
+// 'self' plus two hosts and nothing else — the Vite bundle has no inline
+// scripts, the shop's own analytics is first-party, and those two hosts are
+// there solely to serve gtag.js for the optional GA4 tag and fbevents.js for the
+// optional Meta Pixel (both under Admin → Analytics). Inline styles (React style
+// props) and Google Fonts stay allowed so the site keeps rendering.
 //
 // Must match the policy the CDN serves for the same SPA (public/_headers and
 // vercel.json); src/lib/csp.test.ts holds all three to each other.
@@ -44,7 +50,7 @@ app.disable('x-powered-by');
 
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' https://www.googletagmanager.com https://connect.facebook.net",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: blob: https:",
@@ -1619,6 +1625,18 @@ const finalizeCheckoutSession = async (sessionId) => {
     } catch (err) {
       console.error('[analytics purchase event]', err);
     }
+
+    // The same purchase, reported to Google Analytics if the owner has that
+    // switched on. Fire-and-forget for the same reason as the row above: a
+    // measurement call must never stand between a paying customer and their
+    // order. GA4 deduplicates on transaction_id, so the webhook and the
+    // success-page poll racing each other cannot double the revenue.
+    reportPurchaseToGa4(order, p).catch(err => console.error('[ga4 purchase]', err));
+    // And to Meta, on the same terms: fire-and-forget, deduplicated on the
+    // order's id so the webhook and the success-page poll racing each other
+    // cannot report the sale twice, and silent unless the shopper consented.
+    reportPurchaseToMeta(order, p).catch(err => console.error('[meta purchase]', err));
+
     getAutomationSettings().then(settings => evaluateFraudReviewDecision(order, settings)).catch(err => console.error('[evaluateFraudReviewDecision]', err));
     const { rows: userForEmail } = await pool.query('SELECT email FROM users WHERE id = $1', [order.user_id]);
     if (userForEmail[0]?.email) {
@@ -3136,9 +3154,50 @@ app.post('/api/checkout/session', requireUserAuth, checkoutLimiter, async (req, 
     // Analytics session ids ride along so the purchase event written when the
     // order finalizes (finalizeCheckoutSession) can be attributed to the same
     // browsing session that started checkout. Validated here; absent is fine.
+    // The GA4 pair rides along too, when that tag is running in the shopper's
+    // browser — it is what lets the server-written purchase land in the same GA4
+    // session as the browsing that produced it. Absent is the normal case (GA4
+    // off, or cookies declined) and reports nothing to Google. See
+    // reportPurchaseToGa4.
     const analyticsIds = {
       visitor_id: analyticsId(req.body.analytics?.visitor_id),
       session_id: analyticsId(req.body.analytics?.session_id),
+      ga_client_id: gaClientId(req.body.analytics?.ga_client_id),
+      ga_session_id: gaSessionId(req.body.analytics?.ga_session_id),
+      // The Meta half. `meta_consent` is the browser's own answer to "was the
+      // pixel allowed to run for this person" — see getMetaIds in
+      // src/lib/meta.ts — and reportPurchaseToMeta sends nothing without it.
+      meta_consent: req.body.analytics?.meta_consent === true ? true : undefined,
+      fbp: metaBrowserId(req.body.analytics?.fbp),
+      fbc: metaBrowserId(req.body.analytics?.fbc),
+      // CAPTURED HERE, FROM THE SHOPPER'S OWN REQUEST, and stored — not read
+      // later. The purchase is reported from the Stripe webhook, where `req` is
+      // Stripe's: its user agent is `Stripe/1.0` and its address is a datacentre.
+      // Sending those to Meta would describe every customer this shop has as the
+      // same bot in the same building, which is worse than sending nothing — it
+      // actively poisons the match.
+      ua: clip(req.headers['user-agent'], 500) || undefined,
+      // The address, ONLY if the edge vouched for it — and today it does not on
+      // this route, so this is normally absent and Meta gets no IP at all.
+      //
+      // That is deliberate, and it is the safe answer rather than a gap. In
+      // production this app sits behind two proxies, so `req.ip` here is
+      // Netlify's egress address: THE SAME VALUE FOR EVERY SHOPPER. Handing that
+      // to Meta as "the customer's IP" would tell it that every order this shop
+      // has ever taken came from one machine — which is not a missing signal but
+      // a false one, and false is the direction that quietly ruins a match rate.
+      // The same trap has already been documented twice in this file (see the
+      // analytics limiter's key and edgeClientIp); this is the third door into it.
+      //
+      // netlify/edge-functions/analytics-geo.ts is the only thing that can state
+      // a real client address, and it is bound to the analytics routes on purpose
+      // — keeping checkout out of any edge code that could take the till down. If
+      // that trade is ever revisited, adding '/api/checkout/session' to its
+      // `config.path` is all this line needs.
+      ip: edgeClientIp(req) || undefined,
+      // The page the shopper was on when they started checkout. Meta checks it
+      // against the pixel's own domain.
+      source_url: `${FRONTEND_URL}/checkout`,
     };
 
     const payload = {
@@ -3461,6 +3520,18 @@ app.put('/api/admin/orders/:id/refund-status', requireAuth, async (req, res) => 
       [order.id]
     );
     await addOrderEvent(order.id, { type: 'refund_completed', actor: 'admin', title: viaStripe ? 'Refund processed via Stripe' : 'Refund marked as completed' });
+    // The rest of the order comes back out of Google's revenue, as it already
+    // comes out of ours. Fire-and-forget: a measurement call must never fail a
+    // refund.
+    //
+    // "The rest", not "the whole", because a line may already have been refunded
+    // through a return — and GA4 SUMS refunds against a transaction rather than
+    // replacing them. Sending the full total after a partial would take more out
+    // of Google's revenue than the shop ever took in, and the figure would be
+    // wrong in the flattering direction with nothing to reveal it. Stripe would
+    // have capped the money at the charge; this caps the measurement to match.
+    reportRefundToGa4(order.id, { value: await unrefundedTotal(order) })
+      .catch(err => console.error('[ga4 refund]', err));
     sendRefundCompletedEmail(order.user_email, { trackingNumber: order.tracking_number }).catch(err => console.error('[sendRefundCompletedEmail]', err));
     res.json({ success: true, via_stripe: viaStripe });
   } catch (err) {
@@ -3610,6 +3681,42 @@ app.get('/api/admin/returns', requireAuth, async (_req, res) => {
   }
 });
 
+/**
+ * What is still left to refund on an order — its total, less anything already
+ * refunded through a return. Never below zero.
+ */
+const unrefundedTotal = async (order) => {
+  const { rows } = await pool.query(
+    `SELECT product_id FROM returns WHERE order_id = $1 AND status = 'refunded'`,
+    [order.id]
+  );
+  if (!rows.length) return Number(order.total);
+  const already = rows.reduce((sum, r) => {
+    const line = (order.items || []).find(i => i.product_id === r.product_id);
+    if (!line) return sum;
+    return sum + parsePrice(line.product_data?.price) * (Number(line.quantity) || 1);
+  }, 0);
+  return Math.max(0, +(Number(order.total) - already).toFixed(2));
+};
+
+/** Price one returned line off the order it belongs to, then report it to GA4. */
+const reportPartialRefundForReturn = async (ret) => {
+  const { rows } = await pool.query('SELECT items FROM orders WHERE id = $1', [ret.order_id]);
+  const line = (rows[0]?.items || []).find(i => i.product_id === ret.product_id);
+  if (!line) return;
+  const price = parsePrice(line.product_data?.price);
+  const quantity = Number(line.quantity) || 1;
+  await reportRefundToGa4(ret.order_id, {
+    value: +(price * quantity).toFixed(2),
+    items: [{
+      item_id: String(ret.product_id),
+      item_name: String(line.product_data?.name ?? ret.product_name ?? '').slice(0, 100),
+      price,
+      quantity,
+    }],
+  });
+};
+
 // ── Reusable: change a return's status (+ refund-reminder clock, event, email) ─
 // Used by the direct admin PUT route below and by decision approval (a
 // return_approve_suggested/return_reject_suggested decision executes this).
@@ -3677,6 +3784,12 @@ const applyReturnStatusChange = async (returnId, status) => {
       title: `Return ${status}${viaStripe ? ' (refunded via Stripe)' : ''}: ${ret.product_name}`,
       meta: { return_id: ret.id, status },
     });
+    if (status === 'refunded') {
+      // One line, not the order — a partial refund in GA4's terms. Priced from
+      // the order's own snapshot so it matches what was actually charged for
+      // that line, which is the figure our own revenue query removes.
+      reportPartialRefundForReturn(ret).catch(err => console.error('[ga4 refund]', err));
+    }
     sendReturnDecisionEmail(existing[0].user_email, { productName: ret.product_name, status }).catch(err => console.error('[sendReturnDecisionEmail]', err));
   }
   return ret;
@@ -3883,6 +3996,544 @@ const CLIENT_EVENT_TYPES = new Set([
 const ANALYTICS_ID_RE = /^[a-zA-Z0-9_-]{8,64}$/;
 const analyticsId = (v) => (typeof v === 'string' && ANALYTICS_ID_RE.test(v) ? v : null);
 const clip = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+// ── Google Analytics 4, server side ───────────────────────────────────────────
+//
+// The browser's gtag.js reports everything a browser can see. It cannot report
+// the purchase: by the time Stripe confirms payment the shopper has been
+// redirected to Stripe's domain, and whether they ever land back on the success
+// page is not something revenue figures can depend on. A shopper who pays and
+// then closes the tab has bought something, and both measurement systems must
+// say so.
+//
+// So 'purchase' reaches GA4 the same way it reaches our own tables: written
+// here, once, from the Stripe-confirmed order — via the Measurement Protocol,
+// GA4's server-to-server endpoint. The browser's contribution is only the pair
+// of ids it forwarded at checkout (see getGaIds in src/lib/ga.ts), which is what
+// lets Google file this purchase under the session that led to it instead of as
+// a stranger appearing at the till.
+//
+// Two ids, two homes, on purpose:
+//   - the MEASUREMENT ID is public — it ships in the page source of every site
+//     that uses GA4 — so it lives in content_googleAnalytics with the rest of
+//     the owner's settings and is served by the public /api/content route.
+//   - the API SECRET is a credential. It is stored under a key WITHOUT the
+//     `content_` prefix, which is the whole reason it can't leak: /api/content
+//     and /api/content/:section both filter on that prefix, so no route the
+//     storefront can call will ever return it.
+
+const GA4_SECRET_KEY = 'ga4_api_secret';
+const GA4_ENDPOINT = 'https://www.google-analytics.com/mp/collect';
+// Same payload, but Google answers with what it thinks of it instead of 204.
+// Used by the admin panel's "Send a test event" button — a silent 204 is not
+// evidence that anything was configured correctly.
+const GA4_DEBUG_ENDPOINT = 'https://www.google-analytics.com/debug/mp/collect';
+
+// GA4's own id formats, from the cookies gtag.js writes: `_ga` yields
+// "1234567890.1700000000" and the per-stream cookie a plain timestamp. Neither
+// passes ANALYTICS_ID_RE (the dot), so they get their own guards rather than a
+// loosened shared one.
+const gaClientId = (v) => (typeof v === 'string' && /^\d{1,20}\.\d{1,20}$/.test(v) ? v : null);
+const gaSessionId = (v) => (typeof v === 'string' && /^\d{1,20}$/.test(v) ? v : null);
+const gaMeasurementId = (v) => (typeof v === 'string' && /^G-[A-Z0-9]{4,}$/.test(v.trim().toUpperCase()) ? v.trim().toUpperCase() : null);
+
+/** The owner's GA4 settings, as saved in Admin → Analytics → Google Analytics. */
+const getGoogleAnalyticsSettings = async () => {
+  const { rows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'content_googleAnalytics'`);
+  const v = rows[0]?.value || {};
+  return {
+    enabled: v.enabled === true,
+    measurementId: gaMeasurementId(v.measurement_id) || '',
+    trackEcommerce: v.track_ecommerce !== false,
+    debugMode: v.debug_mode === true,
+  };
+};
+
+/**
+ * The Measurement Protocol API secret, from the environment if it is set there.
+ *
+ * Env var first, deliberately, because that is where a credential belongs and it
+ * is the pattern this server already uses for STRIPE_SECRET_KEY and JWT_SECRET:
+ * set once on the host, never in the database, never in a form, rotatable
+ * without anyone opening the admin panel. Set GA4_API_SECRET on Railway and the
+ * panel stops asking for it.
+ *
+ * It cannot be hardcoded. In the frontend bundle it would be published to every
+ * visitor; in this file it would be committed to git and impossible to rotate
+ * without a redeploy. Anyone holding it can write events into the property —
+ * invented revenue, forged conversions — so it gets the same handling as the
+ * Stripe key.
+ *
+ * The stored fallback exists so the owner can get GA4 working today without a
+ * redeploy or a Railway login. Whichever is in force, the value is never sent
+ * back to the browser.
+ */
+const getGa4ApiSecret = async () => {
+  const fromEnv = String(process.env.GA4_API_SECRET || '').trim();
+  if (fromEnv) return fromEnv;
+  const { rows } = await pool.query('SELECT value FROM site_settings WHERE key = $1', [GA4_SECRET_KEY]);
+  const v = rows[0]?.value;
+  return typeof v === 'string' && v ? v : null;
+};
+
+/** Where the secret in force came from — the panel says so rather than guessing. */
+const ga4SecretSource = async () => {
+  if (String(process.env.GA4_API_SECRET || '').trim()) return 'env';
+  const { rows } = await pool.query('SELECT value FROM site_settings WHERE key = $1', [GA4_SECRET_KEY]);
+  return typeof rows[0]?.value === 'string' && rows[0].value ? 'stored' : null;
+};
+
+const setGa4ApiSecret = async (secret) => {
+  if (!secret) {
+    await pool.query('DELETE FROM site_settings WHERE key = $1', [GA4_SECRET_KEY]);
+    return;
+  }
+  await pool.query(
+    `INSERT INTO site_settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+    [GA4_SECRET_KEY, JSON.stringify(secret)]
+  );
+};
+
+/**
+ * POST one event to GA4's Measurement Protocol.
+ *
+ * `debug: true` sends it to the validation endpoint instead, which never records
+ * anything and answers with a list of what is wrong with the payload.
+ *
+ * Returns a small result rather than throwing: the only caller that must not
+ * fail is the one finalizing a paid order, and no analytics call is ever allowed
+ * to come between a customer and their receipt.
+ */
+const sendGa4Event = async ({ measurementId, apiSecret, clientId, sessionId, name, params, debug = false }) => {
+  const url = `${debug ? GA4_DEBUG_ENDPOINT : GA4_ENDPOINT}?measurement_id=${encodeURIComponent(measurementId)}&api_secret=${encodeURIComponent(apiSecret)}`;
+  const body = {
+    // client_id and nothing else identifies the shopper.
+    //
+    // No user_id, deliberately. The browser never sets one (that would mean
+    // handing Google an account identifier, which this shop doesn't do), so
+    // sending one HERE would set it on the purchase and on nothing else — and
+    // an inconsistently-set user_id is a known way to end up with GA4 counting
+    // the same person as two users under the User-ID reporting identity. The
+    // client_id is what stitches this purchase to the session that produced it,
+    // and it is the only stitching that has to work.
+    client_id: clientId,
+    // GA4 drops events older than 72 hours; a payment confirmed by webhook
+    // minutes later is well inside that, but stamping it explicitly means the
+    // purchase is filed at the moment it happened rather than the moment we
+    // got round to reporting it.
+    timestamp_micros: Date.now() * 1000,
+    non_personalized_ads: true,
+    events: [{
+      name,
+      params: {
+        ...params,
+        // Without a session id GA4 files the event against a brand-new session,
+        // and the purchase detaches from the browsing that produced it — the
+        // acquisition report then credits every sale to "(direct)".
+        ...(sessionId ? { session_id: sessionId } : {}),
+        engagement_time_msec: 1,
+      },
+    }],
+  };
+
+  // One retry, because there is no second chance at this. Unlike a browser
+  // event — which is one of hundreds and whose loss rounds away — a purchase is
+  // a single irreplaceable fact about money, sent once, from a server, with
+  // nothing downstream that would ever notice it went missing. A transient
+  // socket error would silently cost the shop a whole order in Google's revenue.
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5000),
+      });
+      // 5xx is worth a second go; 4xx is a payload or credential problem that a
+      // retry cannot fix, and hammering it would only delay the answer.
+      if (res.status < 500 || attempt >= 1) break;
+    } catch (err) {
+      if (attempt >= 1) throw err;
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  // The live endpoint answers 204 with an empty body whatever it thought of the
+  // payload; only the debug endpoint says anything useful.
+  const text = debug ? await res.text().catch(() => '') : '';
+  let validation = [];
+  if (text) {
+    try { validation = JSON.parse(text).validationMessages || []; } catch { /* not JSON — report the status alone */ }
+  }
+  return { ok: res.ok, status: res.status, validation };
+};
+
+/**
+ * Report a completed order to GA4. Called from finalizeCheckoutSession, and
+ * never allowed to fail it.
+ *
+ * Silently does nothing — which is the correct outcome, not a failure — when:
+ * GA4 is off, no measurement id or API secret is saved, ecommerce mirroring is
+ * off, or the shopper's browser sent no GA4 client id (they declined cookies, so
+ * their visit was never in GA4 to attach a purchase to).
+ */
+const reportPurchaseToGa4 = async (order, p) => {
+  const clientId = gaClientId(p.analytics?.ga_client_id);
+  if (!clientId) return;
+
+  const settings = await getGoogleAnalyticsSettings();
+  if (!settings.enabled || !settings.measurementId || !settings.trackEcommerce) return;
+
+  const apiSecret = await getGa4ApiSecret();
+  if (!apiSecret) return;
+
+  await sendGa4Event({
+    measurementId: settings.measurementId,
+    apiSecret,
+    clientId,
+    sessionId: gaSessionId(p.analytics?.ga_session_id),
+    name: 'purchase',
+    params: {
+      // GA4 deduplicates purchases on transaction_id, so this must be the
+      // order's own stable id: a webhook and the success-page poll can both
+      // finalize the same session, and a retry must not double the revenue.
+      transaction_id: String(order.id),
+      currency: 'EUR',
+      value: Number(order.total),
+      shipping: Number(order.shipping) || 0,
+      ...(Number(order.discount_amount) ? { coupon: p.discount_code || 'discount' } : {}),
+      // Same authoritative snapshot the Stripe charge was built from — a cart
+      // row's product_data comes from the browser, but by this point it has been
+      // re-read from the catalogue (see the checkout route), so GA4's revenue
+      // and the money actually taken agree line for line.
+      items: (p.items || []).map((i) => ({
+        item_id: String(i.product_id ?? 'unknown'),
+        item_name: String(i.product_data?.name ?? 'unknown').slice(0, 100),
+        price: parsePrice(i.product_data?.price),
+        quantity: Number(i.quantity) || 1,
+      })),
+      // GA4's DebugView is the only way to watch events arrive in real time, and
+      // a server-side event with no browser behind it is exactly the kind that
+      // needs watching while it's being set up.
+      ...(settings.debugMode ? { debug_mode: true } : {}),
+    },
+  });
+};
+
+/**
+ * Take a refunded order (or one refunded line) back out of GA4.
+ *
+ * Without this the two systems drift apart in the one direction that flatters
+ * the shop: our own revenue query already excludes refunded orders and refunded
+ * lines, while GA4 would keep the original purchase for ever. Every refund would
+ * make Google's revenue a little more wrong than the shop's own, and nothing
+ * would ever correct it.
+ *
+ * GA4 handles both shapes through one event: a `refund` with items is partial,
+ * a `refund` without them is the whole order.
+ *
+ * The client id is the one the browser sent at checkout, kept on the pending
+ * checkout payload — a refund happens days later with no browser present, so
+ * there is nothing else to attribute it to.
+ */
+const reportRefundToGa4 = async (orderId, { items, value } = {}) => {
+  const { rows } = await pool.query(
+    `SELECT o.id, o.total, o.stripe_session_id, pc.payload
+       FROM orders o
+       LEFT JOIN pending_checkouts pc ON pc.stripe_session_id = o.stripe_session_id
+      WHERE o.id = $1`,
+    [orderId]
+  );
+  const order = rows[0];
+  if (!order) return;
+
+  const clientId = gaClientId(order.payload?.analytics?.ga_client_id);
+  if (!clientId) return; // never reported as a purchase, so nothing to take back
+
+  const settings = await getGoogleAnalyticsSettings();
+  if (!settings.enabled || !settings.measurementId || !settings.trackEcommerce) return;
+
+  const apiSecret = await getGa4ApiSecret();
+  if (!apiSecret) return;
+
+  await sendGa4Event({
+    measurementId: settings.measurementId,
+    apiSecret,
+    clientId,
+    // Deliberately no session_id: this is happening days after that session
+    // ended, and attaching it to a session that has closed is how a refund ends
+    // up credited to the campaign that made the sale.
+    sessionId: null,
+    name: 'refund',
+    params: {
+      transaction_id: String(order.id),
+      currency: 'EUR',
+      value: value ?? Number(order.total),
+      ...(items ? { items } : {}),
+      ...(settings.debugMode ? { debug_mode: true } : {}),
+    },
+  });
+};
+
+// ── Meta Pixel, server side (Conversions API) ─────────────────────────────────
+//
+// The browser's pixel reports everything a browser can see. It cannot report the
+// purchase, for exactly the reason gtag.js cannot: by the time Stripe confirms
+// payment the shopper is on Stripe's domain, and whether they ever land back on
+// the success page is not something a shop's ad reporting can depend on. A
+// shopper who pays and closes the tab has bought something, and the campaign
+// that found them has to be credited for it.
+//
+// So 'Purchase' reaches Meta the way it reaches our own tables and GA4: written
+// here, once, from the Stripe-confirmed order — through the Conversions API,
+// Meta's server-to-server endpoint. This is not a nice-to-have. It is the half
+// of a Meta setup that still works when the shopper runs an ad blocker, browses
+// in Safari with ITP capping first-party cookies at seven days, or simply never
+// returns to the site after paying.
+//
+// WHAT MAKES A SERVER-SIDE EVENT USEFUL IS THE MATCHING, and matching is the
+// part that is easy to get silently wrong. Meta has no cookie of its own on this
+// request — there is no browser here — so every identifier has to be carried to
+// it deliberately:
+//
+//   fbp / fbc          the pixel's own cookies, forwarded by the browser when
+//                      checkout started (see getMetaIds in src/lib/meta.ts);
+//                      fbc is the ad click itself and is the single strongest
+//                      attribution signal there is,
+//   ip / user agent    captured AT CHECKOUT TIME and stored on the pending
+//                      checkout. NOT read here: this code usually runs from the
+//                      Stripe webhook, where the request's IP is Stripe's and
+//                      its user agent is Stripe's. Sending those would tell Meta
+//                      that every one of the shop's customers is a datacentre in
+//                      Ireland running a bot,
+//   hashed PII         email, phone, name, city, county, postcode, country from
+//                      the order — SHA-256 of the normalised value, never the
+//                      plaintext.
+//
+// Two ids, two homes, the same split as GA4's next door:
+//   - the PIXEL ID is public — it ships in the page source of every site with a
+//     pixel — so it lives in content_metaPixel with the rest of the owner's
+//     settings and is served by the public /api/content route.
+//   - the ACCESS TOKEN is a credential. Stored under a key WITHOUT the
+//     `content_` prefix, which is the whole reason it cannot leak: /api/content
+//     and /api/content/:section both filter on that prefix, so no route the
+//     storefront can call will ever return it.
+
+const META_TOKEN_KEY = 'meta_capi_token';
+// Pinned rather than left to default, and overridable without a redeploy.
+// Graph API versions are retired roughly two years after release; when this one
+// goes, Meta answers with an explicit "version is deprecated" error that the
+// admin panel's test button prints verbatim, and the fix is one Railway variable
+// rather than a code change.
+const META_GRAPH_VERSION = String(process.env.META_GRAPH_VERSION || 'v23.0').trim();
+const metaEndpoint = (pixelId) =>
+  `https://graph.facebook.com/${encodeURIComponent(META_GRAPH_VERSION)}/${encodeURIComponent(pixelId)}/events`;
+
+/** The owner's Meta Pixel settings, as saved in Admin → Analytics → Meta Pixel. */
+const getMetaPixelSettings = async () => {
+  const { rows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'content_metaPixel'`);
+  const v = rows[0]?.value || {};
+  return {
+    enabled: v.enabled === true,
+    pixelId: metaPixelId(v.pixel_id) || '',
+    trackEcommerce: v.track_ecommerce !== false,
+    advancedMatching: v.advanced_matching !== false,
+    testEventCode: metaTestCode(v.test_event_code) || '',
+  };
+};
+
+/**
+ * The Conversions API access token, from the environment if it is set there.
+ *
+ * Same precedence and the same reasoning as GA4_API_SECRET above: env var first,
+ * because that is where a credential belongs and it is what this server already
+ * does for STRIPE_SECRET_KEY and JWT_SECRET. Set META_CAPI_TOKEN on Railway and
+ * the panel stops asking for it.
+ *
+ * It cannot be hardcoded and it cannot go in the frontend bundle. This token can
+ * write conversions into the owner's pixel — inventing purchases, forging
+ * revenue, and (worse than either) teaching the ad delivery system to chase
+ * whoever the forger says converted. It gets the same handling as the Stripe key.
+ */
+const getMetaAccessToken = async () => {
+  const fromEnv = String(process.env.META_CAPI_TOKEN || '').trim();
+  if (fromEnv) return fromEnv;
+  const { rows } = await pool.query('SELECT value FROM site_settings WHERE key = $1', [META_TOKEN_KEY]);
+  const v = rows[0]?.value;
+  return typeof v === 'string' && v ? v : null;
+};
+
+/** Where the token in force came from — the panel says so rather than guessing. */
+const metaTokenSource = async () => {
+  if (String(process.env.META_CAPI_TOKEN || '').trim()) return 'env';
+  const { rows } = await pool.query('SELECT value FROM site_settings WHERE key = $1', [META_TOKEN_KEY]);
+  return typeof rows[0]?.value === 'string' && rows[0].value ? 'stored' : null;
+};
+
+const setMetaAccessToken = async (token) => {
+  if (!token) {
+    await pool.query('DELETE FROM site_settings WHERE key = $1', [META_TOKEN_KEY]);
+    return;
+  }
+  await pool.query(
+    `INSERT INTO site_settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+    [META_TOKEN_KEY, JSON.stringify(token)]
+  );
+};
+
+/**
+ * POST one event to Meta's Conversions API.
+ *
+ * Unlike GA4's Measurement Protocol — which accepts anything and answers 204 —
+ * the Graph API AUTHENTICATES. A wrong token, a wrong pixel id or a malformed
+ * payload all come back as a JSON error with a human-readable message, which is
+ * what makes the admin panel's test button able to prove something rather than
+ * merely reach something.
+ *
+ * Returns a small result rather than throwing: the only caller that must not
+ * fail is the one finalizing a paid order, and no measurement call is ever
+ * allowed to come between a customer and their receipt.
+ */
+const sendMetaEvent = async ({ pixelId, accessToken, event, testEventCode }) => {
+  const body = {
+    data: [event],
+    access_token: accessToken,
+    ...(testEventCode ? { test_event_code: testEventCode } : {}),
+  };
+
+  // One retry, because there is no second chance at this. Unlike a browser
+  // event — one of hundreds, whose loss rounds away — a purchase is a single
+  // irreplaceable fact about money, sent once, from a server, with nothing
+  // downstream that would ever notice it went missing.
+  let res, text;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(metaEndpoint(pixelId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8000),
+      });
+      text = await res.text().catch(() => '');
+      // 5xx and 429 are worth a second go; a 4xx is a credential or payload
+      // problem that a retry cannot fix, and hammering it only delays the answer.
+      if ((res.status < 500 && res.status !== 429) || attempt >= 1) break;
+    } catch (err) {
+      if (attempt >= 1) throw err;
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* not JSON — the status stands alone */ }
+
+  return {
+    ok: res.ok && !parsed?.error,
+    status: res.status,
+    // Meta's own words. Printed verbatim by the admin panel rather than
+    // paraphrased: "Invalid parameter" and "(#190) Invalid OAuth access token"
+    // point at completely different fixes, and a summary loses that.
+    error: parsed?.error?.error_user_msg || parsed?.error?.message || (res.ok ? null : `HTTP ${res.status}`),
+    eventsReceived: typeof parsed?.events_received === 'number' ? parsed.events_received : null,
+    messages: Array.isArray(parsed?.messages) ? parsed.messages : [],
+  };
+};
+
+/**
+ * Report a completed order to Meta. Called from finalizeCheckoutSession, and
+ * never allowed to fail it.
+ *
+ * Silently does nothing — the correct outcome, not a failure — when: the pixel
+ * is off, no pixel id or access token is saved, ecommerce mirroring is off, or
+ * the shopper never consented (in which case the browser sent no `meta_consent`
+ * and there is no lawful basis to tell Meta anything about them at all).
+ */
+const reportPurchaseToMeta = async (order, p) => {
+  const analytics = p.analytics || {};
+  // The consent the BROWSER actually checked before the pixel ran. Absent means
+  // the visitor declined, or the pixel was off for them — either way this sale
+  // is not Meta's to know about.
+  if (analytics.meta_consent !== true) return;
+
+  const settings = await getMetaPixelSettings();
+  if (!settings.enabled || !settings.pixelId || !settings.trackEcommerce) return;
+
+  const accessToken = await getMetaAccessToken();
+  if (!accessToken) return;
+
+  // The account behind the order, for the matching fields the shipping address
+  // doesn't carry — the email above all, which is Meta's strongest single match
+  // key and is never typed into the checkout form.
+  const { rows: profileRows } = await pool.query(
+    `SELECT email, full_name, phone, city, state, postal_code, country FROM users WHERE id = $1`,
+    [order.user_id]
+  );
+  const profile = profileRows[0] || {};
+
+  const address = p.shipping_address || {};
+  const result = await sendMetaEvent({
+    pixelId: settings.pixelId,
+    accessToken,
+    testEventCode: settings.testEventCode,
+    event: {
+      event_name: 'Purchase',
+      // Seconds, not milliseconds. Meta rejects an event more than seven days
+      // old and treats one dated in the future as a clock problem; a payment
+      // confirmed by webhook minutes after the fact is comfortably inside that,
+      // and stamping it explicitly files the sale at the moment it happened
+      // rather than the moment we got round to reporting it.
+      event_time: Math.floor(Date.now() / 1000),
+      // THE ORDER'S OWN ID, and this is what makes a double-send harmless. Meta
+      // deduplicates on event_name + event_id: the Stripe webhook and the
+      // success-page poll both call finalizeCheckoutSession, and without this a
+      // race between them would report the shop's revenue twice.
+      event_id: `order-${order.id}`,
+      action_source: 'website',
+      // Where the shopper was when they bought. Meta uses it to sanity-check the
+      // event against the pixel's own domain, and an event_source_url that
+      // doesn't belong to the pixel is a well-known cause of silently poor
+      // attribution.
+      ...(p.analytics?.source_url ? { event_source_url: p.analytics.source_url } : {}),
+      user_data: metaUserData({
+        analytics,
+        profile,
+        address,
+        advancedMatching: settings.advancedMatching,
+      }),
+      custom_data: {
+        currency: 'EUR',
+        // Rounded to the cent, and that is not cosmetic. `orders.total` is a
+        // numeric column that arrives as a string and can carry float noise —
+        // 25 + 4.99 is stored as 29.990000000000002 — so the raw Number() is
+        // what would be reported to Meta as this shop's revenue. It agrees with
+        // the money Stripe took (both round to 2999 cents), but it is not the
+        // number on the receipt, and revenue that does not match the receipt is
+        // the one figure nobody should ever have to explain.
+        value: +Number(order.total).toFixed(2),
+        // The order id again, in the field Meta's reporting shows — so a
+        // conversion in Events Manager can be traced back to a row in the orders
+        // table without anyone guessing from a timestamp.
+        order_id: String(order.id),
+        content_type: 'product',
+        content_ids: (p.items || []).map(i => String(i.product_id ?? 'unknown')),
+        contents: (p.items || []).map(i => ({
+          id: String(i.product_id ?? 'unknown'),
+          quantity: Number(i.quantity) || 1,
+          // parsePrice, never Number(): prices are admin free text and arrive as
+          // "€38". Number("€38") is NaN, and a NaN here is dropped by
+          // JSON.stringify, so the line would silently reach Meta priceless.
+          item_price: +parsePrice(i.product_data?.price).toFixed(2),
+        })),
+        num_items: (p.items || []).reduce((sum, i) => sum + (Number(i.quantity) || 1), 0),
+      },
+    },
+  });
+
+  if (!result.ok) console.error('[meta purchase]', order.id, result.status, result.error);
+};
 
 // Best-effort: tag events with the logged-in customer when the session cookie is
 // present and valid, so the journey stitches visitor → account. Never rejects.
@@ -5890,6 +6541,265 @@ app.post('/api/admin/analytics/internal/visitor', requireAuth, async (req, res) 
     );
     res.json({ success: true, enabled: true });
   } catch (err) { sendServerError(res, err); }
+});
+
+// ── Google Analytics 4: the half that can't live in content ────────────────────
+//
+// Everything the owner sets about GA4 is ordinary content (see
+// content_googleAnalytics) with one exception: the Measurement Protocol API
+// secret, which is a credential and must never be readable by the storefront.
+// Anyone holding it can write events into the property — inventing revenue,
+// forging conversions — so it lives behind admin auth, and the value itself is
+// never sent back out. The panel gets a hint (last four characters) and a yes/no,
+// which is enough to answer "is one saved, and is it the one I pasted?".
+
+app.get('/api/admin/ga4', requireAuth, async (_req, res) => {
+  try {
+    const [settings, secret, source] = await Promise.all([
+      getGoogleAnalyticsSettings(), getGa4ApiSecret(), ga4SecretSource(),
+    ]);
+    res.json({
+      measurement_id: settings.measurementId,
+      enabled: settings.enabled,
+      api_secret_set: !!secret,
+      api_secret_source: source,
+      api_secret_hint: secret ? `••••${secret.slice(-4)}` : null,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+app.put('/api/admin/ga4/secret', requireAuth, async (req, res) => {
+  // The env var is the better home for this, so it wins — but it must win
+  // loudly. Silently ignoring a value the owner typed and saved would leave them
+  // believing they had changed something they hadn't.
+  if (String(process.env.GA4_API_SECRET || '').trim())
+    return res.status(409).json({ error: 'GA4_API_SECRET is set on the server, and that takes precedence. Change it there rather than here.' });
+
+  const raw = req.body?.api_secret;
+  if (raw !== null && typeof raw !== 'string') return res.status(400).json({ error: 'api_secret must be a string, or null to clear it' });
+  const secret = typeof raw === 'string' ? raw.trim() : '';
+  // Google's secrets are opaque, so this only rejects the obviously-wrong: an
+  // empty-ish paste, or something long enough to be a whole config file.
+  if (secret && (secret.length < 8 || secret.length > 200))
+    return res.status(400).json({ error: "That doesn't look like a Measurement Protocol API secret." });
+  try {
+    await setGa4ApiSecret(secret || null);
+    res.json({
+      success: true,
+      api_secret_set: !!secret,
+      api_secret_hint: secret ? `••••${secret.slice(-4)}` : null,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+/**
+ * Exercise the server-side half, before an order depends on it.
+ *
+ * The purchase event is the one measurement here that nobody can verify by
+ * browsing the shop: it is written by the server, minutes after the fact, from a
+ * credential the owner pasted once. Without this button the first evidence of a
+ * broken setup is an empty revenue report weeks later.
+ *
+ * WHAT THIS CAN AND CANNOT PROVE — and the answer is smaller than it looks, so
+ * the response copy has to be honest about it. The Measurement Protocol does not
+ * authenticate. Its validation endpoint checks the shape of the payload and
+ * nothing else: a wrong measurement id, a wrong API secret, or NO api_secret at
+ * all all come back 200 with an empty validationMessages list. (Verified against
+ * the live endpoint, not assumed.) So:
+ *
+ *   provable here  — the server can reach Google, and the payload we build is
+ *                    one GA4 accepts;
+ *   NOT provable   — that the credentials point at the owner's property.
+ *
+ * Which makes the useful design a directed check the owner finishes in GA4: send
+ * one live `admin_test` event and tell them exactly where to look for it and
+ * what its absence means. `admin_test` is a name of ours — it is not a purchase,
+ * so it cannot contaminate revenue whichever property it lands in.
+ */
+app.post('/api/admin/ga4/test', requireAuth, async (_req, res) => {
+  try {
+    const settings = await getGoogleAnalyticsSettings();
+    if (!settings.measurementId)
+      return res.json({ ok: false, problem: 'No measurement ID saved yet. Add one above and save.' });
+
+    const apiSecret = await getGa4ApiSecret();
+    if (!apiSecret)
+      return res.json({ ok: false, problem: 'No API secret saved yet — the server can only report purchases with one.' });
+
+    const clientId = `${Math.floor(Math.random() * 1e9)}.${Math.floor(Date.now() / 1000)}`;
+    const common = { measurementId: settings.measurementId, apiSecret, clientId };
+
+    const check = await sendGa4Event({
+      ...common,
+      name: 'purchase',
+      params: {
+        transaction_id: `admin-test-${Date.now()}`,
+        currency: 'EUR', value: 1, shipping: 0,
+        items: [{ item_id: 'admin-test', item_name: 'Admin test item', price: 1, quantity: 1 }],
+      },
+      debug: true,
+    });
+
+    if (!check.ok)
+      return res.json({ ok: false, problem: `Couldn't reach Google's collection endpoint (HTTP ${check.status}). That's a network problem between this server and Google, not a settings one.` });
+    if (check.validation.length)
+      return res.json({ ok: false, problem: `Google rejected the purchase payload: ${check.validation.map(v => v.description).join(' ')}`, validation: check.validation });
+
+    // The payload is one GA4 will take. Now send a real event so the owner can
+    // go and confirm the half this server cannot check for them.
+    const live = await sendGa4Event({
+      ...common,
+      name: 'admin_test',
+      params: { source: 'admin_panel', debug_mode: true },
+    });
+
+    res.json({
+      ok: live.ok,
+      delivered: live.ok,
+      message: live.ok
+        ? `Sent an 'admin_test' event to ${settings.measurementId}. Now go and look for it: GA4 → Reports → Realtime, or Admin → DebugView. It should appear within a minute.\n\nThat last step is the actual test. Google's collection endpoint accepts any measurement ID and any API secret without complaint — it never says whether they're yours — so if nothing shows up in GA4, one of the two is wrong.`
+        : "Google didn't accept the live send. Try again in a moment.",
+      problem: live.ok ? undefined : "Google didn't accept the live send. Try again in a moment.",
+    });
+  } catch (err) {
+    // A network failure here is information, not a server fault: it is what the
+    // owner needs to see.
+    res.json({ ok: false, problem: `Couldn't reach Google: ${err.message}` });
+  }
+});
+
+
+// ── Meta Pixel: the half that can't live in content ────────────────────────────
+//
+// Same split as GA4 above. Everything the owner sets about the pixel is ordinary
+// content (see content_metaPixel) with one exception: the Conversions API access
+// token, which is a credential and must never be readable by the storefront.
+// Anyone holding it can write conversions into the pixel — inventing revenue,
+// forging purchases, and teaching the ad delivery system to chase whoever they
+// say converted — so it lives behind admin auth, and the value itself is never
+// sent back out. The panel gets a hint (last four characters) and a yes/no,
+// which is enough to answer "is one saved, and is it the one I pasted?".
+
+app.get('/api/admin/meta', requireAuth, async (_req, res) => {
+  try {
+    const [settings, token, source] = await Promise.all([
+      getMetaPixelSettings(), getMetaAccessToken(), metaTokenSource(),
+    ]);
+    res.json({
+      pixel_id: settings.pixelId,
+      enabled: settings.enabled,
+      access_token_set: !!token,
+      access_token_source: source,
+      access_token_hint: token ? `••••${token.slice(-4)}` : null,
+      graph_version: META_GRAPH_VERSION,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+app.put('/api/admin/meta/token', requireAuth, async (req, res) => {
+  // The env var is the better home for this, so it wins — but it must win
+  // loudly. Silently ignoring a value the owner typed and saved would leave them
+  // believing they had changed something they hadn't.
+  if (String(process.env.META_CAPI_TOKEN || '').trim())
+    return res.status(409).json({ error: 'META_CAPI_TOKEN is set on the server, and that takes precedence. Change it there rather than here.' });
+
+  const raw = req.body?.access_token;
+  if (raw !== null && typeof raw !== 'string') return res.status(400).json({ error: 'access_token must be a string, or null to clear it' });
+  const token = typeof raw === 'string' ? raw.trim() : '';
+  // Meta's system-user tokens are long opaque strings — usually 150+ characters
+  // and starting EAA. This rejects only the obviously-wrong: a truncated paste,
+  // or something long enough to be a whole config file. Deliberately not an
+  // `EAA` prefix check, because Meta has changed that prefix before and a
+  // panel that refuses a valid token is worse than one that accepts a bad one
+  // (the test button below catches the bad one in five seconds).
+  if (token && (token.length < 20 || token.length > 500))
+    return res.status(400).json({ error: "That doesn't look like a Conversions API access token — they're a long string, usually starting EAA." });
+  try {
+    await setMetaAccessToken(token || null);
+    res.json({
+      success: true,
+      access_token_set: !!token,
+      access_token_hint: token ? `••••${token.slice(-4)}` : null,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+/**
+ * Prove the server-side half works, before an order depends on it.
+ *
+ * THIS TEST CAN PROVE MORE THAN THE GA4 ONE NEXT DOOR, and the difference is
+ * worth stating because it changes what the owner should conclude from a green
+ * result. GA4's Measurement Protocol does not authenticate: a wrong measurement
+ * id and a wrong API secret both come back 200, so that button can only ever say
+ * "the payload is well-formed, now go and look in GA4". Meta's Graph API DOES
+ * authenticate, and answers with which thing is wrong:
+ *
+ *   (#190) Invalid OAuth access token    — the token is wrong or expired
+ *   (#200) Permissions error             — the token is real but has no access
+ *                                          to THIS pixel
+ *   (#803) … does not exist              — the pixel id is wrong
+ *   Unsupported post request             — usually the pixel id is an ad
+ *                                          account id or a business id
+ *
+ * So a success here means the credentials genuinely belong together and Meta
+ * accepted the event. Its exact words are passed through rather than
+ * paraphrased: each of the above points at a different fix.
+ *
+ * The event is called `AdminTest`, not `Purchase`. A test that wrote a purchase
+ * into the pixel would put invented revenue in the owner's ad reporting and, far
+ * worse, into what the delivery system learns about who buys.
+ */
+app.post('/api/admin/meta/test', requireAuth, async (_req, res) => {
+  try {
+    const settings = await getMetaPixelSettings();
+    if (!settings.pixelId)
+      return res.json({ ok: false, problem: 'No pixel ID saved yet. Add one above and press Save Changes.' });
+
+    const accessToken = await getMetaAccessToken();
+    if (!accessToken)
+      return res.json({ ok: false, problem: 'No access token saved yet — the server can only report purchases with one.' });
+
+    const result = await sendMetaEvent({
+      pixelId: settings.pixelId,
+      accessToken,
+      testEventCode: settings.testEventCode,
+      event: {
+        event_name: 'AdminTest',
+        event_time: Math.floor(Date.now() / 1000),
+        event_id: `admin-test-${Date.now()}`,
+        action_source: 'website',
+        event_source_url: `${FRONTEND_URL}/`,
+        // A real-shaped identifier so Meta exercises the same matching path a
+        // purchase will, without describing an actual person — and hashed by the
+        // same function the purchase uses, so this is a rehearsal of the real
+        // payload rather than a differently-shaped one that happens to be taken.
+        user_data: {
+          client_user_agent: 'OliveGooseAdminTest/1.0',
+          external_id: hashExternalId(`admin-test-${Date.now()}`),
+        },
+        custom_data: { source: 'admin_panel' },
+      },
+    });
+
+    if (!result.ok)
+      return res.json({ ok: false, problem: `Meta rejected it: ${result.error}` });
+
+    const where = settings.testEventCode
+      ? `Events Manager → your pixel → Test Events. It's tagged ${settings.testEventCode}, so it should appear there within seconds.`
+      : 'Events Manager → your pixel → Overview. With no Test Events code set it goes to your live stream, which can take up to 20 minutes to show — set a Test Events code above if you want to watch it arrive now.';
+
+    res.json({
+      ok: true,
+      delivered: true,
+      events_received: result.eventsReceived,
+      message: `Meta accepted an 'AdminTest' event for pixel ${settings.pixelId}.\n\nThat is a real check, not just a reachable server: Meta authenticates this call, so an accepted event means the access token is valid AND has permission for this exact pixel. Purchases will be reported.\n\nTo see it: ${where}`
+        + (result.messages.length ? `\n\nMeta also said: ${result.messages.join(' ')}` : ''),
+    });
+  } catch (err) {
+    // A network failure here is information, not a server fault: it is what the
+    // owner needs to see.
+    res.json({ ok: false, problem: `Couldn't reach Meta: ${err.message}` });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

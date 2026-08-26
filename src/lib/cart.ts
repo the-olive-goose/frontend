@@ -39,8 +39,23 @@ export const formatPrice = (price: string | number | null | undefined): string =
   return `€${Number.isInteger(n) ? n : n.toFixed(2)}`;
 };
 
+/**
+ * A stored price as a number.
+ *
+ * Prices are an admin free-text field and they do NOT arrive as bare numerals:
+ * the bundled defaults are written "€38", and the catalogue, the basket total
+ * and the deals page each strip the symbol before doing arithmetic. Anything
+ * that reads a price and forgets to is not slightly off — `Number("€38")` is
+ * NaN, and every `|| 0` downstream turns that into a candle worth nothing.
+ *
+ * Deliberately the same extraction the backend's parsePrice uses, because that
+ * is the number Stripe is actually charged: analytics that disagreed with it
+ * would be reporting revenue the shop never took.
+ */
+export const priceToNumber = (price: string | number | null | undefined): number => {
+  const n = parseFloat(String(price ?? "").replace(/[^0-9.]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+};
+
 export const cartSubtotal = (items: Array<{ product: Product; quantity: number }>): number =>
-  items.reduce((acc, i) => {
-    const n = parseFloat(i.product.price.replace(/[^0-9.]/g, ""));
-    return acc + (isNaN(n) ? 0 : n * i.quantity);
-  }, 0);
+  items.reduce((acc, i) => acc + priceToNumber(i.product.price) * i.quantity, 0);

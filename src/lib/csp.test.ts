@@ -113,22 +113,91 @@ describe.each([
   });
 
   // Scripts are the one directive where a relaxation is game over, so this is
-  // asserted as an exact value rather than a set of "not" checks: script-src is
-  // 'self' and nothing else. The shop's analytics is first-party
-  // (src/lib/analytics.ts posts to our own API), so no third-party script host
-  // has any reason to appear here. A GA4 tag was briefly wired up and widened
-  // this to allow googletagmanager.com; it was removed, and this test is what
-  // stops that host — or any other — creeping back in unnoticed.
-  it("locks script-src to 'self' with no third-party hosts", () => {
+  // asserted as an exact value rather than a set of "not" checks: 'self' plus
+  // the two tag hosts, in that order, and nothing else.
+  //
+  //   googletagmanager.com — gtag.js, for the optional GA4 tag (src/lib/ga.ts),
+  //   connect.facebook.net — fbevents.js, for the optional Meta Pixel
+  //                          (src/lib/meta.ts).
+  //
+  // Both are switched on by the owner in Admin → Analytics, and both are for
+  // measurement the shop cannot do first-party — GA4 because the property is
+  // Google's, Meta because ad attribution only exists inside Meta's own system.
+  // The shop's own analytics remain first-party and need no script host at all.
+  // If this list ever grows a fourth entry, that is a decision someone must make
+  // on purpose — which is exactly what an exact-equality assertion forces.
+  it("allows exactly 'self' and the two tag hosts, nothing more", () => {
     const policy = load();
-    expect(policy["script-src"]).toEqual(["'self'"]);
+    expect(policy["script-src"]).toEqual([
+      "'self'",
+      "https://www.googletagmanager.com",
+      "https://connect.facebook.net",
+    ]);
   });
 
-  it("blocks a third-party tag host outright", () => {
+  it("loads gtag.js for the GA4 tag", () => {
     const policy = load();
     expect(
       allows(policy, "script-src", "https://www.googletagmanager.com/gtag/js?id=G-ABC1234567")
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("loads fbevents.js, and the per-pixel config it pulls in after it", () => {
+    const policy = load();
+    // The install script is only the first request. fbevents.js then fetches the
+    // pixel's own configuration and any plugins it needs from the same host —
+    // allow the script and forget the config, and the pixel loads, reports
+    // nothing, and gives no clue why.
+    for (const url of [
+      "https://connect.facebook.net/en_US/fbevents.js",
+      "https://connect.facebook.net/signals/config/1234567890123456?v=2.9.180",
+    ]) {
+      expect(allows(policy, "script-src", url)).toBe(true);
+    }
+  });
+
+  it("still blocks every other third-party tag host", () => {
+    const policy = load();
+    // The hosts a "just add this snippet" integration reaches for next.
+    for (const url of [
+      "https://cdn.segment.com/analytics.js/v1/abc/analytics.min.js",
+      "https://static.hotjar.com/c/hotjar-123.js",
+      "https://www.google-analytics.com/analytics.js",
+      "https://analytics.tiktok.com/i18n/pixel/events.js",
+      "https://snap.licdn.com/li.lms-analytics/insight.min.js",
+      // Meta's TAG host is allowed; Meta's collection host is not a script host
+      // and has no business serving one.
+      "https://www.facebook.com/tr.js",
+    ]) {
+      expect(allows(policy, "script-src", url)).toBe(false);
+    }
+  });
+
+  it("keeps inline and eval out of script-src", () => {
+    const policy = load();
+    // gtag.js needs neither, and a tag host is not a reason to hand one over.
+    expect(policy["script-src"]).not.toContain("'unsafe-inline'");
+    expect(policy["script-src"]).not.toContain("'unsafe-eval'");
+    expect(policy["script-src"]).not.toContain("https:");
+    expect(policy["script-src"]).not.toContain("*");
+  });
+
+  it("reaches GA4's collection endpoint over connect-src", () => {
+    const policy = load();
+    // gtag.js posts hits to this host; blocked here, the tag loads and silently
+    // measures nothing.
+    expect(allows(policy, "connect-src", "https://www.google-analytics.com/g/collect")).toBe(true);
+    expect(allows(policy, "connect-src", "https://analytics.google.com/g/collect")).toBe(true);
+  });
+
+  it("reaches Meta's collection endpoint, by fetch and by image beacon", () => {
+    const policy = load();
+    // fbevents.js reports through https://www.facebook.com/tr — as a fetch where
+    // it can and as an <img> where it can't, and it silently falls back between
+    // them. Allowing one and not the other is a pixel that works in Chrome and
+    // measures nothing in Safari, with no error in either.
+    expect(allows(policy, "connect-src", "https://www.facebook.com/tr/")).toBe(true);
+    expect(allows(policy, "img-src", "https://www.facebook.com/tr?id=1234567890123456&ev=PageView")).toBe(true);
   });
 });
 

@@ -425,9 +425,22 @@ export interface CheckoutInput {
   // A welcome/subscriber discount code the shopper applied, if any. Re-validated
   // and held server-side before checkout starts — never trusted from here.
   discount_code?: string;
-  // Analytics visitor/session ids — lets the backend attribute the eventual
-  // purchase event to the browsing session that started this checkout.
-  analytics?: { visitor_id: string; session_id: string };
+  // Analytics ids for both measurement systems — lets the backend attribute the
+  // eventual purchase event to the browsing session that started this checkout.
+  // The GA4 pair is absent whenever that tag isn't running (disabled, or the
+  // visitor declined cookies), and the backend reports nothing to Google then.
+  analytics?: {
+    visitor_id: string;
+    session_id: string;
+    ga_client_id?: string;
+    ga_session_id?: string;
+    // The Meta half. `meta_consent` is the permission the browser actually
+    // checked before the pixel ran; without it the backend reports nothing to
+    // Meta, cookies or no cookies.
+    meta_consent?: true;
+    fbp?: string;
+    fbc?: string;
+  };
 }
 
 export interface DiscountValidation {

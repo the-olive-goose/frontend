@@ -11,9 +11,15 @@ const CookieConsent = () => {
     if (!cookieBannerAnswered()) setVisible(true);
   }, []);
 
-  // The choice is recorded in storage (see lib/cookieConsent) and read back by
-  // anything that needs it. No third-party tag is loaded either way — the shop's
-  // analytics is first-party only, so accepting grants nothing to an outside host.
+  // The choice is recorded in storage (see lib/cookieConsent), which broadcasts
+  // it so anything gated on consent reacts in this same moment rather than on
+  // the next page load.
+  //
+  // What turns on it: the shop's own analytics measure everyone either way —
+  // they are first-party and the data never leaves our server. Google Analytics
+  // does not. If the owner has enabled GA4 (Admin → Analytics → Google
+  // Analytics), Accept is what loads that tag and Decline is what keeps it off
+  // for this visitor for good. See the header of src/lib/ga.ts.
   const accept = () => {
     writeCookieConsent("accepted");
     setVisible(false);

@@ -8,7 +8,7 @@ import { getContent } from "@/lib/api";
 import { DEFAULT_CONTENT, DEFAULT_DEALS, type Bundle, type DealsContent, type Product } from "@/lib/defaults";
 import { useContent } from "@/hooks/useContent";
 import { cartSubtotal, formatPrice } from "@/lib/cart";
-import { track } from "@/lib/analytics";
+import { track, lineItems } from "@/lib/analytics";
 import { computeBundleSavings } from "@/lib/bundleSavings";
 import { getBundleNudges } from "@/lib/bundleNudges";
 import FreeShippingBar from "@/components/FreeShippingBar";
@@ -42,7 +42,7 @@ const BasketPage = () => {
   useEffect(() => {
     if (cartViewed.current || items.length === 0) return;
     cartViewed.current = true;
-    track("view_cart", { items: count, total: +cartSubtotal(items).toFixed(2) });
+    track("view_cart", { items: count, total: +cartSubtotal(items).toFixed(2), line_items: lineItems(items) });
   }, [items, count]);
 
   // Per-unit, non-overlapping bundle allocation — same algorithm the backend
@@ -88,6 +88,10 @@ const BasketPage = () => {
       outcome: user ? "passed" : "signin_required",
       total: +estimatedTotalNum.toFixed(2),
       items: count,
+      line_items: lineItems(items),
+      // The bundle saving already applied to `total` — carried so the value and
+      // the list-priced items above can be reconciled rather than just differing.
+      discount: +Math.min(bundleSavings, subtotalNum).toFixed(2),
     });
     // The path is repeated for the OAuth case: "Continue with Google" leaves the
     // site entirely, so the callback needs the destination written down — without

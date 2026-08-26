@@ -549,6 +549,91 @@ export interface SubscribePopupContent {
   delay_seconds: number;
 }
 
+/**
+ * Google Analytics 4 — the second, third-party measurement system.
+ *
+ * Off until the owner turns it on in Admin → Analytics → Google Analytics, and
+ * deliberately narrower than the first-party analytics next to it:
+ *
+ *   - `require_consent` is what keeps the shop's legal footing intact. The
+ *     first-party numbers measure every visitor because they never leave our own
+ *     server (see the reasoning at the top of lib/analytics.ts). A GA4 tag is a
+ *     third-party host receiving the same visits, which is outside that
+ *     reasoning entirely — so it loads only after the cookie banner is
+ *     ACCEPTED. Leaving this on is the difference between an analytics tag and a
+ *     compliance problem.
+ *   - `exclude_internal` keeps the owner's own devices out of GA4 exactly as
+ *     they're kept out of the first-party figures. On by default: numbers that
+ *     count the shop's own browsing are worse than no numbers.
+ *
+ * Consequence worth stating up front, because it looks like a bug otherwise:
+ * GA4 will always report FEWER visitors than the Analytics tab does. Everyone
+ * who declines cookies is measured first-party and absent from GA4.
+ */
+export interface GoogleAnalyticsContent {
+  enabled: boolean;
+  /** GA4 measurement id — the `G-XXXXXXXXXX` from the property's data stream. */
+  measurement_id: string;
+  /** Load the tag only once the visitor has accepted cookies. Keep this on. */
+  require_consent: boolean;
+  /** Don't load the tag at all on the shop's own browsers. */
+  exclude_internal: boolean;
+  /** Mirror the shop's funnel events (view_item, add_to_cart, purchase…) to GA4. */
+  track_ecommerce: boolean;
+  /** Tag every hit with debug_mode so it appears in GA4's DebugView. */
+  debug_mode: boolean;
+}
+
+/**
+ * Meta Pixel — the shop's advertising measurement, and the third measurement
+ * system on the site.
+ *
+ * Same shape and the same four guards as GoogleAnalyticsContent above, on
+ * purpose: an owner who has understood one has understood both, and a guard that
+ * exists in one and not the other is exactly how a "we don't measure ourselves"
+ * rule quietly stops being true.
+ *
+ * What is genuinely different, and why the extra fields exist:
+ *
+ *   - `advanced_matching` hands Meta the SIGNED-IN shopper's email, phone and
+ *     name so a browser event can be matched to a person who saw an ad on
+ *     another device. The pixel normalises and SHA-256-hashes every value in the
+ *     browser before anything leaves the page — the plaintext is never on the
+ *     wire. It is still a real disclosure, so it is a switch rather than an
+ *     assumption, and it only ever applies to someone who is signed in.
+ *   - `test_event_code` is what Meta's Events Manager → Test Events tab hands
+ *     you. It tags the SERVER-side events for that tab so the purchase — the one
+ *     measurement nobody can verify by browsing the shop — can be watched
+ *     arriving in seconds. Browser events are tested from the same tab's own
+ *     "Test browser events" box and need no code. It is a SETUP tool: while it
+ *     is set, purchases go to the test stream INSTEAD of the shop's real
+ *     reporting, so the panel is loud about clearing it afterwards.
+ *
+ * Purchases are NOT sent from the browser. By the time Stripe confirms payment
+ * the shopper is on Stripe's domain; the sale is reported to Meta's Conversions
+ * API by our server (see reportPurchaseToMeta in backend/index.js), which is
+ * also what makes it survive a shopper who pays and closes the tab.
+ */
+export interface MetaPixelContent {
+  enabled: boolean;
+  /** The pixel's numeric id, from Events Manager → Data sources. */
+  pixel_id: string;
+  /** Load the pixel only once the visitor has accepted cookies. Keep this on. */
+  require_consent: boolean;
+  /** Don't load the pixel at all on the shop's own browsers. */
+  exclude_internal: boolean;
+  /** Mirror the shopping funnel (ViewContent, AddToCart, Purchase…) to Meta. */
+  track_ecommerce: boolean;
+  /** Send the signed-in shopper's hashed email/phone/name for cross-device matching. */
+  advanced_matching: boolean;
+  /**
+   * Events Manager → Test Events code (`TEST12345`), for the server-side
+   * purchase only. MUST be empty in normal operation — a purchase sent with a
+   * test code is a test event, not a conversion.
+   */
+  test_event_code: string;
+}
+
 export interface SiteContent {
   announcementBar: AnnouncementBarContent;
   navbar: NavbarContent;
@@ -575,6 +660,8 @@ export interface SiteContent {
   privacyPolicy: LegalPageContent;
   termsOfService: LegalPageContent;
   shippingPolicy: LegalPageContent;
+  googleAnalytics: GoogleAnalyticsContent;
+  metaPixel: MetaPixelContent;
   // Search-engine metadata (titles, descriptions, icons). The shape and the
   // fallbacks live in src/lib/seo.ts next to the code that applies them.
   seo: SeoSettings;
@@ -1079,6 +1166,29 @@ export const DEFAULT_CONTENT: SiteContent = {
       },
     ],
     contact_email: "hello@theolivegoose.com",
+  },
+
+  // Nothing is sent to Google until the owner fills in a measurement id and
+  // turns this on. The two guards default to their protective setting.
+  googleAnalytics: {
+    enabled: false,
+    measurement_id: "",
+    require_consent: true,
+    exclude_internal: true,
+    track_ecommerce: true,
+    debug_mode: false,
+  },
+
+  // Same posture as GA4 next door: nothing reaches Meta until a pixel id is
+  // saved and the switch is thrown, and both protective guards start on.
+  metaPixel: {
+    enabled: false,
+    pixel_id: "",
+    require_consent: true,
+    exclude_internal: true,
+    track_ecommerce: true,
+    advanced_matching: true,
+    test_event_code: "",
   },
 
   seo: DEFAULT_SEO,

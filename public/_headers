@@ -1,10 +1,20 @@
 # Security headers served by Netlify for every path.
-# Scripts are locked to this origin and nothing else — the Vite bundle has no
-# inline scripts, and the shop's analytics is first-party (src/lib/analytics.ts
-# posts to our own API), so no third-party script host needs to be allowed here.
-# Keep it that way: widening script-src is the single most costly relaxation in
-# this policy. Inline styles + Google Fonts stay allowed so the site renders
-# unchanged.
+#
+# script-src is 'self' plus exactly TWO hosts, and each one had to be argued for:
+#   googletagmanager.com — gtag.js, for the optional GA4 tag the owner controls
+#                          from Admin → Analytics → Google Analytics,
+#   connect.facebook.net — fbevents.js, for the optional Meta Pixel controlled
+#                          from Admin → Analytics → Meta Pixel.
+# Nothing else may be added. Widening script-src is the single most costly
+# relaxation in this policy, and it stays an explicit allowlist rather than a
+# blanket https: precisely so the next addition has to be argued for. There is
+# still no 'unsafe-inline' and no 'unsafe-eval' — the Vite bundle has no inline
+# scripts, and neither tag needs either: both install snippets are written out in
+# TypeScript (src/lib/ga.ts, src/lib/meta.ts) rather than injected as inline
+# script, which is exactly what keeps that promise affordable. The shop's own
+# analytics remain first-party (src/lib/analytics.ts posts to our own API) and
+# need no script host at all. Inline styles + Google Fonts stay allowed so the
+# site renders unchanged.
 #
 # frame-src must be listed explicitly: without it, embedded frames fall back to
 # default-src 'self' and every video the studio rail plays through an embed
@@ -13,7 +23,7 @@
 # working fine in dev, where no CSP is served. Kept to the exact hosts
 # toEmbedUrl can emit rather than a blanket https:. Covered by src/lib/csp.test.ts.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com https://www.instagram.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://www.googletagmanager.com https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com https://www.instagram.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
   Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY

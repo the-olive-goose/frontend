@@ -941,6 +941,122 @@ export const setAnalyticsInternalBrowser = async (visitorId: string, enabled: bo
   if (!res.ok) throw new Error('Failed to update this browser');
 };
 
+// ── Google Analytics (admin) ────────────────────────────────────────────────────
+// The measurement id is ordinary content and is saved with everything else. The
+// Measurement Protocol API secret is a credential, so it has its own routes and
+// is never sent back to the browser — only whether one is stored, and its last
+// four characters, so the owner can tell which secret is in there.
+
+export interface Ga4ServerState {
+  measurement_id: string;
+  enabled: boolean;
+  api_secret_set: boolean;
+  /** 'env' — GA4_API_SECRET on the host, which wins; 'stored' — typed into the panel. */
+  api_secret_source: 'env' | 'stored' | null;
+  api_secret_hint: string | null;
+}
+
+export const getGa4ServerState = async (): Promise<Ga4ServerState> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/ga4`, { headers: authHeaders(true) }));
+  if (!res.ok) throw new Error('Failed to load Google Analytics settings');
+  return res.json();
+};
+
+/** Pass null to remove the stored secret. */
+export const saveGa4ApiSecret = async (
+  apiSecret: string | null
+): Promise<{ api_secret_set: boolean; api_secret_hint: string | null }> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/ga4/secret`, {
+    method: 'PUT',
+    headers: { ...authHeaders(true), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_secret: apiSecret }),
+  }));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to save the API secret');
+  return data;
+};
+
+export interface Ga4TestResult {
+  ok: boolean;
+  problem?: string;
+  message?: string;
+  delivered?: boolean;
+}
+
+/** Ask the server to prove it can write to the GA4 property. Slow — it calls Google. */
+export const testGa4Connection = async (): Promise<Ga4TestResult> => {
+  const res = await checkStatus(await fetchWithTimeout(
+    `${API_URL}/api/admin/ga4/test`,
+    { method: 'POST', headers: authHeaders(true) },
+    20_000
+  ));
+  if (!res.ok) throw new Error('The test could not be run');
+  return res.json();
+};
+
+// ── Meta Pixel (admin) ──────────────────────────────────────────────────────────
+// Same split as Google Analytics above: the pixel id is ordinary content and is
+// saved with everything else, while the Conversions API access token is a
+// credential with its own routes and is never sent back to the browser — only
+// whether one is stored and its last four characters, so the owner can tell
+// which token is in there.
+
+export interface MetaServerState {
+  pixel_id: string;
+  enabled: boolean;
+  access_token_set: boolean;
+  /** 'env' — META_CAPI_TOKEN on the host, which wins; 'stored' — typed into the panel. */
+  access_token_source: 'env' | 'stored' | null;
+  access_token_hint: string | null;
+  /** The Graph API version the server calls. Shown so a deprecation is diagnosable. */
+  graph_version: string;
+}
+
+export const getMetaServerState = async (): Promise<MetaServerState> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/meta`, { headers: authHeaders(true) }));
+  if (!res.ok) throw new Error('Failed to load Meta Pixel settings');
+  return res.json();
+};
+
+/** Pass null to remove the stored token. */
+export const saveMetaAccessToken = async (
+  accessToken: string | null
+): Promise<{ access_token_set: boolean; access_token_hint: string | null }> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/meta/token`, {
+    method: 'PUT',
+    headers: { ...authHeaders(true), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ access_token: accessToken }),
+  }));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to save the access token');
+  return data;
+};
+
+export interface MetaTestResult {
+  ok: boolean;
+  problem?: string;
+  message?: string;
+  delivered?: boolean;
+  events_received?: number | null;
+}
+
+/**
+ * Ask the server to prove it can write to the pixel. Slow — it calls Meta.
+ *
+ * Unlike its GA4 counterpart this one really does prove it: Meta's Graph API
+ * authenticates, so an accepted event means the token is valid and has
+ * permission for that exact pixel.
+ */
+export const testMetaConnection = async (): Promise<MetaTestResult> => {
+  const res = await checkStatus(await fetchWithTimeout(
+    `${API_URL}/api/admin/meta/test`,
+    { method: 'POST', headers: authHeaders(true) },
+    20_000
+  ));
+  if (!res.ok) throw new Error('The test could not be run');
+  return res.json();
+};
+
 // ── Returns (admin) ─────────────────────────────────────────────────────────────
 
 export interface AdminReturnRecord extends LastNotificationFields {

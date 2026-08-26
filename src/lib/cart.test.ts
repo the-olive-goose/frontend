@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cartSubtotal, formatPrice } from "@/lib/cart";
+import { cartSubtotal, formatPrice, priceToNumber } from "@/lib/cart";
 import type { Product } from "@/lib/defaults";
 
 // formatPrice renders the price on every product card, in the cart drawer, the
@@ -61,5 +61,33 @@ describe("cartSubtotal", () => {
 
   it("is zero for an empty basket", () => {
     expect(cartSubtotal([])).toBe(0);
+  });
+});
+
+describe("priceToNumber", () => {
+  // Prices are admin free text. Every arithmetic path in the shop strips the
+  // symbol before using them; anything that reaches for Number() instead gets
+  // NaN, and the `|| 0` after it prices the candle at nothing — silently, in
+  // the revenue report.
+  it("reads the format the shop actually stores", () => {
+    expect(priceToNumber("€38")).toBe(38);
+    expect(priceToNumber("€25.50")).toBe(25.5);
+    expect(priceToNumber("25")).toBe(25);
+    expect(priceToNumber(25)).toBe(25);
+    expect(priceToNumber("38 EUR")).toBe(38);
+  });
+
+  it("never returns NaN, whatever it is handed", () => {
+    for (const junk of ["", null, undefined, "free", "€"]) {
+      expect(priceToNumber(junk as string)).toBe(0);
+    }
+  });
+
+  it("agrees with what the basket totals", () => {
+    const items = [
+      { product: { id: "1", name: "a", price: "€38" } as Product, quantity: 2 },
+      { product: { id: "2", name: "b", price: "€25.50" } as Product, quantity: 1 },
+    ];
+    expect(cartSubtotal(items)).toBe(101.5);
   });
 });

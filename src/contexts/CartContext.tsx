@@ -5,7 +5,7 @@ import {
   fetchCart, apiAddToCart, apiUpdateCartItem, apiRemoveCartItem, apiClearCart,
 } from "@/lib/userApi";
 import { track } from "@/lib/analytics";
-import { MAX_CART_QTY } from "@/lib/cart";
+import { MAX_CART_QTY, priceToNumber } from "@/lib/cart";
 import {
   GUEST_CART_KEY, addGuestItem, clampQty, clearGuestCart, readGuestCart, writeGuestCart,
   type GuestCartItem,
@@ -122,7 +122,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   // caps the stored total at MAX_CART_QTY, so mirror that ceiling locally too.
   const addToCart = async (product: Product, quantity = 1) => {
     const qty = clampQty(quantity);
-    const analytics = { product_id: product.id, name: product.name, price: product.price, quantity: qty };
+    const analytics = { product_id: product.id, name: product.name, price: priceToNumber(product.price), quantity: qty };
 
     if (!user) {
       setGuestItems(prev => addGuestItem(prev, product, qty));
@@ -146,13 +146,23 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const removeFromCart = async (productId: string) => {
+    // Read the line before it is removed. The id alone was enough for our own
+    // reports (they join back to the catalogue), but an event that leaves the
+    // browser has to carry what it means: without the name and price, GA4's
+    // item report lists the removal under a raw product id and can put no value
+    // on what was abandoned.
+    const removed = items.find(i => i.product.id === productId);
+    const analytics = removed
+      ? { product_id: productId, name: removed.product.name, price: priceToNumber(removed.product.price), quantity: removed.quantity }
+      : { product_id: productId };
+
     if (!user) {
       setGuestItems(prev => prev.filter(i => i.product.id !== productId));
-      track("remove_from_cart", { product_id: productId });
+      track("remove_from_cart", analytics);
       return;
     }
     await apiRemoveCartItem(productId);
-    track("remove_from_cart", { product_id: productId });
+    track("remove_from_cart", analytics);
     setItems(prev => prev.filter(i => i.product.id !== productId));
   };
 
