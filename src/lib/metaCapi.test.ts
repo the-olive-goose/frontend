@@ -225,25 +225,73 @@ describe("the user_data block a purchase carries", () => {
     expect(out.ln).toEqual([sha256("byrne")]);
   });
 
-  it("uses a pickup order's eircode as its postcode", () => {
-    const out = metaUserData({
-      ...ORDER,
-      address: { city: "Dublin", eircode: "D18 K7W2", country: "Ireland" },
-    });
-    expect(out.zp).toEqual([sha256("d18 k7w2")]);
-  });
-
   it("keeps the browser and network identifiers when advanced matching is off", () => {
     // The switch means "don't tell Meta who this person is". It does not mean
-    // "don't attribute the sale" — fbc is the ad click itself and carries no
-    // personal data at all.
+    // "don't attribute the sale" — fbc is the ad click itself, and external_id
+    // is our own random token, and neither carries personal data.
     const out = metaUserData({ ...ORDER, advancedMatching: false });
     expect(out).toEqual({
       fbp: "fb.1.1787691830.1098115397",
       fbc: "fb.1.1787691830.IwAR2abcDEF",
       client_ip_address: "203.0.113.7",
       client_user_agent: "Mozilla/5.0 (iPhone)",
+      external_id: sha256("8f14e45f-ceea-467a-9ba3-6f1c0e2b1c2d"),
     });
+    // No email, phone, name or address — that is what the switch buys.
+    for (const k of ["em", "ph", "fn", "ln", "ct", "st", "zp", "country"]) {
+      expect(out).not.toHaveProperty(k);
+    }
+  });
+
+  it("never leaves a purchase too thin for Meta to accept", () => {
+    // Meta REJECTS an event whose user_data is too broad to match on — error
+    // 2804050, "no customer information parameters, or ... so broad that it is
+    // unlikely to be effective". Verified against the live endpoint: a user
+    // agent on its own is refused, a user agent plus external_id is accepted.
+    //
+    // The reachable worst case: an owner who switched advanced matching off, and
+    // a shopper whose fbp/fbc cookies an ad blocker had eaten. Every one of that
+    // shopper's purchases would be refused by Meta with nothing but a server log
+    // to show for it. external_id is what keeps the event acceptable.
+    const out = metaUserData({
+      analytics: { ua: "Mozilla/5.0", visitor_id: "8f14e45f-ceea-467a-9ba3-6f1c0e2b1c2d" },
+      profile: {}, address: {}, advancedMatching: false,
+    });
+    expect(out.external_id).toBeTruthy();
+    expect(Object.keys(out).filter((k) => k !== "client_user_agent")).not.toHaveLength(0);
+  });
+
+  it("never reports the SHOP's address as the customer's on a pickup order", () => {
+    // A pickup order's "shipping address" is the studio's own — assembled from
+    // the pickup settings, because that is where the parcel goes. Read as the
+    // customer's location it tells Meta this shopper lives at the shop, and
+    // tells it that about EVERY pickup customer: one city, one postcode, shared
+    // by all of them. That is not a missing signal but a false one.
+    const studio = {
+      fulfillment_type: "pickup",
+      location_name: "The Olive Goose",
+      address_line1: "Unit 4, Sandyford",
+      city: "Dublin 18",
+      eircode: "D18 K7W2",
+      country: "Ireland",
+      contact_name: "Aoife Ní Bhriain",
+      contact_phone: "+353871234567",
+    };
+    const out = metaUserData({
+      analytics: { visitor_id: "v1" },
+      profile: { email: "aoife@example.com", full_name: "Aoife Byrne", city: "Galway", postal_code: "H91 XY12", country: "Ireland" },
+      address: studio,
+      advancedMatching: true,
+    });
+    // The shop's postcode and city must not appear anywhere.
+    expect(out.zp).not.toEqual([sha256("d18 k7w2")]);
+    expect(out.ct).not.toEqual([sha256("dublin")]);
+    // The customer's own, from their account, is what goes.
+    expect(out.ct).toEqual([sha256("galway")]);
+    expect(out.zp).toEqual([sha256("h91 xy12")]);
+    // And the collection contact really is the customer, so it is used.
+    expect(out.ph).toEqual([sha256("353871234567")]);
+    expect(out.ln).toEqual([sha256("níbhriain")]);
   });
 
   it("omits, never blanks, what it doesn't know", () => {

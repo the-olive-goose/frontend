@@ -24,6 +24,18 @@
     <meta name="description" content="Luxury handmade candles from Dublin, Ireland. Coffee-scented, café-inspired soy candles, hand-poured in small batches. Free Irish shipping on qualifying orders." />
     <link rel="canonical" href="https://theolivegoose.ie/" />
 
+    <!-- Meta (Facebook) domain verification.
+         STATIC, AND IT HAS TO BE. Meta's crawler does not run JavaScript, so a
+         tag injected at runtime by SeoManager would never be seen and the domain
+         would stay unverified with no explanation. It lives here, in the HTML
+         that Netlify serves for every route, and it is the reason iOS traffic
+         can be measured at all: without a verified domain there is no Aggregated
+         Event Measurement, and conversions from anyone who opted out of tracking
+         on iOS are simply not attributed.
+         Public by design — it identifies the domain, it is not a credential.
+         Do not remove it once verified: Meta re-checks periodically. -->
+    <meta name="facebook-domain-verification" content="qwekz2fl8zdoqkldkvlsryh0v5buam" />
+
     <!-- Open Graph / social sharing (static defaults — social crawlers don't run JS).
          og:image is the header logo (src/assets/logo.jpg) at the 1200x630 the
          platforms want; `npm run og:image` regenerates it. Give the file a new

@@ -269,8 +269,19 @@ let userData: MetaUserData = {};
  * what it says rather than "mostly off".
  */
 const matchPayload = (): Record<string, string> => {
-  if (!active?.advanced_matching) return {};
   const out: Record<string, string> = {};
+
+  // Sent whatever the switch says, and the switch is still honoured — because
+  // this is not what the switch is about. Advanced matching is the promise that
+  // the shop decides whether a shopper's EMAIL, PHONE AND NAME reach Meta. A
+  // random first-party token says nothing about who anybody is, and it is what
+  // joins these browser events to the sale the server writes at the end. See
+  // metaUserData in backend/metaCapi.js, where the server sends the same value
+  // hashed the same way.
+  if (userData.externalId) out.external_id = userData.externalId;
+
+  if (!active?.advanced_matching) return out;
+
   const email = userData.email?.trim().toLowerCase();
   if (email && email.includes('@')) out.em = email;
   // Digits only, country code included — the shape Meta's own normaliser
@@ -281,14 +292,6 @@ const matchPayload = (): Record<string, string> => {
   if (first) out.fn = first;
   const last = userData.lastName?.trim().toLowerCase();
   if (last) out.ln = last;
-  // Handed over in clear and hashed BY THE PIXEL, exactly like the fields above
-  // — confirmed on the wire, where `ud[external_id]` arrives as
-  // sha256(trim(lowercase(value))). The server hashes its copy the same way
-  // (hashExternalId in backend/metaCapi.js) so the two are the same string,
-  // which is what joins a server-written purchase to the browsing that led to
-  // it. Hash one and not the other and the sale silently detaches from its own
-  // session.
-  if (userData.externalId) out.external_id = userData.externalId;
   return out;
 };
 

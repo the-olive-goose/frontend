@@ -166,32 +166,63 @@ const metaUserData = ({ analytics = {}, profile = {}, address = {}, advancedMatc
   if (typeof analytics.ip === 'string' && analytics.ip) out.client_ip_address = analytics.ip;
   if (typeof analytics.ua === 'string' && analytics.ua) out.client_user_agent = analytics.ua;
 
-  if (!advancedMatching) return out;
-
+  // OUR OWN OPAQUE ID, SENT WHATEVER THE SWITCH SAYS — and the switch is still
+  // honoured, because this is not what the switch is about. Advanced matching is
+  // the promise that the shop decides whether a shopper's EMAIL, PHONE AND NAME
+  // go to Meta. A random first-party token says nothing about who anybody is;
+  // it is the same kind of thing as the `fbp` cookie above, and it is what joins
+  // this server-written sale to the browsing that produced it.
+  //
+  // It also keeps the event acceptable at all. Meta REJECTS an event whose
+  // user_data is too thin to match on — error 2804050, "no customer information
+  // parameters, or ... so broad that it is unlikely to be effective". Verified
+  // against the live endpoint: a user agent on its own is refused. So an owner
+  // who turned advanced matching off, for a shopper whose fbp cookie an ad
+  // blocker had eaten, would have had every one of their sales rejected by Meta
+  // and nothing but a line in a server log to show for it.
   const externalId = hashExternalId(analytics.visitor_id);
   if (externalId) out.external_id = externalId;
 
+  if (!advancedMatching) return out;
+
+  // ── Where the person actually is ────────────────────────────────────────────
+  //
+  // A PICKUP ORDER'S "SHIPPING ADDRESS" IS THE SHOP'S OWN. It is assembled in
+  // /api/checkout/session from the pickup settings — the studio's street, city,
+  // Eircode and country — because that is where the parcel is going. Reading it
+  // as the customer's location would tell Meta that this shopper lives at the
+  // shop, and would tell it that about EVERY pickup customer: one address, one
+  // postcode, shared by all of them. That is not a missing signal, it is a false
+  // one, and a false one is the direction that quietly ruins a match rate.
+  //
+  // So for pickup, the address block is used only for the two fields that really
+  // are the customer's — the contact name and number they left for collection —
+  // and everything geographic comes from their account or not at all.
+  const isPickup = address.fulfillment_type === 'pickup';
+  const location = isPickup ? profile : address;
+
   const em = hashEmail(profile.email);
   if (em) out.em = [em];
-  const ph = hashPhone(address.phone || profile.phone);
+
+  const ph = hashPhone((isPickup ? address.contact_phone : address.phone) || profile.phone);
   if (ph) out.ph = [ph];
 
-  const fullName = String(address.full_name || profile.full_name || '').trim();
+  const fullName = String(
+    (isPickup ? address.contact_name : address.full_name) || profile.full_name || ''
+  ).trim();
   const parts = fullName.split(/\s+/).filter(Boolean);
   const fn = hashName(parts[0]);
   if (fn) out.fn = [fn];
   const ln = hashName(parts.slice(1).join(' '));
   if (ln) out.ln = [ln];
 
-  const ct = hashCity(address.city || profile.city);
+  const ct = hashCity(location.city);
   if (ct) out.ct = [ct];
-  const st = hashState(address.state || profile.state);
+  const st = hashState(location.state);
   if (st) out.st = [st];
-  // Pickup orders carry an `eircode` rather than a `postal_code` — the studio's
-  // own, which is still a real postcode for the person collecting.
-  const zp = hashZip(address.postal_code || address.eircode || profile.postal_code);
+  const zp = hashZip(location.postal_code);
   if (zp) out.zp = [zp];
-  const country = hashCountry(address.country || profile.country);
+  const country = hashCountry(location.country);
   if (country) out.country = [country];
 
   return out;

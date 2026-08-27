@@ -351,11 +351,15 @@ describe("advanced matching", () => {
     expect(init.external_id).toBe("visitor-123");
   });
 
-  it("sends nothing about the person when the owner turns it off", () => {
+  it("sends nothing about the PERSON when the owner turns it off", () => {
+    // The switch is about email, phone and name. The opaque first-party token
+    // stays: it says nothing about who anybody is, it is the join key between
+    // these events and the sale the server writes — and without it Meta REJECTS
+    // a thin event outright (error 2804050, verified against the live endpoint).
     writeCookieConsent("accepted");
-    setMetaUserData({ email: "aoife@example.com", externalId: "visitor-123" });
+    setMetaUserData({ email: "aoife@example.com", phone: "+353871234567", firstName: "Aoife", externalId: "visitor-123" });
     configureMetaPixel({ ...ON, advanced_matching: false });
-    expect(calls().find((c) => c[0] === "init")![2]).toEqual({});
+    expect(calls().find((c) => c[0] === "init")![2]).toEqual({ external_id: "visitor-123" });
   });
 
   it("omits what it doesn't know rather than sending an empty field", () => {
