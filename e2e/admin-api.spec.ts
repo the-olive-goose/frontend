@@ -616,9 +616,28 @@ test.describe("analytics", () => {
   const VISITOR = `e2evisitor${Date.now()}`;
   const SESSION = `e2esession${Date.now()}`;
 
+  // Ingestion only records what a browser could plausibly have sent, and the
+  // dashboard reports the storefront unless asked for another hostname. So a
+  // fixture posting straight at the route has to look like the thing it is
+  // standing in for: a real user-agent, and the storefront's own Origin.
+  //
+  // "e2e-suite" with no Origin used to be accepted, which is exactly how the
+  // front-end test suite came to be recorded as 6,950 shopper events in the live
+  // database. It is refused now, and this fixture should be refused too if it
+  // ever drifts back to pretending.
+  //
+  // The Origin is the frontend under test, which this stack configures as the
+  // counted storefront (ANALYTICS_ORIGINS in e2e/run-e2e.mjs). It has to be an
+  // origin the CORS layer serves as well, or the request is refused a step
+  // earlier and never reaches the question being asked here.
+  const AS_A_SHOPPER = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+    Origin: process.env.E2E_BASE ?? "http://localhost:8081",
+  };
+
   test("ingestion accepts allowed client events and drops forged ones", async ({ request }) => {
     const ok = await request.post(`${API}/api/analytics/events`, {
-      headers: { "User-Agent": "e2e-suite" },
+      headers: AS_A_SHOPPER,
       data: {
         visitor_id: VISITOR, session_id: SESSION,
         events: [
@@ -634,7 +653,7 @@ test.describe("analytics", () => {
 
     // missing/invalid ids are rejected
     const bad = await request.post(`${API}/api/analytics/events`, {
-      headers: { "User-Agent": "e2e-suite" },
+      headers: AS_A_SHOPPER,
       data: { visitor_id: "x", session_id: SESSION, events: [{ type: "page_view" }] },
     });
     expect(bad.status()).toBe(400);

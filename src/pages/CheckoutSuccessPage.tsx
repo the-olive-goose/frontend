@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { getCheckoutSession } from "@/lib/userApi";
+import { priceToNumber } from "@/lib/cart";
+import { mirrorMetaPurchase } from "@/lib/meta";
 import FooterSection from "@/components/sections/FooterSection";
 
 // Stripe redirects here after a successful payment. The order isn't guaranteed
@@ -33,9 +35,30 @@ const CheckoutSuccessPage = () => {
         const result = await getCheckoutSession(sessionId);
         if (cancelled) return;
         if ("id" in result) {
-          // No purchase event is sent from here: the 'purchase' event is written
-          // by the backend when Stripe confirms payment (finalizeCheckoutSession),
-          // so it can't be missed by a shopper who closes this tab early.
+          // OUR OWN 'purchase' event is not sent from here: it is written by the
+          // backend when Stripe confirms payment (finalizeCheckoutSession), so it
+          // can't be missed by a shopper who closes this tab early.
+          //
+          // The META Pixel is the one exception, and deliberately. Meta gets the
+          // sale from the server for exactly the reason above — but that copy
+          // depends on an access token that can expire, be revoked, or never have
+          // been set, and when it does the shop's ad reporting goes quiet with
+          // nothing to announce it. So the browser reports it too, whenever the
+          // shopper does come back, carrying the same event id the server uses;
+          // Meta deduplicates the pair into one sale. Sent before the redirect
+          // below, which is a client-side route change and destroys nothing.
+          mirrorMetaPurchase({
+            orderId: result.id,
+            total: result.total,
+            items: (result.items ?? []).map((i) => ({
+              product_id: i.product_id,
+              quantity: i.quantity,
+              // priceToNumber, never Number(): prices are admin free text and
+              // arrive as "€38", which Number() reads as NaN. The same parse the
+              // server does with parsePrice, so both halves price the sale alike.
+              price: priceToNumber((i.product_data as { price?: string | number | null })?.price),
+            })),
+          });
           await clearCart();
           navigate(`/orders/${result.id}`, { replace: true });
           return;

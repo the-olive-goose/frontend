@@ -30,7 +30,7 @@ const SHOPPER = { email: "e2e-shopper@test.local", password: "E2eShopper123" };
 const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 const cents = (p: string | number) => Math.round(parseFloat(String(p).replace(/[^0-9.]/g, "")) * 100);
 
-interface CatalogProduct { id: string; price: string; name: string; stock?: number | null }
+interface CatalogProduct { id: string; price: string; name: string; image_url?: string; stock?: number | null }
 
 let TOKEN = "";
 let admin: APIRequestContext;
@@ -133,6 +133,50 @@ test.describe("Stock and catalogue changes", () => {
 
     const res = await shopper.post(`/api/checkout/session`, { data: DELIVERY });
     expect(res.ok(), `buying the last two must be allowed: ${await res.text()}`).toBeTruthy();
+  });
+
+  // The reported symptom: product photos missing on the basket and checkout pages
+  // while the very same products showed fine on the shop.
+  //
+  // A basket row stores the product as it was when it was ADDED, and nothing used
+  // to refresh it. One of those stored snapshots held an image URL routed through
+  // an image-delivery account that has since stopped serving — it answers 401 —
+  // so every <img> in the buying flow was a broken image, even though the live
+  // catalogue had already been changed back to a working URL. The same staleness
+  // would show a shopper last week's price on a basket left open over a weekend.
+  test("the basket shows the product as it is NOW, not as it was when added", async () => {
+    const dead = "https://res.cloudinary.com/an-account-that-stopped-serving/image/fetch/gone.png";
+    await shopper.delete(`/api/cart`);
+    const added = await shopper.post(`/api/cart/items`, {
+      data: {
+        product_id: P.id,
+        // Exactly the shape that was stranded in production: a real product id
+        // carrying an image URL, name and price that have all since moved on.
+        product_data: { ...P, image_url: dead, name: "Name From Last Week", price: "999" },
+        quantity: 1,
+      },
+    });
+    expect(added.ok(), "adding to the cart must succeed").toBeTruthy();
+
+    const rows = await (await shopper.get(`/api/cart`)).json();
+    const row = rows.find((r: { product_id: string }) => String(r.product_id) === String(P.id));
+    expect(row, "the added row must come back").toBeTruthy();
+    expect(row.product_data.image_url, "a dead stored photo must not reach the page").not.toBe(dead);
+    expect(row.product_data.image_url).toBe(P.image_url ?? "");
+    expect(row.product_data.name, "the basket must not show a stale name").toBe(P.name);
+    expect(cents(row.product_data.price), "nor a stale price").toBe(cents(P.price));
+  });
+
+  // A product pulled from the catalogue keeps its snapshot rather than vanishing:
+  // a basket that empties itself with no explanation is worse than one that says
+  // why at checkout — which is what the sold-out and withdrawn cases above do.
+  test("a product no longer in the catalogue still appears in the basket", async () => {
+    await setCart(P, 1);
+    await setProducts((originalProducts.items ?? []).filter((p) => p.id !== P.id));
+
+    const rows = await (await shopper.get(`/api/cart`)).json();
+    expect(rows.some((r: { product_id: string }) => String(r.product_id) === String(P.id)),
+      "the row must not disappear silently").toBeTruthy();
   });
 
   test("untracked stock (null) is not treated as zero", async () => {

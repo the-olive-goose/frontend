@@ -315,8 +315,8 @@ const GoogleAnalyticsPanel = ({ data, onChange, onSave, saving }: {
           <Switch
             checked={data.exclude_internal}
             onChange={(exclude_internal) => onChange({ ...data, exclude_internal })}
-            label="Never load the tag on the shop's own browsers"
-            hint="Uses the same signal as the Analytics tab's internal-traffic controls. Stricter here on purpose: an excluded visit can be filtered out of our own reports afterwards, but once a hit is in a GA4 property it is in it for good — so the tag simply never loads."
+            label="Never load the tag while working on localhost"
+            hint="The live shop always reports — a visit to theolivegoose.ie is a real visit whoever made it. This covers the copy of the site you run on your own machine while working on it, which never reports at all: once a hit is in a GA4 property it is in it for good, so the tag simply never loads there."
           />
           <Switch
             checked={data.track_ecommerce}
@@ -331,6 +331,37 @@ const GoogleAnalyticsPanel = ({ data, onChange, onSave, saving }: {
             hint="Tags every event so it appears in GA4 → Admin → DebugView while you're setting things up. Turn it off afterwards."
           />
         </div>
+      </Card>
+
+      {/* ── Your own visits ─────────────────────────────────────────────────── */}
+      <Card
+        title="Your own visits to the live shop"
+        desc="Counted by Google unless you finish one step inside GA4."
+      >
+        <p className="font-sans text-sm text-foreground/80 leading-relaxed">
+          When you browse theolivegoose.ie yourself, Google records it like any
+          other visit — there is no way for a website to make Google forget a hit
+          once it has arrived. What this shop does instead is <strong>label</strong> it:
+          any browser that has been signed in to this admin panel tags its visits
+          as <code className="font-mono text-xs">internal</code>, which is the
+          marker Google's own filter looks for.
+        </p>
+        <p className="font-sans text-sm mt-3 leading-relaxed" style={{ color: "#b26a00" }}>
+          <strong>The label does nothing until you switch the filter on.</strong>{" "}
+          Google ships it in "Testing" mode, which excludes nothing at all — this
+          is the step almost everyone misses.
+        </p>
+        <p className="font-sans text-sm text-foreground/80 mt-3 leading-relaxed">
+          GA4 → Admin → Data Settings → <strong>Data Filters</strong> → the
+          "Internal Traffic" filter → set it from <em>Testing</em> to{" "}
+          <strong>Active</strong>.
+        </p>
+        <p className="font-sans text-xs text-muted-foreground mt-3 leading-relaxed">
+          Filters are not retroactive: switching it on stops your visits counting
+          from that moment, and cannot remove ones already recorded. To check what
+          is already in there, look at GA4 → Explore with the <em>Hostname</em>{" "}
+          dimension — anything that isn't theolivegoose.ie was development traffic.
+        </p>
       </Card>
 
       {/* ── What to expect ──────────────────────────────────────────────────── */}

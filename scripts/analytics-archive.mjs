@@ -1,6 +1,7 @@
 // Archive — and only then, optionally, clear — the analytics_events table.
 //
 //   node scripts/analytics-archive.mjs                    # export only, touches nothing
+//   node scripts/analytics-archive.mjs --clear-non-browser # export, then drop only what wasn't a browser
 //   node scripts/analytics-archive.mjs --clear-internal   # export, then drop only what was never a customer
 //   node scripts/analytics-archive.mjs --clear-all        # export, then drop EVERY row
 //
@@ -31,6 +32,7 @@ if (!DB) {
 
 const clearAll = process.argv.includes("--clear-all");
 const clearInternal = process.argv.includes("--clear-internal");
+const clearNonBrowser = process.argv.includes("--clear-non-browser");
 
 // Rows we can say with evidence were never a customer: a visitor already marked
 // as the shop's own, an event from a hostname ingestion no longer accepts, or
@@ -41,6 +43,34 @@ const NOT_A_CUSTOMER = `
   EXISTS (SELECT 1 FROM analytics_internal_visitors iv WHERE iv.visitor_id = analytics_events.visitor_id)
   OR session_id = 'server'
   OR (origin <> '' AND origin <> ALL($1::text[]))`;
+
+// Not a browser at all — the narrowest rule here, and the only one that names a
+// bug rather than a category of visitor.
+//
+// Two things are true of every real visit and neither is true of these rows: a
+// browser sends an Origin header on every POST (ingestion is always a POST,
+// sendBeacon's included), and its User-Agent resolves to a device. No origin AND
+// an unresolvable device means a scripted HTTP client.
+//
+// Which is what happened. The front-end test suite calls the real track(), and
+// under vitest the API base resolves to the dev backend — which backend/.env
+// points at the PRODUCTION database. Node's fetch sends no Origin and a
+// User-Agent of "node", so every fixture event in the suite was stored as a
+// shopper: 6,950 of the 7,000 rows in the live table were `npm test`.
+//
+// Kept OUT of NOT_A_CUSTOMER on purpose. That rule deletes everything a retired
+// visitor ever recorded, which includes the owner's own real card payments —
+// retired from the numbers, but a genuine record, and the last thing to throw
+// away while trying to clean up. This flag removes the fabricated rows and
+// nothing else.
+//
+// Deliberately device = 'unknown' and not device = ''. An empty device is the
+// shop's OWN server writing a confirmed purchase, which has no user-agent to
+// classify and is the most valuable row in the table.
+//
+// Ingestion now refuses anything that isn't a browser (see isNonHuman in
+// backend/index.js), so this clause only ever has pre-fix rows to find.
+const NOT_A_BROWSER = `origin = '' AND device = 'unknown'`;
 
 const ask = (q) => new Promise((res) => {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -78,16 +108,22 @@ try {
     console.error(`\nABORTING: exported ${written} rows but the table holds ${counted}. Nothing deleted.`);
     process.exit(1);
   }
-  if (!clearAll && !clearInternal) {
-    console.log("\nExport only — nothing was deleted. Re-run with --clear-internal or --clear-all to remove rows.");
+  if (!clearAll && !clearInternal && !clearNonBrowser) {
+    console.log("\nExport only — nothing was deleted. Re-run with --clear-non-browser, --clear-internal or --clear-all to remove rows.");
     process.exit(0);
   }
 
-  const { rows: [{ n: doomed }] } = clearAll
-    ? await pool.query(`SELECT COUNT(*)::int AS n FROM analytics_events`)
-    : await pool.query(`SELECT COUNT(*)::int AS n FROM analytics_events WHERE ${NOT_A_CUSTOMER}`, [origins]);
+  const where = clearAll ? null : clearNonBrowser ? NOT_A_BROWSER : NOT_A_CUSTOMER;
+  const params = where === NOT_A_CUSTOMER ? [origins] : [];
+  const label = clearAll ? " (EVERYTHING)"
+    : clearNonBrowser ? " (events from something that was not a browser)"
+    : " (traffic that was never a customer)";
 
-  console.log(`\nAbout to delete ${doomed.toLocaleString()} of ${counted.toLocaleString()} rows${clearAll ? " (EVERYTHING)" : " (traffic that was never a customer)"}.`);
+  const { rows: [{ n: doomed }] } = where
+    ? await pool.query(`SELECT COUNT(*)::int AS n FROM analytics_events WHERE ${where}`, params)
+    : await pool.query(`SELECT COUNT(*)::int AS n FROM analytics_events`);
+
+  console.log(`\nAbout to delete ${doomed.toLocaleString()} of ${counted.toLocaleString()} rows${label}.`);
   if (clearAll) {
     console.log("Every previous-period comparison on the dashboard will read 'nothing in either period' afterwards.");
   }
@@ -97,9 +133,9 @@ try {
     process.exit(0);
   }
 
-  const res = clearAll
-    ? await pool.query(`DELETE FROM analytics_events`)
-    : await pool.query(`DELETE FROM analytics_events WHERE ${NOT_A_CUSTOMER}`, [origins]);
+  const res = where
+    ? await pool.query(`DELETE FROM analytics_events WHERE ${where}`, params)
+    : await pool.query(`DELETE FROM analytics_events`);
   console.log(`Deleted ${res.rowCount.toLocaleString()} rows. Archive kept at ${file}`);
 } catch (err) {
   console.error("Failed:", err.message, "\nNothing was deleted.");

@@ -620,7 +620,13 @@ export interface MetaPixelContent {
   pixel_id: string;
   /** Load the pixel only once the visitor has accepted cookies. Keep this on. */
   require_consent: boolean;
-  /** Don't load the pixel at all on the shop's own browsers. */
+  /**
+   * Don't load the pixel on a copy of the shop running on a developer's machine.
+   *
+   * Localhost, NOT "the owner's browser" — a visit to the live site is a real
+   * visit whoever made it. See the header of src/lib/meta.ts for why that trade
+   * was made and what it costs.
+   */
   exclude_internal: boolean;
   /** Mirror the shopping funnel (ViewContent, AddToCart, Purchase…) to Meta. */
   track_ecommerce: boolean;

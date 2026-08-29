@@ -1,4 +1,7 @@
 import { createHash } from "crypto";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import path from "path";
 import { describe, it, expect } from "vitest";
 import {
   metaPixelId, metaBrowserId, metaTestCode, metaUserData,
@@ -39,6 +42,24 @@ describe("what the API will accept as an identifier", () => {
     for (const bad of ["act_1234567890123456", "1234567890", "", null, 1234567890123456]) {
       expect(metaPixelId(bad)).toBeNull();
     }
+    // A leading zero is not a pixel id: fbevents.js refuses one outright — see
+    // PIXEL_ID_RE in src/lib/meta.ts, where the observation is written down.
+    for (const bad of ["000000000000001", "0123456789012345"]) {
+      expect(metaPixelId(bad)).toBeNull();
+    }
+  });
+
+  it("uses the same rule the storefront does", () => {
+    // The pattern exists twice — once in TypeScript for the admin panel and the
+    // tag, once in plain JS here for the Conversions API — because this file must
+    // stay importable without the frontend build. Two copies of a rule drift, and
+    // this one drifting means the panel accepts an id the server then refuses (a
+    // pixel that browses but never sells) or the reverse. So they are compared.
+    const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const pattern = (src: string) =>
+      readFileSync(path.join(REPO, src), "utf8").match(/\/\^\[1-9\]\\d\{14,15\}\$\//g);
+    expect(pattern("src/lib/meta.ts"), "PIXEL_ID_RE not found in src/lib/meta.ts").toBeTruthy();
+    expect(pattern("backend/metaCapi.js"), "metaPixelId's pattern not found in backend/metaCapi.js").toBeTruthy();
   });
 
   it("takes Meta's own cookie format, and refuses anything shaped differently", () => {

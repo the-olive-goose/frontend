@@ -15,10 +15,15 @@
 import crypto from 'crypto';
 import { countryByName } from './addressRules.js';
 
-// A pixel id is a plain 15- or 16-digit number. The cookies are Meta's own
-// `fb.<subdomainIndex>.<timestamp>.<payload>` format — neither passes
-// ANALYTICS_ID_RE, so they get their own guards rather than a loosened shared one.
-const metaPixelId = (v) => (typeof v === 'string' && /^\d{15,16}$/.test(v.trim()) ? v.trim() : null);
+// A pixel id is 15 or 16 digits and never starts with a zero — the same rule as
+// PIXEL_ID_RE in src/lib/meta.ts, where the wire observation behind it is written
+// down (fbevents.js answers a leading-zero id with `Invalid PixelID: null` and
+// sends nothing). Kept in step by src/lib/metaCapi.test.ts.
+//
+// The cookies are Meta's own `fb.<subdomainIndex>.<timestamp>.<payload>` format —
+// neither passes ANALYTICS_ID_RE, so they get their own guards rather than a
+// loosened shared one.
+const metaPixelId = (v) => (typeof v === 'string' && /^[1-9]\d{14,15}$/.test(v.trim()) ? v.trim() : null);
 const metaBrowserId = (v) => (typeof v === 'string' && /^fb\.\d\.\d{1,20}\.[A-Za-z0-9_-]{1,400}$/.test(v) ? v : null);
 // Uppercased on the way through. Events Manager always writes the code as
 // `TEST12345`, and an owner who retypes it in lower case would otherwise have

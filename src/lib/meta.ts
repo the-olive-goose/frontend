@@ -10,34 +10,66 @@
 // FOUR THINGS MUST ALL BE TRUE before a single byte reaches Meta:
 //   1. the owner enabled it in Admin → Analytics → Meta Pixel,
 //   2. a pixel id that looks like one is saved,
-//   3. this browser isn't the shop's own (see isInternalBrowser / isAdminBrowser),
+//   3. this is the real shop and not a copy of it running on a developer's
+//      machine (see isDevelopmentOrigin),
 //   4. the visitor accepted cookies — unless the owner deliberately turned that
 //      requirement off.
 //
-// (3) is stricter here than it is first-party, for the same reason it is
-// stricter for GA4: our own pipeline can mark the owner's visits internal and
-// filter them out afterwards, but a hit that has reached Meta has reached Meta.
-// So the pixel simply never loads on the shop's own devices. Nothing to clean
-// up later, which is the point — and it matters more here than anywhere, because
-// these events also train ad delivery. An owner who browses their own shop every
-// morning teaches Meta to find more people like the owner.
+// (3) IS ABOUT LOCALHOST, NOT ABOUT WHOSE BROWSER IT IS, and that is a change of
+// mind worth recording. It used to exclude any browser that had opened the admin
+// panel — but a visit to theolivegoose.ie is a real visit whoever made it, and
+// the old rule meant the owner could never see their own pixel working on their
+// own site, which cost a day of debugging something that was never broken.
+//
+// What it still catches is the case that genuinely poisons the data: the copy of
+// the shop a developer runs locally, which seeds its content from production and
+// therefore carries the real pixel id. Five such events reached the live pixel
+// before this guard existed. It matters more here than anywhere else, because
+// these events do not merely get counted — they teach Meta who to show the ads
+// to, and a week of reloading a checkout under debug teaches it to go looking
+// for more people doing that.
+//
+// The cost of the trade, stated plainly: the owner's own browsing of the live
+// shop now reaches Meta, and unlike GA4 — which tags such hits `traffic_type:
+// 'internal'` so they can be filtered afterwards — META HAS NO SUCH LEVER. A hit
+// that has reached the pixel has reached it. That is judged acceptable because
+// the volume is negligible against real traffic and because Meta's numbers are
+// not the ones anybody reports; the shop's own first-party analytics, which do
+// still exclude the owner, are.
 //
 // (4) is not optional in the EU in the way it is arguable for first-party
 // measurement. The Meta Pixel is a third-party advertising tag: it writes
 // identifiers, it is used for cross-site profiling, and no first-party
 // audience-measurement exemption stretches to cover it. It loads after Accept.
 //
-// PURCHASES ARE NOT SENT FROM HERE. When Stripe confirms payment the shopper is
-// on Stripe's domain and may never come back; the sale is reported to Meta's
-// Conversions API by the server (reportPurchaseToMeta in backend/index.js). The
-// browser's only contribution is the pair of cookies it forwards at checkout —
-// see getMetaIds — which is what lets that server-side sale be matched to the
-// person who clicked the ad.
+// THE PURCHASE IS SENT TWICE, ON PURPOSE, AND COUNTED ONCE. This is Meta's own
+// "redundant setup" and it is what every mature ecommerce pixel does:
+//
+//   - the SERVER sends it (reportPurchaseToMeta in backend/index.js) the moment
+//     Stripe confirms payment. That copy is the one that cannot be missed: by
+//     then the shopper is on Stripe's domain and whether they ever come back is
+//     not something a shop's ad reporting may depend on. It also survives an ad
+//     blocker and a browser that refuses third-party scripts outright.
+//   - the BROWSER sends it (mirrorMetaPurchase, called from the success page)
+//     when the shopper does come back. That copy is the one that survives the
+//     server's own failures — an access token that expired, was revoked, or was
+//     never set — which is the failure mode with nothing to announce it, because
+//     Meta is never asked and so never complains.
+//
+// Both carry the SAME `eventID`, `order-<order id>`, which is exactly how Meta is
+// told they are one sale: it deduplicates on event name + event id, keeps the
+// first to arrive, and enriches it from the second. Get that string wrong on
+// either side and the shop's revenue doubles in Events Manager, so the two are
+// pinned to each other by test rather than by memory (see meta.test.ts).
+//
+// The browser also contributes the pair of cookies it forwards at checkout — see
+// getMetaIds — which is what lets the server-side copy be matched to the person
+// who clicked the ad.
 
 import {
-  onTrack, isInternalBrowser, isAdminBrowser, getVisitorId, type EventType,
+  onTrack, isDevelopmentOrigin, getVisitorId, type EventType,
 } from './analytics';
-import { cookiesAccepted } from './cookieConsent';
+import { cookieBannerAnswered, cookiesAccepted } from './cookieConsent';
 import type { MetaPixelContent } from './defaults';
 
 const CURRENCY = 'EUR';
@@ -48,15 +80,27 @@ const SCRIPT_SRC = 'https://connect.facebook.net/en_US/fbevents.js';
 const FBCLID_KEY = 'og_meta_fbclid';
 
 /**
- * A Meta Pixel id: a plain number, 15 or 16 digits.
+ * A Meta Pixel id: 15 or 16 digits, AND IT CANNOT START WITH A ZERO.
  *
  * Narrow on purpose. The three things an owner is likely to paste here instead
  * are an ad account id (`act_123…`), a Business Manager id, or the whole install
  * snippet — and every one of them fails this, which is the difference between a
  * panel that says "that isn't a pixel id" and a pixel that silently measures
  * nothing for a fortnight.
+ *
+ * THE LEADING ZERO IS NOT PEDANTRY, it is the exact failure above. This was
+ * `/^\d{15,16}$/`, which accepts `000000000000001` — and fbevents.js does not.
+ * Loaded with such an id it logs `[Meta Pixel] - Invalid PixelID: null`, never
+ * requests the pixel's config, discards every queued call and sends nothing,
+ * ever. Observed against the live library, not reasoned about: a valid-shaped id
+ * fetches `connect.facebook.net/signals/config/<id>` within a second, and one
+ * with a leading zero fetches nothing at all.
+ *
+ * Meta issues ids from a counter, so a real one never starts with zero. Without
+ * this the admin panel would tick "Pixel ID saved ✓" over a pixel that could not
+ * load — the one failure this shop's measurement is least able to notice.
  */
-export const PIXEL_ID_RE = /^\d{15,16}$/;
+export const PIXEL_ID_RE = /^[1-9]\d{14,15}$/;
 
 export const isPixelId = (id: string): boolean => PIXEL_ID_RE.test(id.trim());
 
@@ -95,7 +139,7 @@ export type MetaBlockedReason =
   | 'disabled'
   | 'no_pixel_id'
   | 'bad_pixel_id'
-  | 'internal_browser'
+  | 'development_origin'
   | 'admin_path'
   | 'prerendering'
   | 'awaiting_consent'
@@ -104,8 +148,8 @@ export type MetaBlockedReason =
 export const META_BLOCKED_COPY: Record<MetaBlockedReason, string> = {
   disabled: 'Turned off — nothing is sent to Meta.',
   no_pixel_id: 'No pixel ID saved yet.',
-  bad_pixel_id: "That isn't a Meta Pixel ID (they're a 15- or 16-digit number).",
-  internal_browser: "This browser is the shop's own, so the pixel never loads here. That's deliberate — your own visits stay out of Meta's numbers, and out of what it learns about who to show your ads to.",
+  bad_pixel_id: "That isn't a Meta Pixel ID (15 or 16 digits, never starting with a zero).",
+  development_origin: 'This is a copy of the site running on localhost, so the pixel never loads here. The live shop always reports — a visit to it is a real visit, whoever made it.',
   admin_path: 'The admin panel is never measured.',
   prerendering: 'The browser is speculatively loading this page — it is not a visit until someone looks at it.',
   awaiting_consent: 'Waiting for this visitor to answer the cookie banner.',
@@ -135,13 +179,25 @@ export const metaBlockedReason = (
   // looks exactly like a real visitor who left immediately.
   if (isPrerendering()) return 'prerendering';
 
-  if (settings.exclude_internal && (isInternalBrowser() || isAdminBrowser())) return 'internal_browser';
+  // Same rule as the GA4 tag, and for the same reason: the live shop is trade,
+  // localhost is work. A flag on the owner's browser used to gate this, which
+  // meant opening the admin panel once stopped the Pixel firing for them on the
+  // real site for good.
+  if (settings.exclude_internal && isDevelopmentOrigin()) return 'development_origin';
 
   if (settings.require_consent && !opts.ignoreConsent) {
     if (!cookiesAccepted()) {
       // Not yet answered vs. answered "no" are different states to the owner:
       // one resolves itself, the other never will for this visitor.
-      return readAnswered() ? 'consent_declined' : 'awaiting_consent';
+      //
+      // cookieConsent's own reader, not a second copy of it. This read the
+      // `og_cookie_consent` key directly, which answers "there is a value in
+      // storage" — a different question. A choice older than CONSENT_TTL_MS has
+      // expired and the visitor is due to be asked again, and only
+      // cookieBannerAnswered knows that, so a "declined" from eight months ago
+      // reported itself here as a settled no rather than the "we are about to ask
+      // them again" it actually is.
+      return cookieBannerAnswered() ? 'consent_declined' : 'awaiting_consent';
     }
   }
   return null;
@@ -150,10 +206,6 @@ export const metaBlockedReason = (
 const isPrerendering = () =>
   typeof document !== 'undefined' &&
   (document as Document & { prerendering?: boolean }).prerendering === true;
-
-const readAnswered = (): boolean => {
-  try { return localStorage.getItem('og_cookie_consent') !== null; } catch { return false; }
-};
 
 // ── The pixel ──────────────────────────────────────────────────────────────────
 
@@ -353,6 +405,9 @@ export const configureMetaPixel = (settings: MetaPixelContent): MetaBlockedReaso
     // which for the awaiting-consent case is the entire point.
     settled = true;
     pending.length = 0;
+    // Including the sale. A visitor who declined cookies does not get their
+    // purchase sent to Meta a moment later because the tag settled after it.
+    pendingPurchase = null;
     return blocked;
   }
 
@@ -416,6 +471,12 @@ const flushPending = () => {
   settled = true;
   const held = pending.splice(0, pending.length);
   for (const [type, props, path] of held) send(type, props, path);
+  // The sale last, so it lands after the browsing that produced it. Cleared
+  // before sending so a throw inside cannot leave it to be replayed twice — the
+  // reportedOrders guard would catch that anyway, and both together is the point.
+  const purchase = pendingPurchase;
+  pendingPurchase = null;
+  if (purchase) sendPurchase(purchase);
 };
 
 /**
@@ -429,6 +490,12 @@ export const applyMetaPixelConsent = (settings: MetaPixelContent, accepted: bool
   if (!accepted) {
     if (loadedId) fbq('consent', 'revoke');
     active = null;
+    // The same forget configureMetaPixel performs when it blocks, and for the
+    // same reason: whatever page this visit resumes on has to be reportable. Left
+    // set, a pixel that came back while the shopper was still standing on the
+    // page it was switched off on would dedupe its own resumed landing page away
+    // and the resumed visit would have no PageView at all.
+    lastPageViewPath = null;
     settled = true;
     pending.length = 0;
     return;
@@ -443,6 +510,9 @@ export const resetMetaPixelForTests = () => {
   lastPageViewPath = null;
   settled = false;
   pending.length = 0;
+  pendingPurchase = null;
+  reportedOrders.clear();
+  arrivalFbclid = readFbclid();
   userData = {};
   delete window.fbq;
   delete window._fbq;
@@ -513,6 +583,15 @@ export interface MetaEvent {
   params: Record<string, unknown>;
   /** `trackCustom` rather than `track` — see STANDARD_EVENTS. */
   custom?: boolean;
+  /**
+   * The id Meta deduplicates on, when it has to AGREE with something else.
+   *
+   * Only the Purchase sets this, because only the Purchase is sent twice — see
+   * the header. Everything else gets a fresh random one, which is right: an id
+   * shared by two events that are not the same event silently deletes one of
+   * them.
+   */
+  eventId?: string;
 }
 
 /**
@@ -608,7 +687,21 @@ export const toMetaEvent = (
       // submit with a non-empty term, so this is belt and braces — but the
       // belt is what keeps a future call site from putting blanks in there.
       const term = str(props.query);
-      return term ? { name: 'Search', params: { search_string: term } } : null;
+      if (!term) return null;
+      // The products the search actually turned up, so "searched for something we
+      // sell" is a retargetable audience rather than a bare string. Ids only —
+      // there is no basket here, so no quantity and no value to state, and Meta
+      // reads `contents` without `item_price` as a set of worthless products.
+      const found = Array.isArray(props.result_ids)
+        ? props.result_ids.filter((v): v is string => typeof v === 'string' && !!v).slice(0, 10)
+        : [];
+      return {
+        name: 'Search',
+        params: {
+          search_string: term,
+          ...(found.length ? { content_type: 'product', content_ids: found } : {}),
+        },
+      };
     }
 
     case 'signup':
@@ -674,14 +767,14 @@ const send = (type: EventType, props: Record<string, unknown>, _path: string) =>
  * has been running without them is how a shop ends up counting the same
  * conversion twice for a fortnight before anyone notices.
  */
-const emit = ({ name, params, custom }: MetaEvent) => {
+const emit = ({ name, params, custom, eventId }: MetaEvent) => {
   // `eventID` is the ONLY key fbevents.js documents for this fourth argument, and
   // it is the only one passed. The owner's Test Events code is deliberately not
   // smuggled in here: it is a Conversions API parameter, browser events are
   // tested through Events Manager's own "Test browser events" box instead, and
   // handing a third-party library an undocumented option to see what it does
   // with it is not a thing to do to a live shop's measurement.
-  fbq(custom ? 'trackCustom' : 'track', name, params, { eventID: newEventId() });
+  fbq(custom ? 'trackCustom' : 'track', name, params, { eventID: eventId ?? newEventId() });
 };
 
 /**
@@ -712,6 +805,133 @@ export const mirrorMetaPageView = (path: string) => {
   if (path === lastPageViewPath) return;
   lastPageViewPath = path;
   emit({ name: 'PageView', params: {} });
+};
+
+/**
+ * The id both halves of a purchase use, and the reason neither is counted twice.
+ *
+ * `order-<id>` — the same string backend/index.js stamps on the Conversions API
+ * copy (`event_id: `order-${order.id}``). Meta deduplicates on event name + event
+ * id, so the two arrive as one sale. There is no error for getting this wrong:
+ * the shop's revenue simply doubles in Events Manager and in every campaign
+ * report built on it. meta.test.ts reads the backend source and pins the two
+ * together, because a constant that has to match a string in another language in
+ * another file will not stay matched on its own.
+ */
+export const metaPurchaseEventId = (orderId: string) => `order-${orderId}`;
+
+/** One line of a finished order, as the success page has it. */
+export interface MetaPurchaseItem {
+  product_id?: unknown;
+  quantity?: unknown;
+  price?: unknown;
+}
+
+export interface MetaPurchase {
+  orderId: string;
+  /** The order total, as charged. A string ("29.99") is fine — it is parsed. */
+  total: unknown;
+  items: MetaPurchaseItem[];
+}
+
+/** Orders this page has already reported, so a refresh or a re-render can't repeat one. */
+const reportedOrders = new Set<string>();
+
+/**
+ * Report a completed order from the BROWSER, as the redundant half of the sale.
+ *
+ * Called by the success page once the order exists — see the header for why the
+ * purchase is sent from both ends. Everything about it is deliberately the same
+ * as the server's copy: the same event id, the same currency, the same rounding,
+ * the same `contents` shape. Where the two disagree, Meta believes the first one
+ * to arrive and the difference becomes invisible.
+ *
+ * Silent — and correctly so — when the pixel is not live for this shopper: it is
+ * off, they declined, or this is the shop's own browser. The server's copy is
+ * gated on the same permission via `meta_consent`, so a sale is either reported
+ * by both halves or by neither.
+ */
+/**
+ * A purchase that arrived before the pixel had finished booting.
+ *
+ * ONE SLOT, AND IT IS NOT THE SAME AS THE EVENT BUFFER ABOVE. Ordinary events
+ * are held in a capped queue and are allowed to be dropped once the answer is
+ * "this pixel may not run". A purchase gets its own slot because there is only
+ * ever one in flight and because losing it is not the same class of loss: it is
+ * the sale.
+ *
+ * DEFENSIVE, NOT A FIX FOR AN OBSERVED FAILURE — and the distinction is recorded
+ * because it was briefly got wrong. An earlier reading of the e2e output had this
+ * sale being dropped on the success page; it was not. fbevents.js sends a
+ * Purchase as a POST (the basket and eleven matching fields are too long for a
+ * URL) and the test's decoder read only the query string, so it was blind to the
+ * one event it most needed to see. The sale was firing the whole time.
+ *
+ * What remains true is that this function had no buffer while every other event
+ * did, so a purchase arriving before the pixel booted would be dropped rather
+ * than held. Today that window is not reachable — the success page's poll and the
+ * pixel's boot are both gated on the same signed-in session, so neither can run
+ * first — but it is one refactor away from becoming reachable, and the cost of
+ * being wrong is the sale. The server's copy carries the same event id, so a
+ * replay can never double-count; the worst this can do is send a Purchase Meta
+ * already has.
+ */
+let pendingPurchase: MetaPurchase | null = null;
+
+/** Send one purchase. Assumes the pixel is live; mirrorMetaPurchase decides that. */
+const sendPurchase = (order: MetaPurchase) => {
+  if (!active || !active.track_ecommerce) return;
+
+  const id = String(order.orderId || '');
+  if (!id || reportedOrders.has(id)) return;
+
+  // No value, no event. A Purchase Meta cannot price is not a smaller signal than
+  // a priced one — it is a conversion with no revenue against it, which drags the
+  // shop's reported ROAS down every time it happens and looks like a real sale
+  // that earned nothing.
+  const value = num(order.total);
+  if (value === undefined) return;
+
+  reportedOrders.add(id);
+
+  const items = Array.isArray(order.items) ? order.items : [];
+  const contents = items.map((i) => content({
+    product_id: i.product_id,
+    quantity: i.quantity,
+    price: i.price,
+  }));
+
+  emit({
+    name: 'Purchase',
+    eventId: metaPurchaseEventId(id),
+    params: {
+      currency: CURRENCY,
+      value: +value.toFixed(2),
+      content_type: 'product',
+      content_ids: contents.map((c) => c.id as string),
+      contents,
+      num_items: items.reduce((sum, i) => sum + (num(i.quantity) ?? 1), 0),
+      // Meta's own reporting shows this, so a conversion in Events Manager can be
+      // traced back to a row in the orders table without guessing from a clock.
+      order_id: id,
+    },
+  });
+};
+
+/**
+ * Report a completed sale from the browser.
+ *
+ * Held rather than dropped when the pixel has not booted yet — see
+ * pendingPurchase. `settled` is what keeps that honest: once it is known that the
+ * pixel may NOT run (consent declined, switched off, the shop's own machine),
+ * nothing is held and nothing is replayed, which is what "blocked" has to mean.
+ */
+export const mirrorMetaPurchase = (order: MetaPurchase) => {
+  if (!active) {
+    if (!settled) pendingPurchase = order;
+    return;
+  }
+  sendPurchase(order);
 };
 
 /**
@@ -748,6 +968,22 @@ const readCookie = (name: string): string | undefined => {
   return hit ? decodeURIComponent(hit.slice(prefix.length)) : undefined;
 };
 
+const readFbclid = (): string | null => {
+  try { return new URLSearchParams(window.location.search).get('fbclid'); }
+  catch { return null; }
+};
+
+/**
+ * The click id THIS DOCUMENT WAS OPENED WITH, read at import and held in memory.
+ *
+ * Read here rather than where it is used because by then it is usually gone. See
+ * rememberClickId.
+ *
+ * `let` only so that resetMetaPixelForTests can re-read it, which is how a test
+ * says "a fresh document loaded at this URL". Nothing else ever assigns it.
+ */
+let arrivalFbclid: string | null = typeof window === 'undefined' ? null : readFbclid();
+
 /**
  * Keep the click id from the ad that brought this visitor, if there was one.
  *
@@ -755,18 +991,37 @@ const readCookie = (name: string): string | undefined => {
  * cookie is what the Conversions API needs to credit the sale back to the ad
  * that earned it. But the cookie is a first-party cookie set from script, which
  * Safari's ITP caps at SEVEN DAYS — and a shopper who clicks an ad, thinks about
- * a €60 candle for a fortnight and then buys is exactly the journey a shop most
- * wants to see attributed. So the click id is also kept where a longer-lived
+ * a EUR 60 candle for a fortnight and then buys is exactly the journey a shop
+ * most wants to see attributed. So the click id is also kept where a longer-lived
  * store can hold it, in Meta's own `fb.<subdomainIndex>.<timestamp>.<fbclid>`
  * format, and used only as a fallback for a missing cookie.
  *
  * Only ever called from configureMetaPixel, i.e. only when the pixel is
  * permitted to run at all — so nothing is stored about a visitor who declined.
+ *
+ * WHICH IS WHY THE CURRENT URL IS NOT ENOUGH. By the time the pixel is permitted
+ * the `?fbclid=` the visitor arrived with is very often gone: consent is
+ * required, so this first runs when the banner is answered, and a shopper who
+ * lands from an ad and opens a product before answering it has already had the
+ * query string replaced by the router. fbevents.js is no help either — it reads
+ * the URL at init, which is that same late moment. The click that earned the sale
+ * would then be attributed to nothing at all, and the failure is invisible: the
+ * Purchase still reaches Meta, still matches the person, and is simply credited
+ * to no campaign. Hence arrivalFbclid, captured while the document was still the
+ * one the ad linked to. Memory is not storage — nothing is written, and nothing
+ * survives the tab, until this function is reached and the pixel is permitted.
  */
 const rememberClickId = () => {
+  const fbclid = readFbclid() ?? arrivalFbclid;
+  if (!fbclid) return;
   try {
-    const fbclid = new URLSearchParams(window.location.search).get('fbclid');
-    if (!fbclid) return;
+    // ALREADY KEPT? LEAVE THE TIMESTAMP ALONE. It is the moment of the CLICK, and
+    // Meta reads it as such — it is how an `fbc` is aged against the attribution
+    // window. configureMetaPixel runs again on every settings change and again on
+    // consent, so re-stamping here would walk the click forward through the visit
+    // and file a Tuesday's ad click under Friday.
+    const held = localStorage.getItem(FBCLID_KEY);
+    if (held && held.endsWith(`.${fbclid}`)) return;
     // subdomainIndex 1 = the registrable domain (`theolivegoose.ie`), which is
     // where fbevents.js sets the cookie and therefore what Meta expects to see.
     localStorage.setItem(FBCLID_KEY, `fb.1.${Date.now()}.${fbclid}`);

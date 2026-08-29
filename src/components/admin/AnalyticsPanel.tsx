@@ -5,11 +5,9 @@ import {
 } from "recharts";
 import {
   getAdminAnalytics, getAdminAnalyticsLive,
-  getAnalyticsInternal, saveAnalyticsInternal, setAnalyticsInternalBrowser,
   getAnalyticsSessions, setAnalyticsInternalVisitor,
-  type AnalyticsOverview, type AnalyticsLive, type AnalyticsInternal, type AnalyticsSession,
+  type AnalyticsOverview, type AnalyticsLive, type AnalyticsSession,
 } from "@/lib/api";
-import { getVisitorId, isAdminBrowser, isInternalBrowser, setInternalBrowser, INTERNAL_MARK_PARAM } from "@/lib/analytics";
 
 // ── Chart colors ────────────────────────────────────────────────────────────────
 // Validated with the dataviz palette checker against the admin card surface
@@ -406,298 +404,49 @@ const fmtRange = (start: string, end: string) => {
 };
 
 // ── Whose visits count ──────────────────────────────────────────────────────────
-// The honest caveat on every visitor number: a "visitor" is an id in a browser's
-// localStorage, so the same person is a new visitor on a new device, in a private
-// window, or after clearing site data — and testing the shop means doing all
-// three. Without a way to say "that was me", an hour of the owner's own testing
-// reads as a small rush of shoppers.
+// One rule, and it is the address bar.
 //
-// Both controls key on the visitor, so switching either on removes what that
-// browser or account already sent, not just what it sends next.
-const InternalTraffic = ({ onChanged }: { onChanged: () => void }) => {
-  const [state, setState] = useState<AnalyticsInternal | null>(null);
-  const [thisBrowser, setThisBrowser] = useState(isInternalBrowser);
-  // A browser signed in to the admin panel is the shop's by definition, and says
-  // so however the toggle is set — see isAdminBrowser. Read once per mount:
-  // whether this device administers the shop does not change mid-screen.
-  const [adminBrowser] = useState(isAdminBrowser);
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState("");
-
-  useEffect(() => {
-    getAnalyticsInternal().then(setState).catch(() => setNote("Couldn't load these settings."));
-  }, []);
-
-  // The patch shape is the API function's, not a narrower copy of it: this had
-  // dropped `visitor_id`, which the call below passes and the API and backend
-  // both honour. It reached the server anyway — an excess property survives at
-  // runtime — so the only symptom was a type error saying the field could not
-  // be sent when in fact it was.
-  const save = async (patch: Parameters<typeof saveAnalyticsInternal>[0], message: string) => {
-    setBusy(true);
-    try {
-      const saved = await saveAnalyticsInternal(patch);
-      setState(s => (s ? {
-        ...s, emails: saved.emails, networks: saved.networks,
-        current_ip_excluded: saved.networks.includes(s.current_ip),
-      } : s));
-      setNote(message);
-      // Refetch the figures above rather than asking the reader to. A setting
-      // whose effect only appears after a manual reload reads as one that did
-      // nothing, which is how the owner ends up pressing it twice.
-      onChanged();
-    } catch {
-      setNote("Couldn't save that.");
-    } finally { setBusy(false); }
-  };
-
-  const saveEmails = (emails: string[]) =>
-    save({ emails }, "Saved. Everything these accounts have ever browsed is out of the numbers above — including before today.");
-
-  const toggleBrowser = async () => {
-    const next = !thisBrowser;
-    setBusy(true);
-    try {
-      // Server first: the flag below only stops FUTURE batches, while this is
-      // what retires the events this browser has already sent.
-      await setAnalyticsInternalBrowser(getVisitorId(), next);
-      setInternalBrowser(next);
-      setThisBrowser(next);
-      setNote(next
-        ? "This browser no longer counts as a shopper, including what it recorded before now."
-        : adminBrowser
-          ? "Cleared — but this browser is signed in to the admin panel, so it still doesn't count. Sign out of admin here to have it counted as a shopper."
-          : "This browser counts as a shopper again.");
-      onChanged();
-    } catch {
-      setNote("Couldn't update this browser.");
-    } finally { setBusy(false); }
-  };
-
-  // Built from the origin the admin panel is being served from, which is the
-  // storefront's own — the marker only means anything on the site it marks.
-  const markLink = `${window.location.origin}/?${INTERNAL_MARK_PARAM}=1`;
-  const [copied, setCopied] = useState(false);
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(markLink);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard access can be refused outright. The link is on screen in full
-      // and selectable, so this is a missing convenience rather than a dead end.
-      setNote("Couldn't copy — select the link and copy it by hand.");
-    }
-  };
-
-  const strayOrigins = (state?.origins_seen ?? []).filter(
-    o => o.origin !== "(not recorded)" && !state?.counted_origins.includes(o.origin)
-  );
-
-  return (
-    <Card title="Whose visits count" desc="Keep the shop's own testing out of the numbers">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div className="max-w-md">
-          <p className="font-sans text-sm font-semibold text-foreground">This browser</p>
-          <p className="font-sans text-[11px] text-muted-foreground mt-1">
-            {/* The admin signal comes first because it is the one that needed no
-                setting up and holds when the others don't: it lives in this
-                browser's own storage, so a VPN, mobile data or a broadband
-                address change cannot defeat it the way they defeat a rule that
-                matches on where a visit arrived from. */}
-            {adminBrowser
-              ? "Not counted, automatically — you're signed in to the admin panel on this browser, so it's the shop's, wherever it appears to be browsing from."
-              : thisBrowser
-                ? "Not counted. Anything it browses is treated as your own testing."
-                : "Counted as a shopper. Turn this on for any browser you test the shop in."}
-            {" "}
-            {adminBrowser
-              ? "Every device you've opened this panel on excludes itself the same way, and keeps doing so after you sign out."
-              : "Clearing this browser's site data forgets the setting."}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={toggleBrowser}
-          disabled={busy}
-          className="font-sans text-xs px-3 py-2 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 min-h-[44px]"
-        >
-          {thisBrowser ? "Count this browser again" : "Don't count this browser"}
-        </button>
-      </div>
-
-      {/* The last device nothing automatic can reach: a household phone that has
-          never opened this panel, never signs in, and is out of the house on
-          mobile data when it looks at the shop. From the outside it is a
-          stranger, and no rule that catches it would spare real shoppers — so it
-          is marked once, by hand, by opening a link. */}
-      <div className="mt-5 pt-5 border-t border-border">
-        <p className="font-sans text-sm font-semibold text-foreground">Your other devices</p>
-        <p className="font-sans text-[11px] text-muted-foreground mt-1">
-          Open this link once on any phone, tablet or laptop and it stops counting for good — no
-          sign-in, no password, nothing to remember. It's the way to cover a device that isn't
-          always on your wifi, which is also the one your wifi setting below can't catch.
-        </p>
-        <div className="flex gap-2 mt-3 items-center flex-wrap">
-          <code className="font-mono text-[11px] text-foreground break-all flex-1 min-w-0 px-2 py-2 rounded-md border border-border bg-background">
-            {markLink}
-          </code>
-          <button
-            type="button"
-            onClick={copyLink}
-            className="font-sans text-xs px-3 py-2 rounded-md border border-border bg-background hover:bg-muted shrink-0 min-h-[44px]"
-          >
-            {copied ? "Copied" : "Copy link"}
-          </button>
-        </div>
-        <p className="font-sans text-[11px] text-muted-foreground mt-2">
-          Safe to send by message or email: the only thing it can do is take the visits of whoever
-          opens it out of the count. Add <span className="font-mono">?{INTERNAL_MARK_PARAM}=0</span>{" "}
-          to a page on that device to undo it.
-        </p>
-      </div>
-
-      {/* The broadest signal, and the only one that covers someone else in the
-          house without them doing anything at all: a home connection is one
-          address for every device on it, so this catches phones and tablets that
-          never sign in and never open admin — as long as they are on the wifi. */}
-      <div className="mt-5 pt-5 border-t border-border">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="max-w-md">
-            <p className="font-sans text-sm font-semibold text-foreground">Your network</p>
-            <p className="font-sans text-[11px] text-muted-foreground mt-1">
-              {/* Blank means the request didn't come through the live site's edge,
-                  which is the only thing that can tell one visitor's network from
-                  another. Saying so beats offering a button that would store a
-                  loopback or proxy address and quietly protect nothing. */}
-              {!state?.current_ip
-                ? <>Your network can't be identified from here — this only works on the live shop at its real address, not on a local or preview copy. Open the admin there to exclude your wifi.</>
-                : state.current_ip_excluded
-                  ? <>You're on <span className="font-mono">{state.current_ip}</span>, which is already excluded — every device on it, for everyone in the house.</>
-                  : <>You're on <span className="font-mono">{state.current_ip}</span>. Excluding it covers every device on this wifi without anyone having to sign in. Each device drops out, and loses the visits it already recorded, the next time it loads the shop.</>}
-              {/* The honest limit of this control, stated where the owner is
-                  standing when they rely on it. It matches on the address a
-                  visit ARRIVES from, so anything that changes that address —
-                  a VPN, a phone stepping off the wifi onto mobile data, the
-                  broadband address rotating — walks straight past it, and the
-                  visit lands in the numbers looking like a stranger. */}
-              {!!state?.current_ip && <>{" "}This matches the address a visit arrives from, so it can't catch one that didn't: a VPN, or a phone on mobile data, arrives from somewhere else entirely. Home broadband addresses also change from time to time — if visits from home start counting again, add the new one here, and retire the ones that slipped through in “Recent visits” above.</>}
-            </p>
-          </div>
-          {state?.current_ip && (
-            <button
-              type="button"
-              disabled={busy}
-              // The visitor id goes with it so this browser's own past visits
-              // clear immediately; other devices on the wifi clear theirs the
-              // next time they load the shop.
-              onClick={() => (state.current_ip_excluded
-                ? save({ networks: state.networks.filter(n => n !== state.current_ip) }, "This network counts as shopper traffic again.")
-                : save({ networks: [...new Set([...state.networks, state.current_ip])], visitor_id: getVisitorId() },
-                       "Excluded. Other devices on this wifi drop out as each one next loads the shop."))}
-              className="font-sans text-xs px-3 py-2 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 min-h-[44px]"
-            >
-              {state.current_ip_excluded ? "Count this network again" : "Don't count this network"}
-            </button>
-          )}
-        </div>
-        {!!state?.networks.length && (
-          <ul className="mt-3 space-y-1">
-            {state.networks.map(net => (
-              <li key={net} className="flex items-center justify-between gap-3">
-                <span className="font-mono text-xs text-foreground break-all">
-                  {net}{net === state.current_ip && <span className="font-sans text-muted-foreground"> — you're on this one</span>}
-                </span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => save({ networks: state.networks.filter(n => n !== net) }, "Removed.")}
-                  className="font-sans text-[11px] text-muted-foreground hover:text-foreground underline shrink-0"
-                >
-                  remove
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="font-sans text-[11px] text-muted-foreground mt-2">
-          No visitor's IP address is ever stored — an address is checked against this list as
-          the visit arrives and then discarded.
-        </p>
-      </div>
-
-      <div className="mt-5 pt-5 border-t border-border">
-        <p className="font-sans text-sm font-semibold text-foreground">Your own accounts</p>
-        <p className="font-sans text-[11px] text-muted-foreground mt-1">
-          Anything one of these accounts has ever browsed is out of the numbers — not just from
-          its next visit, but everything already recorded, including the anonymous page views
-          either side of each sign-in. So a test checkout stops counting from its first page
-          view rather than from the moment you signed in.
-        </p>
-        <ul className="mt-3 space-y-1">
-          {(state?.emails ?? []).map(email => (
-            <li key={email} className="flex items-center justify-between gap-3">
-              <span className="font-sans text-xs text-foreground break-all">{email}</span>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => saveEmails((state?.emails ?? []).filter(e => e !== email))}
-                className="font-sans text-[11px] text-muted-foreground hover:text-foreground underline shrink-0"
-              >
-                remove
-              </button>
-            </li>
-          ))}
-          {state && !state.emails.length && (
-            <li className="font-sans text-xs text-muted-foreground">No accounts excluded.</li>
-          )}
-        </ul>
-        <div className="flex gap-2 mt-3">
-          <input
-            type="email"
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            placeholder="you@example.com"
-            className="flex-1 min-w-0 font-sans text-base sm:text-xs px-3 py-2 rounded-md border border-border bg-background"
-          />
-          <button
-            type="button"
-            disabled={busy || !draft.includes("@")}
-            onClick={() => { saveEmails([...new Set([...(state?.emails ?? []), draft.toLowerCase().trim()])]); setDraft(""); }}
-            className="font-sans text-xs px-3 py-2 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 shrink-0 min-h-[44px]"
-          >
-            Add
-          </button>
-        </div>
-      </div>
-
-      {/* The other way one person becomes several: localStorage is per-origin, so
-          the same shop on a second hostname mints a second visitor for everyone
-          who opens it. Ingestion already refuses those, but seeing them is what
-          explains a historic count that looks too high. */}
-      {!!strayOrigins.length && (
-        <div className="mt-5 pt-5 border-t border-border">
-          <p className="font-sans text-sm font-semibold text-foreground">Other addresses seen</p>
-          <p className="font-sans text-[11px] text-muted-foreground mt-1">
-            Events arrived from these in the last 90 days. They're no longer counted — only{" "}
-            {state?.counted_origins.join(" and ")} is. Each one gave every person who used it a
-            separate visitor id, so older totals include those duplicates.
-          </p>
-          <ul className="mt-2 space-y-1">
-            {strayOrigins.map(o => (
-              <li key={o.origin} className="font-sans text-xs text-muted-foreground break-all">
-                {o.origin} — {fmtInt(o.visitors)} visitor{o.visitors === 1 ? "" : "s"}, {fmtInt(o.events)} events
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {note && <p className="font-sans text-[11px] text-muted-foreground mt-4">{note}</p>}
-    </Card>
-  );
-};
+// The live shop is the live shop. Every visit to theolivegoose.ie is a real
+// visit and every payment taken there is a real sale, whoever was at the
+// keyboard. Testing happens on localhost, which is recorded under its own
+// hostname and never reaches these figures — the slicer at the top of the panel
+// is where the two are told apart.
+//
+// This card used to hold three controls that guessed instead: exclude my wifi,
+// exclude my account, mark this browser. They were wrong in the worst direction
+// and silently — the wifi rule hid everyone else in the house, the account rule
+// reached backwards through a browser's whole history, and the browser mark
+// attached itself to whatever opened the admin panel. Between them they had
+// hidden three real card payments and most of the shop's real browsing, which is
+// how the dashboard came to report revenue with no purchasing sessions and a 0%
+// conversion rate. They are gone rather than merely switched off: a control that
+// claims to exclude traffic and doesn't is worse than no control at all.
+const InternalTraffic = () => (
+  <Card
+    title="Whose visits count"
+    desc="Everything on the live shop — testing belongs on localhost"
+  >
+    <p className="font-sans text-sm text-foreground">
+      Every visit to <span className="font-semibold">theolivegoose.ie</span> counts, and every
+      payment taken there is a sale. Nothing is excluded by guessing who was behind it.
+    </p>
+    <p className="font-sans text-xs text-muted-foreground mt-3">
+      Work on the shop from <span className="font-mono">localhost</span> and it is recorded
+      separately — visible from the hostname picker at the top of this panel, and never mixed
+      into the numbers above.
+    </p>
+    <p className="font-sans text-xs text-muted-foreground mt-3">
+      If one particular visit really wasn't a shopper — a friend you asked to look, a demo on a
+      borrowed laptop — press <span className="font-semibold">This was me</span> on that row in
+      Recent visits. That is a decision about one browser, it says so on the row, and pressing
+      Count it puts it straight back.
+    </p>
+    <p className="font-sans text-xs text-muted-foreground mt-3">
+      Revenue counts every payment Stripe took and hands back what was refunded or returned, so
+      it reconciles with your Stripe dashboard to the cent. To take money out of it, refund it.
+    </p>
+  </Card>
+);
 
 // ── Recent visits ───────────────────────────────────────────────────────────────
 // The control every other one leaves a hole under.
@@ -722,10 +471,42 @@ const InternalTraffic = ({ onChanged }: { onChanged: () => void }) => {
 // Excluded visits are listed too, greyed and reversible. An exclusion nobody can
 // see is one nobody can undo, and hiding real shoppers is the one error the rest
 // of this dashboard has no way to reveal.
+// A hostname in the owner's words rather than the ingest layer's.
+//
+// "production" and "(not recorded)" are the labels the database stores. Neither
+// means anything to someone trying to work out whether a figure is their shop or
+// their laptop, which is the entire question this slicer exists to answer.
+const hostLabel = (host: string): string => {
+  if (host === "production") return "The shop (theolivegoose.ie)";
+  if (host === "localhost") return "My computer (localhost)";
+  if (host === "(not recorded)") return "Not from a browser";
+  if (host === "all") return "Everything recorded";
+  return host.replace(/^https?:\/\//, "");
+};
+
+// Why a visit is out of the numbers, in the owner's own terms.
+//
+// Without this the Retired tab is a list of visits with no stated cause, and the
+// only reading available is "the dashboard has decided these don't count". A real
+// €0.50 card payment sitting in there looks like the numbers are simply wrong —
+// when in fact it was the shop's own test purchase, made from the shop's own
+// network, and excluding it is the whole point of the feature.
+//
+// So every retirement names itself, and names the thing that would release it.
+const RETIRE_REASON: Record<string, string> = {
+  "marked from recent visits": "you retired this",
+};
+
+const retireReason = (row: AnalyticsSession): string =>
+  RETIRE_REASON[row.excluded_reason] ?? (row.excluded_reason || "retired");
+
 const RecentVisits = ({ onChanged }: { onChanged: () => void }) => {
   const [rows, setRows] = useState<AnalyticsSession[] | null>(null);
   const [days, setDays] = useState(7);
   const [only, setOnly] = useState<"all" | "counted" | "excluded">("all");
+  // "" is the server's default, PRODUCTION. Same rule as the dashboard above:
+  // the storefront on its own unless the reader asks for more.
+  const [host, setHost] = useState("");
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
@@ -733,11 +514,11 @@ const RecentVisits = ({ onChanged }: { onChanged: () => void }) => {
   useEffect(() => {
     let cancelled = false;
     setRows(null);
-    getAnalyticsSessions({ days, limit: 60, only })
+    getAnalyticsSessions({ days, limit: 60, only, host: host || undefined })
       .then(r => { if (!cancelled) { setRows(r.sessions); setError(""); } })
       .catch(() => { if (!cancelled) { setRows([]); setError("Couldn't load recent visits."); } });
     return () => { cancelled = true; };
-  }, [days, only]);
+  }, [days, only, host]);
 
   const toggle = async (row: AnalyticsSession) => {
     const next = !row.excluded;
@@ -787,6 +568,15 @@ const RecentVisits = ({ onChanged }: { onChanged: () => void }) => {
             {label}
           </button>
         ))}
+        <span className="w-px h-5 bg-border mx-1" />
+        {/* Where the visit was made — the shop, or a machine testing it. Kept as
+            pills rather than a dropdown because it is the same kind of decision
+            as Counted/Retired next to it: which visits am I looking at. */}
+        {([["", "The shop"], ["localhost", "My computer"], ["all", "Everywhere"]] as const).map(([v, label]) => (
+          <button key={v || "production"} type="button" onClick={() => setHost(v)} className={pill(host === v)}>
+            {label}
+          </button>
+        ))}
       </div>
 
       {rows === null ? (
@@ -795,7 +585,9 @@ const RecentVisits = ({ onChanged }: { onChanged: () => void }) => {
         <p className="font-sans text-xs text-muted-foreground">{error}</p>
       ) : rows.length === 0 ? (
         <p className="font-sans text-xs text-muted-foreground">
-          {only === "excluded" ? "No visits have been retired." : "No visits in this window yet."}
+          {only === "excluded" ? "No visits have been retired."
+            : host === "localhost" ? "Nothing recorded from your own machine in this window."
+            : "No visits in this window yet."}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -822,6 +614,18 @@ const RecentVisits = ({ onChanged }: { onChanged: () => void }) => {
                   <td className="py-1.5 text-foreground whitespace-nowrap">{when(r.started_at)}</td>
                   <td className="py-1.5 text-foreground">
                     {r.city}{r.country ? `, ${r.country}` : ""}
+                    {/* Only when it isn't the shop. Printing "production" on every
+                        row of a table that is production by default is noise; the
+                        one row that ISN'T is the whole reason to look. */}
+                    {r.host && r.host !== "production" && (
+                      <span className="block text-[10px] text-muted-foreground">{hostLabel(r.host)}</span>
+                    )}
+                    {/* Listed, not hidden. This table is what the figures get
+                        checked against, so a visit the dashboard left out has to
+                        appear here saying so. */}
+                    {r.automated && (
+                      <span className="block text-[10px] text-muted-foreground">automated — not counted</span>
+                    )}
                   </td>
                   <td className="py-1.5 text-foreground">{r.device}</td>
                   <td className="py-1.5 text-foreground break-all">{r.source}</td>
@@ -837,17 +641,22 @@ const RecentVisits = ({ onChanged }: { onChanged: () => void }) => {
                         itself, not by a mark on this visit, so this button
                         cannot release it. Saying so beats a control that
                         silently does nothing. */}
-                    {r.excluded && r.excluded_reason === "internal account" ? (
-                      <span className="font-sans text-[11px] text-muted-foreground">your account</span>
-                    ) : (
-                      <button
-                        type="button"
-                        disabled={busy === r.session_id}
-                        onClick={() => toggle(r)}
-                        className="font-sans text-[11px] px-2 py-1.5 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 whitespace-nowrap min-h-[36px]"
-                      >
-                        {r.excluded ? "Count it" : "This was me"}
-                      </button>
+                    {(
+                      <div className="flex flex-col items-end gap-1">
+                        <button
+                          type="button"
+                          disabled={busy === r.session_id}
+                          onClick={() => toggle(r)}
+                          className="font-sans text-[11px] px-2 py-1.5 rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50 whitespace-nowrap min-h-[36px]"
+                        >
+                          {r.excluded ? "Count it" : "This was me"}
+                        </button>
+                        {r.excluded && (
+                          <span className="font-sans text-[10px] text-muted-foreground whitespace-nowrap">
+                            {retireReason(r)}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -875,11 +684,22 @@ const AnalyticsPanel = () => {
   const [period, setPeriod] = useState<Period>(pills[1]); // default: last 30 days
   const [device, setDevice] = useState("");
   const [source, setSource] = useState("");
+  // "" means the server's default, which is PRODUCTION — the storefront on its
+  // own. Deliberately not "all": the reader has to opt in to seeing anything
+  // else, because these numbers get screenshotted.
+  const [host, setHost] = useState("");
+  // "" leaves automated visits out of every figure, which is the default. They
+  // are counted and reported either way — see the note under the period caption.
+  const [machines, setMachines] = useState("");
   const [attr, setAttr] = useState<"source" | "medium" | "campaign">("source");
   const [customOpen, setCustomOpen] = useState(false);
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
+  // Straight from the payload rather than accumulated like sourceOptions: the
+  // server builds this list ignoring the host filter, so it is already complete
+  // and does not need growing across loads.
+  const [hostOptions, setHostOptions] = useState<AnalyticsOverview["hosts"]>([]);
   const [live, setLive] = useState<AnalyticsLive | null>(null);
   const [data, setData] = useState<AnalyticsOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -888,14 +708,23 @@ const AnalyticsPanel = () => {
   // a way back that doesn't mean picking a different period and picking back.
   const [reloadKey, setReloadKey] = useState(0);
 
+  // Visits in this window that the shop's view leaves out. Read off the hostname
+  // list, which the server builds ignoring the current filter, so this is the
+  // real remainder rather than a figure derived from the filtered set.
+  const heldBack = useMemo(
+    () => (data?.hosts ?? []).filter(h => h.host !== "production").reduce((n, h) => n + h.sessions, 0),
+    [data],
+  );
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getAdminAnalytics({ start: period.start, end: period.end, device: device || undefined, source: source || undefined, attr })
+    getAdminAnalytics({ start: period.start, end: period.end, device: device || undefined, source: source || undefined, attr, host: host || undefined, machines: machines || undefined })
       .then(d => {
         if (cancelled) return;
         setData(d);
         setError("");
+        setHostOptions(d.hosts ?? []);
         // Grow the source dropdown from unfiltered loads only, so picking a
         // source doesn't collapse the options to just itself. The table's two
         // synthetic rows — the "+ N more" fold and the carried-over bucket —
@@ -916,7 +745,7 @@ const AnalyticsPanel = () => {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [period, device, source, attr, reloadKey]);
+  }, [period, device, source, attr, host, machines, reloadKey]);
 
   // Live "who's on the site now" — polled every 30s while the panel is open.
   useEffect(() => {
@@ -949,7 +778,13 @@ const AnalyticsPanel = () => {
   // Sessions the attribution table can place, and the ones it can't — see the
   // note under that table, and the caveat that ships with the CSV.
   const sourceSessions = data?.sources.reduce((n, s) => n + s.sessions, 0) ?? 0;
-  const carriedOverSessions = Math.max((data?.traffic.sessions ?? 0) - sourceSessions, 0);
+  // Sessions this window can see but cannot attribute: a visit that began before
+  // it, or a confirmed sale whose browsing was never recorded. They are rows in
+  // the table now rather than a hole in it — this is only for the note that
+  // explains what those rows mean.
+  const unattributedSessions = (data?.sources ?? [])
+    .filter(s => /^\(visit began before|^\(source not recorded/.test(s.source))
+    .reduce((n, s) => n + s.sessions, 0);
 
   // Everything currently on screen, as one spreadsheet-friendly CSV.
   const exportCsv = () => {
@@ -1014,9 +849,9 @@ const AnalyticsPanel = () => {
         `The requested range was longer than two years, so it was measured from ${data.start} to ${data.end}.`,
       ]]);
     }
-    if (carriedOverSessions > 0) {
+    if (unattributedSessions > 0) {
       section("Caveat", ["note"], [[
-        `Attribution covers ${sourceSessions} of ${data.traffic.sessions} sessions — the other ${carriedOverSessions} began before this period and have no source inside it. Their orders are on the "(visit began before this period)" row.`,
+        `Attribution adds up to all ${data.traffic.sessions} sessions. ${unattributedSessions} of them could not be traced to a source — either the visit began before this period, or it is a confirmed sale with no browsing recorded — and each is on its own named row rather than missing from the table.`,
       ]]);
     }
     section("Caveat", ["note"], [[
@@ -1150,6 +985,23 @@ const AnalyticsPanel = () => {
       )}
 
       <div className="flex items-center gap-2 mb-2 flex-wrap">
+        {/* First in the row on purpose: this decides WHOSE numbers the other two
+            are slicing. Only rendered once more than one hostname has actually
+            been recorded — on a shop that has only ever been visited through the
+            storefront it is a control with one option, and a dropdown that
+            cannot change anything is worse than no dropdown. */}
+        {hostOptions.length > 1 && (
+          <select value={host} onChange={e => setHost(e.target.value)}
+            className="px-3 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40">
+            <option value="">The shop (theolivegoose.ie)</option>
+            {hostOptions.filter(h => h.host !== "production").map(h => (
+              <option key={h.host} value={h.host}>
+                {hostLabel(h.host)} — {fmtInt(h.sessions)} visit{h.sessions === 1 ? "" : "s"}
+              </option>
+            ))}
+            <option value="all">Everything recorded</option>
+          </select>
+        )}
         <select value={device} onChange={e => setDevice(e.target.value)}
           className="px-3 py-1.5 rounded-lg border border-border bg-card text-foreground font-sans text-xs focus:outline-none focus:ring-2 focus:ring-primary/40">
           <option value="">All devices</option>
@@ -1162,8 +1014,8 @@ const AnalyticsPanel = () => {
           <option value="">All sources</option>
           {sourceOptions.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        {(device || source) && (
-          <button onClick={() => { setDevice(""); setSource(""); }}
+        {(device || source || host) && (
+          <button onClick={() => { setDevice(""); setSource(""); setHost(""); }}
             className="font-sans text-xs text-muted-foreground underline hover:text-foreground">
             Clear filters
           </button>
@@ -1184,6 +1036,73 @@ const AnalyticsPanel = () => {
         {source && <> · source: <span className="font-semibold text-foreground">{source}</span></>}
         {data?.attributed && <> · limited to orders from matching sessions</>}
       </p>
+
+      {/* How much this window is holding back, and why.
+          A page that quietly shows 6 visits where the table holds 61 invites the
+          reader to assume something is broken — and the one time to be asked that
+          is never the time you are being asked it. So the figure says what it
+          left out, names the reason, and offers the view that includes it. */}
+      {/* Automated traffic, named and counted rather than quietly removed.
+          Nine of these arrived on the live shop in three days — every one a
+          single page view reporting five seconds of engagement to the
+          millisecond, from a "mobile" device in a US city, at three in the
+          morning. Left in, they made the shop look four times busier than it
+          was and put a device split and a location map underneath it. */}
+      {data && data.machine_sessions > 0 && (
+        <p className="font-sans text-xs text-muted-foreground mb-6">
+          {data.machines_included ? (
+            <>
+              {fmtInt(data.machine_sessions)} of the visits above {data.machine_sessions === 1 ? "is" : "are"}{" "}
+              automated — a page fetched, then nothing: no rendering measurements, no clicks, no
+              end of visit.{" "}
+              <button type="button" onClick={() => setMachines("")} className="underline hover:text-foreground">
+                Leave them out
+              </button>
+            </>
+          ) : (
+            <>
+              {fmtInt(data.machine_sessions)} automated visit{data.machine_sessions === 1 ? "" : "s"}{" "}
+              {data.machine_sessions === 1 ? "was" : "were"} left out — {data.machine_sessions === 1 ? "a page" : "pages"} fetched
+              with no rendering measurements, no clicks and no end of visit. Scrapers, not shoppers.{" "}
+              <button type="button" onClick={() => setMachines("include")} className="underline hover:text-foreground">
+                Count them anyway
+              </button>
+            </>
+          )}
+        </p>
+      )}
+
+      {data && data.filters.host === "production" && heldBack > 0 && (
+        <p className="font-sans text-xs text-muted-foreground mb-6">
+          {fmtInt(heldBack)} more visit{heldBack === 1 ? "" : "s"} reached this window from somewhere
+          other than the storefront — testing, or something that wasn't a browser — and {heldBack === 1 ? "is" : "are"} not
+          counted above.{" "}
+          <button type="button" onClick={() => setHost("all")} className="underline hover:text-foreground">
+            Show everything recorded
+          </button>
+        </p>
+      )}
+
+      {/* Not a footnote. Every figure below moves when this changes, and a
+          screenshot of this page carries no dropdown with it — so a view that is
+          NOT the shop has to announce itself in the body of the page, where it
+          cannot be cropped out by accident. */}
+      {data && data.filters.host !== "production" && (
+        <div className="rounded-xl border border-border bg-card p-4 mb-6">
+          <p className="font-sans text-sm text-foreground">
+            ⚠ These are not the shop's numbers.
+          </p>
+          <p className="font-sans text-xs text-muted-foreground mt-1">
+            You are looking at <span className="font-semibold text-foreground">{hostLabel(data.filters.host)}</span>.
+            Testing on your own machine is recorded here too, and it is not trade.
+            {" "}
+            <button type="button" onClick={() => setHost("")}
+              className="underline hover:text-foreground">
+              Show the shop only
+            </button>
+          </p>
+        </div>
+      )}
 
       {data?.clamped && (
         <div className="rounded-xl border border-border bg-card p-4 mb-6">
@@ -1493,17 +1412,18 @@ const AnalyticsPanel = () => {
                 rows={data.sources.map(s => [s.source, fmtInt(s.sessions), fmtInt(s.orders), fmtEur(s.revenue)])}
                 empty="No sessions recorded in this period yet."
               />
-              {/* A session is attributed to where it LANDED, so a visit that
-                  began before this period has no source inside it. Its orders
-                  are still in the table (see the row for them) but its session
-                  is not, which leaves this column short of the Sessions tile by
-                  exactly that many. Printing the difference is the only way a
-                  reader can tell that apart from a table that lost rows. */}
-              {carriedOverSessions > 0 && (
+              {/* This column totals to the Sessions tile, including the visits
+                  it cannot trace — a visit that began before this period, or a
+                  confirmed sale with no browsing recorded. Both are named rows
+                  rather than absences. The note explains what those rows are,
+                  because "(source not recorded)" sitting in a table of Instagram
+                  and Google is otherwise just unexplained. */}
+              {unattributedSessions > 0 && (
                 <p className="font-sans text-[11px] text-muted-foreground mt-3">
-                  Adds up to {fmtInt(sourceSessions)} of the {fmtInt(data.traffic.sessions)} sessions —
-                  the other {fmtInt(carriedOverSessions)} began before this period, so they have no source
-                  inside it. Anything they bought is still counted, on its own row.
+                  Adds up to all {fmtInt(data.traffic.sessions)} sessions.{" "}
+                  {fmtInt(unattributedSessions)} of them can't be traced to a source — the visit began
+                  before this period, or it's a confirmed sale with no browsing recorded — so each sits
+                  on its own row rather than going missing.
                 </p>
               )}
             </Card>
@@ -1682,7 +1602,7 @@ const AnalyticsPanel = () => {
 
           {/* ── What these numbers are counting ── */}
           <RecentVisits onChanged={() => setReloadKey(k => k + 1)} />
-          <InternalTraffic onChanged={() => setReloadKey(k => k + 1)} />
+          <InternalTraffic />
         </div>
       )}
     </div>

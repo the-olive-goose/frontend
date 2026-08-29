@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import path from "path";
 import { installMemoryStorage } from "@/test/memoryStorage";
 import { track } from "./analytics";
 import { writeCookieConsent } from "./cookieConsent";
@@ -11,7 +14,9 @@ import {
   isPixelId,
   isTestEventCode,
   metaBlockedReason,
+  metaPurchaseEventId,
   mirrorMetaPageView,
+  mirrorMetaPurchase,
   resetMetaPixelForTests,
   setMetaUserData,
   startMetaPixelMirror,
@@ -87,6 +92,19 @@ describe("pixel id", () => {
       expect(isPixelId(id)).toBe(false);
     }
   });
+
+  it("rejects an id starting with a zero, because fbevents.js does", () => {
+    // Read off the live library, not reasoned about. Loaded with a leading-zero
+    // id, fbevents.js logs `[Meta Pixel] - Invalid PixelID: null`, never requests
+    // connect.facebook.net/signals/config/<id>, discards the queued calls and
+    // sends nothing — while a well-formed id fetches that config within a second.
+    //
+    // Accepting one here would put a green tick beside a pixel that cannot load,
+    // which is the exact failure this validator exists to prevent.
+    for (const id of ["000000000000001", "0123456789012345", "0000000000000000"]) {
+      expect(isPixelId(id)).toBe(false);
+    }
+  });
 });
 
 describe("test events code", () => {
@@ -149,20 +167,32 @@ describe("what blocks the pixel", () => {
     expect(sentNames()).toEqual(["PageView", "ViewContent"]);
   });
 
-  it("never loads on a browser marked as the shop's own", () => {
-    // Harder than the first-party rule for a reason that is specific to this
-    // tag: these events do not only get counted, they train ad delivery. A month
-    // of the owner checking their own homepage teaches Meta to go and find more
-    // people like the owner.
+  it("always loads on the live shop, whoever is at the keyboard", () => {
+    // This used to be gated on a flag written into whatever browser opened the
+    // admin panel — so looking at your own dashboard once stopped the pixel
+    // firing for you on the real site, permanently and silently, while the
+    // shop's own analytics carried on counting you.
     writeCookieConsent("accepted");
-    localStorage.setItem("og_analytics_internal", "1");
-    expect(metaBlockedReason(ON)).toBe("internal_browser");
+    localStorage.setItem("admin_token", "a.b.c");
+    expect(metaBlockedReason({ ...ON, exclude_internal: true })).toBeNull();
   });
 
-  it("never loads on a browser signed in to admin", () => {
+  it("never loads on a copy running on localhost", () => {
+    // The one separation left: the live shop is trade, localhost is work. A hit
+    // that reaches the property is in it for good, so this is the strict side.
     writeCookieConsent("accepted");
-    localStorage.setItem("admin_token", "a.jwt.value");
-    expect(metaBlockedReason(ON)).toBe("internal_browser");
+    const live = window.location;
+    vi.stubGlobal("location", { ...live, hostname: "localhost" });
+    expect(metaBlockedReason({ ...ON, exclude_internal: true })).toBe("development_origin");
+    vi.stubGlobal("location", live);
+  });
+
+  it("…unless the owner has turned that off", () => {
+    writeCookieConsent("accepted");
+    const live = window.location;
+    vi.stubGlobal("location", { ...live, hostname: "localhost" });
+    expect(metaBlockedReason({ ...ON, exclude_internal: false })).toBeNull();
+    vi.stubGlobal("location", live);
   });
 
   it("still loads on the owner's browser if they explicitly stop excluding it", () => {
@@ -636,5 +666,242 @@ describe("what checkout forwards to the server", () => {
     configureMetaPixel(ON);
     document.cookie = "_fbc=fb.1.1787691830.IwAR2fromthecookie";
     expect(getMetaIds().fbc).toBe("fb.1.1787691830.IwAR2fromthecookie");
+  });
+});
+
+describe("the ad click that paid for the visit", () => {
+  // The single most expensive thing this file can get wrong. Every other failure
+  // shows up as a missing event; this one shows up as a real sale, correctly
+  // reported, correctly matched to a real person — and credited to no campaign,
+  // so the ad that earned it looks like it earned nothing.
+  it("keeps the click even when consent is answered a page later", () => {
+    // Land from an ad. The banner hasn't been answered, so nothing may load and
+    // nothing may be stored.
+    window.history.replaceState({}, "", "/?fbclid=IwAR2fromthead");
+    resetMetaPixelForTests(); // i.e. this document loaded at that URL
+    expect(configureMetaPixel(ON)).toBe("awaiting_consent");
+    expect(localStorage.getItem("og_meta_fbclid")).toBeNull();
+
+    // They browse to a candle first — the router replaces the query string, and
+    // with it the only copy of the click id the page ever had — and accept there.
+    window.history.replaceState({}, "", "/product/olive");
+    writeCookieConsent("accepted");
+    applyMetaPixelConsent(ON, true);
+
+    expect(getMetaIds().fbc).toMatch(/^fb\.1\.\d+\.IwAR2fromthead$/);
+  });
+
+  it("stores nothing about a visitor who says no", () => {
+    window.history.replaceState({}, "", "/?fbclid=IwAR2fromthead");
+    resetMetaPixelForTests();
+    configureMetaPixel(ON);
+    writeCookieConsent("declined");
+    applyMetaPixelConsent(ON, false);
+    expect(localStorage.getItem("og_meta_fbclid")).toBeNull();
+    expect(getMetaIds()).toEqual({});
+  });
+
+  it("dates the click when it happened, not when it was last looked at", () => {
+    // `fb.1.<timestamp>.<id>` — the timestamp is how Meta ages an fbc against
+    // the attribution window. configureMetaPixel runs again on every settings
+    // change, so re-stamping would walk a Tuesday's click forward to Friday.
+    writeCookieConsent("accepted");
+    window.history.replaceState({}, "", "/?fbclid=IwAR2stableclick");
+    configureMetaPixel(ON);
+    const first = localStorage.getItem("og_meta_fbclid");
+
+    configureMetaPixel({ ...ON, advanced_matching: false });
+    applyMetaPixelConsent(ON, true);
+
+    expect(localStorage.getItem("og_meta_fbclid")).toBe(first);
+  });
+});
+
+describe("a visit that is switched off and on again", () => {
+  it("reports the page it comes back on", () => {
+    // Both halves of "blocked" have to forget the last page reported, or a pixel
+    // that resumes while the shopper is still standing where it stopped dedupes
+    // its own landing page away and the resumed visit has none at all.
+    writeCookieConsent("accepted");
+    configureMetaPixel(ON);
+    expect(sentNames()).toContain("PageView");
+
+    applyMetaPixelConsent(ON, false);
+    const before = sentNames().length;
+    applyMetaPixelConsent(ON, true);
+
+    expect(sentNames().slice(before)).toContain("PageView");
+  });
+});
+
+describe("search", () => {
+  it("carries the products it turned up, so the term is retargetable", () => {
+    writeCookieConsent("accepted");
+    configureMetaPixel(ON);
+    track("search", { query: "olive", results: 2, result_ids: ["p1", "p2"] });
+    expect(paramsFor("Search")).toEqual({
+      search_string: "olive",
+      content_type: "product",
+      content_ids: ["p1", "p2"],
+    });
+  });
+
+  it("still reports a search that found nothing at all", () => {
+    // The one search result worth acting on. An empty content_ids must not turn
+    // it into no event.
+    writeCookieConsent("accepted");
+    configureMetaPixel(ON);
+    track("search", { query: "lavender", results: 0, result_ids: [] });
+    expect(paramsFor("Search")).toEqual({ search_string: "lavender" });
+  });
+
+  it("caps how many it names", () => {
+    expect(
+      (toMetaEvent("search", {
+        query: "candle",
+        result_ids: Array.from({ length: 40 }, (_, i) => `p${i}`),
+      })!.params.content_ids as string[]).length
+    ).toBe(10);
+  });
+});
+
+describe("the purchase, from the browser", () => {
+  const ORDER = {
+    orderId: "0f2a51c4-9d3b-4a0e-8d61-2b7c1e5a44f0",
+    total: "29.99",
+    items: [
+      { product_id: "p1", quantity: 2, price: 12.5 },
+      { product_id: "p2", quantity: 1, price: 4.99 },
+    ],
+  };
+
+  it("uses the exact event id the server stamps on its own copy", () => {
+    // Meta deduplicates on event name + event id, and there is no error for
+    // getting this wrong — the shop's revenue simply doubles. The two live in
+    // different languages in different files, so they are pinned to each other
+    // here rather than trusted to stay in step.
+    const backend = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "../../backend/index.js"),
+      "utf8"
+    );
+    expect(backend).toContain("event_id: `order-${order.id}`");
+    expect(metaPurchaseEventId("abc")).toBe("order-abc");
+  });
+
+  it("sends the sale with the value, the basket and that id", () => {
+    writeCookieConsent("accepted");
+    configureMetaPixel(ON);
+    mirrorMetaPurchase(ORDER);
+
+    expect(paramsFor("Purchase")).toEqual({
+      currency: "EUR",
+      value: 29.99,
+      content_type: "product",
+      content_ids: ["p1", "p2"],
+      contents: [
+        { id: "p1", quantity: 2, item_price: 12.5 },
+        { id: "p2", quantity: 1, item_price: 4.99 },
+      ],
+      num_items: 3,
+      order_id: ORDER.orderId,
+    });
+    expect(optsFor("Purchase")).toEqual({ eventID: `order-${ORDER.orderId}` });
+  });
+
+  it("holds a sale that arrives before the pixel has booted, then sends it", () => {
+    // THE RACE THIS EXISTS FOR. The success page polls for the finalized order,
+    // and when the Stripe webhook has already won, that poll returns in a few
+    // hundred milliseconds — while the pixel is deliberately slower, because it
+    // waits for the signed-in session so advanced matching lands in its one and
+    // only init. Dropped rather than held, the browser's copy of the sale is
+    // lost exactly when the server is fast. Reproduced on the wire before this
+    // guard existed: the same end-to-end test passed once and failed once, on
+    // nothing but who won that race.
+    writeCookieConsent("accepted");
+    mirrorMetaPurchase(ORDER);            // pixel not configured yet
+    expect(window.fbq).toBeUndefined();   // nothing sent, nothing lost
+
+    configureMetaPixel(ON);               // the pixel comes up
+    expect(sentNames().filter((n) => n === "Purchase")).toHaveLength(1);
+    expect(optsFor("Purchase")).toEqual({ eventID: `order-${ORDER.orderId}` });
+    expect(paramsFor("Purchase")!.value).toBe(29.99);
+  });
+
+  it("sends a held sale after the browsing that produced it, not before", () => {
+    // Meta reads the order events arrive in. A Purchase that lands ahead of the
+    // ViewContent and AddToCart it followed describes a funnel that ran backwards.
+    writeCookieConsent("accepted");
+    startMetaPixelMirror();
+    track("view_item", { product_id: "p1", name: "Olive", price: 24 });
+    mirrorMetaPurchase(ORDER);
+    configureMetaPixel(ON);
+
+    const names = sentNames();
+    expect(names.indexOf("Purchase")).toBeGreaterThan(names.indexOf("ViewContent"));
+  });
+
+  it("never sends a held sale to a shopper who then declines", () => {
+    // The settled flag, applied to the sale. A visitor who says no does not get
+    // their purchase sent a moment later because the tag made its mind up after
+    // the page did.
+    mirrorMetaPurchase(ORDER);          // held — consent not answered yet
+    writeCookieConsent("declined");
+    applyMetaPixelConsent(ON, false);
+    configureMetaPixel(ON);
+    expect(window.fbq).toBeUndefined();
+    expect(sentNames()).not.toContain("Purchase");
+  });
+
+  it("never sends a held sale twice, however the pixel is re-configured", () => {
+    writeCookieConsent("accepted");
+    mirrorMetaPurchase(ORDER);
+    configureMetaPixel(ON);
+    configureMetaPixel(ON);
+    configureMetaPixel({ ...ON, debug: true } as typeof ON);
+    expect(sentNames().filter((n) => n === "Purchase")).toHaveLength(1);
+  });
+
+  it("holds only the sale, never a growing queue of them", () => {
+    // One slot, not a list: there is only ever one purchase in flight, and an
+    // unbounded buffer on the money path is not a thing to leave lying around.
+    writeCookieConsent("accepted");
+    mirrorMetaPurchase({ ...ORDER, orderId: "order-a" });
+    mirrorMetaPurchase({ ...ORDER, orderId: "order-b" });
+    configureMetaPixel(ON);
+    expect(sentNames().filter((n) => n === "Purchase")).toHaveLength(1);
+    expect(paramsFor("Purchase")!.order_id).toBe("order-b");
+  });
+
+  it("reports one order once, however often the page asks", () => {
+    writeCookieConsent("accepted");
+    configureMetaPixel(ON);
+    mirrorMetaPurchase(ORDER);
+    mirrorMetaPurchase(ORDER);
+    mirrorMetaPurchase(ORDER);
+    expect(sentNames().filter((n) => n === "Purchase")).toHaveLength(1);
+  });
+
+  it("says nothing when the pixel never ran for this shopper", () => {
+    // The server's copy is gated on the same permission (`meta_consent`), so a
+    // sale is reported by both halves or by neither.
+    configureMetaPixel(ON); // no consent
+    mirrorMetaPurchase(ORDER);
+    expect(sentNames()).not.toContain("Purchase");
+  });
+
+  it("stays quiet when the owner turned the shopping events off", () => {
+    writeCookieConsent("accepted");
+    configureMetaPixel({ ...ON, track_ecommerce: false });
+    mirrorMetaPurchase(ORDER);
+    expect(sentNames()).not.toContain("Purchase");
+  });
+
+  it("refuses to report a sale it cannot price", () => {
+    // A Purchase with no value is not a smaller signal than a priced one — it is
+    // a conversion that earned nothing, and it drags reported ROAS down for real.
+    writeCookieConsent("accepted");
+    configureMetaPixel(ON);
+    mirrorMetaPurchase({ ...ORDER, total: "€ unknown" });
+    expect(sentNames()).not.toContain("Purchase");
   });
 });

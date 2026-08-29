@@ -27,10 +27,11 @@ const VISITOR_KEY = 'og_analytics_vid';
 const SESSION_KEY = 'og_analytics_sid';
 const SESSION_LAST_SEEN_KEY = 'og_analytics_last';
 const UTM_KEY = 'og_analytics_utm';
-// Set from Admin → Analytics to mark this browser as the shop's own, so a
-// morning spent checking the homepage on a phone doesn't arrive as shopper
-// traffic. See INTERNAL_KEY's use in payload().
-const INTERNAL_KEY = 'og_analytics_internal';
+// NOTE: 'og_analytics_internal' used to live here — a flag marking a browser as
+// the shop's own, which excluded it from the figures and stopped the GA4 tag and
+// the Meta Pixel loading. It is gone, along with the rules it fed: the live shop
+// is the live shop, and work happens on localhost (see isDevelopmentOrigin).
+// Browsers that still carry the old key are unaffected; nothing reads it.
 // Consent (and whether it is still current) lives in lib/cookieConsent.
 
 const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min idle
@@ -422,72 +423,39 @@ const ADMIN_TOKEN_KEY = 'admin_token';
 export const isAdminBrowser = (): boolean => readStore('local', ADMIN_TOKEN_KEY) !== null;
 
 /**
- * Whether this browser has been marked as the shop's own in Admin → Analytics.
- * Checks both stores: a browser that refuses localStorage still gets to exclude
- * itself for the life of the tab rather than not at all.
+ * Whether this page is a developer's copy rather than the live shop.
  *
- * Deliberately does NOT fold in isAdminBrowser(): this is the state the panel's
- * toggle owns and reports, and conflating the two would show the owner a switch
- * that reads "on" and cannot be turned off. What ingestion asks is the OR of
- * both — see countsAsInternal.
+ * THE ONLY THING THAT SEPARATES TESTING FROM TRADE. The live shop is the live
+ * shop: every visit to it is a real visit and every payment taken on it is a
+ * real sale, whoever is at the keyboard. Work on the site happens on localhost,
+ * which is recorded under its own hostname and never reaches the shop's figures.
+ *
+ * This replaced three rules that tried to guess who was behind a visit — the
+ * owner's home broadband, a list of accounts, and a flag written into whatever
+ * browser opened the admin panel. They were wrong in the direction nobody
+ * notices: the broadband rule hid an entire household, the account rule reached
+ * backwards through a browser's whole history, and the browser flag attached
+ * itself to the owner's laptop the first time they looked at their own
+ * dashboard — and then stayed there, silently, for good.
+ *
+ * That last one is why this lives here rather than only on the server. The flag
+ * also gated the GA4 tag and the Meta Pixel, so opening the dashboard once meant
+ * those two never fired for the owner again while the shop's own analytics
+ * counted them normally. Two measurement systems, permanently disagreeing, with
+ * nothing on screen to say why.
  */
-export const isInternalBrowser = (): boolean =>
-  readStore('local', INTERNAL_KEY) === '1' || readStore('session', INTERNAL_KEY) === '1';
-
-/** What ingestion is told: marked by hand, or signed in to admin right now. */
-const countsAsInternal = (): boolean => isInternalBrowser() || isAdminBrowser();
-
-/** Mark or release this browser. Returns false if storage refused the change. */
-export const setInternalBrowser = (internal: boolean): boolean => {
-  if (!internal) {
-    clearBothStores(INTERNAL_KEY);
-    return true;
-  }
-  return writeStore('local', INTERNAL_KEY, '1') || writeStore('session', INTERNAL_KEY, '1');
-};
-
-/**
- * The query parameter that marks whatever browser opens the link.
- *
- * The last device that nothing else can reach. A browser signed in to admin
- * excludes itself; a named account excludes itself; a device on the home wifi
- * excludes itself. What none of those covers is the household phone that has
- * never opened the admin panel, never signs in, and is out of the house on
- * mobile data — or on a VPN — when it looks at the shop. From the outside it is
- * indistinguishable from a stranger, and no rule can be written that catches it
- * without also catching real shoppers.
- *
- * So it is marked by hand, once, by opening a link: the owner sends it to the
- * phone, the tablet, a partner's laptop, and each one drops out for good without
- * anyone needing the admin password. `?not-a-shopper=0` undoes it on that device.
- *
- * Sharing the link costs nothing worth protecting: the only thing anyone can do
- * with it is remove THEIR OWN visits from the count. There is no way to use it
- * to add traffic, to see anything, or to affect anyone else's measurement.
- */
-export const INTERNAL_MARK_PARAM = 'not-a-shopper';
-
-/**
- * Honour that link, then take it back out of the address bar — so the marker
- * isn't carried into a shared URL, a bookmark or a referrer, where it would
- * silently exclude whoever opened it next.
- */
-const applyInternalMarkLink = () => {
+export const isDevelopmentOrigin = (): boolean => {
   try {
-    const url = new URL(window.location.href);
-    const value = url.searchParams.get(INTERNAL_MARK_PARAM);
-    if (value === null) return;
-    setInternalBrowser(value !== '0');
-    url.searchParams.delete(INTERNAL_MARK_PARAM);
-    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
-  } catch { /* a URL we can't parse is not worth a broken page */ }
+    return /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(window.location.hostname);
+  } catch {
+    return false;
+  }
 };
 
 const payload = () => JSON.stringify({
   visitor_id: getVisitorId(),
   session_id: getSessionId(),
   visitor_scope: visitorScope(),
-  internal: countsAsInternal(),
   // Foreground time since the last batch. The server sums these per session.
   engagement_ms: takeEngagement(),
   events: queue.splice(0, MAX_BATCH),
@@ -755,16 +723,6 @@ let initialized = false;
 export const initAnalytics = () => {
   if (initialized || typeof window === 'undefined') return;
   initialized = true;
-  // Before anything is queued, so a device arriving on the marker link is never
-  // counted even once.
-  applyInternalMarkLink();
-  // Make the admin signal STICK. Signing in to the admin panel excludes this
-  // browser from the moment it happens (see countsAsInternal), but signing out
-  // again would hand it straight back to the shopper numbers — and a device the
-  // owner administers the shop from is still theirs the next morning. Promoting
-  // it to the ordinary marker flag once per load is what makes it permanent,
-  // and it stays undoable from the panel's own toggle.
-  if (isAdminBrowser()) setInternalBrowser(true);
   // Start the engagement clock if the page is already in front. A prerendered
   // page is 'hidden' until activation, so this is a no-op there and starts on
   // the visibilitychange that activation fires.

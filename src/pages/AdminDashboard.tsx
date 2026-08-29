@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, Fragment } from "react";
-import { getVisitorId, isAdminBrowser, setInternalBrowser } from "@/lib/analytics";
+import { getVisitorId, isAdminBrowser } from "@/lib/analytics";
 import {
   isLoggedIn,
   logout,
@@ -5665,29 +5665,25 @@ const AdminDashboard = () => {
   useEffect(() => {
     setSession(isLoggedIn());
   }, []);
+  // NOTHING HERE MARKS THIS BROWSER ANY MORE.
+  //
+  // Opening this panel used to flag the browser as "the shop's own", locally and
+  // on the server, and that flag reached backwards through everything it had
+  // ever recorded. It was built for a real sequence — deploy, check the shop,
+  // then open admin — where the storefront visit was recorded before anything
+  // knew whose it was.
+  //
+  // But the live shop is the live shop: a visit to it is a real visit whoever is
+  // at the keyboard, and work belongs on localhost, which is recorded under its
+  // own hostname and never reaches the figures. The flag also gated the GA4 tag
+  // and the Meta Pixel, so looking at this page once stopped both firing for the
+  // owner on the real site — permanently, silently, while the shop's own
+  // analytics carried on counting them.
+  //
+  // A single visit can still be taken out by hand from "Recent visits", which is
+  // a decision someone makes and can see, rather than a side effect of opening a
+  // dashboard.
 
-  // Tell the server this browser is the shop's, the moment the admin panel opens.
-  //
-  // THE HOLE THIS CLOSES. Signing in to admin marks the browser locally, and
-  // every batch it sends afterwards carries that mark — but track() refuses to
-  // record anything on an /admin path, so the admin panel never SENDS a batch,
-  // so the server never learns the visitor id. The exclusion therefore only took
-  // effect the next time that browser loaded a storefront page.
-  //
-  // Which is precisely the wrong way round for the commonest sequence there is:
-  // deploy, open the shop to check it works, THEN open admin to look at the
-  // numbers. That storefront visit was recorded before the browser had any mark
-  // on it, and sat in the figures — one visitor, one session, one page view —
-  // until the owner happened to browse the shop again.
-  //
-  // One call fixes it: the mark is by visitor and reaches backwards, so this
-  // retires that visit and everything else this browser ever did. Fire-and-forget
-  // and silent — analytics housekeeping must never interrupt the admin panel.
-  useEffect(() => {
-    if (!isAdminBrowser()) return;
-    setInternalBrowser(true);
-    setAnalyticsInternalBrowser(getVisitorId(), true).catch(() => { /* next load will retry */ });
-  }, []);
 
   const loadData = useCallback(async () => {
     // ── Content sections (getContentFresh bypasses the storefront cache: the

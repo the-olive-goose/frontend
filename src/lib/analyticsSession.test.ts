@@ -97,68 +97,55 @@ describe("upgrading from the old tab-scoped id", () => {
 // the shop. Opening one link marks it — and the link must not then travel on in
 // a bookmark or a shared URL, or it would silently exclude whoever opened it
 // next, which is an under-count nothing on the dashboard could reveal.
-describe("marking a device with a link", () => {
-  const withUrl = (search: string) => {
-    const replaceState = vi.fn();
-    vi.stubGlobal("location", { href: `https://shop.test/shop${search}`, pathname: "/shop", search, hash: "" });
-    vi.stubGlobal("history", { replaceState });
-    return replaceState;
+// The live shop is the live shop. Nothing infers whose visit it is any more —
+// not the address it arrives from, not the account signed in, and not a flag
+// written into whatever browser opened the admin panel. Work happens on
+// localhost, which is recorded under its own hostname and never reaches the
+// shop's figures.
+describe("what separates testing from trade", () => {
+  const at = (hostname: string) => {
+    vi.stubGlobal("location", { href: `https://${hostname}/shop`, hostname, pathname: "/shop", search: "", hash: "" });
   };
 
-  it("marks the browser and takes the parameter back out of the address bar", async () => {
-    const replaceState = withUrl("?not-a-shopper=1");
+  it("the live shop is not a development origin", async () => {
+    at("theolivegoose.ie");
     const mod = await newTab();
-    mod.initAnalytics();
-    expect(mod.isInternalBrowser()).toBe(true);
-    expect(replaceState).toHaveBeenCalledWith({}, "", "/shop");
+    expect(mod.isDevelopmentOrigin()).toBe(false);
   });
 
-  it("keeps the rest of the query string", async () => {
-    const replaceState = withUrl("?utm_source=insta&not-a-shopper=1");
+  it("localhost is", async () => {
+    at("localhost");
     const mod = await newTab();
-    mod.initAnalytics();
-    expect(replaceState).toHaveBeenCalledWith({}, "", "/shop?utm_source=insta");
+    expect(mod.isDevelopmentOrigin()).toBe(true);
   });
 
-  it("undoes it on that device with =0", async () => {
-    withUrl("?not-a-shopper=1");
-    const first = await newTab();
-    first.initAnalytics();
-    expect(first.isInternalBrowser()).toBe(true);
-
-    withUrl("?not-a-shopper=0");
-    const second = await newTab();
-    second.initAnalytics();
-    expect(second.isInternalBrowser()).toBe(false);
-  });
-
-  it("leaves an ordinary visit alone", async () => {
-    withUrl("?utm_source=insta");
+  it("…and so is the loopback address", async () => {
+    at("127.0.0.1");
     const mod = await newTab();
-    mod.initAnalytics();
-    expect(mod.isInternalBrowser()).toBe(false);
+    expect(mod.isDevelopmentOrigin()).toBe(true);
   });
-});
 
-// A browser that has been used to administer the shop is the shop's, wherever it
-// looks like it is browsing from — the one signal a VPN cannot defeat, because
-// it has nothing to do with the address a visit arrives from.
-describe("a browser that administers the shop", () => {
-  it("excludes itself without anyone marking it", async () => {
+  it("a browser that administers the shop is still an ordinary visitor on it", async () => {
+    // This is the one that used to go wrong, and it went wrong permanently:
+    // opening the admin panel flagged the browser, the flag reached backwards
+    // through everything it had ever recorded, and it also stopped the GA4 tag
+    // and the Meta Pixel firing for the owner on the real site for good.
+    at("theolivegoose.ie");
     localStorage.setItem("admin_token", "a.b.c");
     const mod = await newTab();
     expect(mod.isAdminBrowser()).toBe(true);
     mod.initAnalytics();
-    // Promoted to the ordinary marker, so it stays excluded after signing out
-    // of admin rather than quietly rejoining the shopper numbers.
-    expect(mod.isInternalBrowser()).toBe(true);
+    expect(mod.isDevelopmentOrigin()).toBe(false);
   });
 
-  it("does not claim an ordinary browser", async () => {
+  it("does not rewrite the address bar on an ordinary visit", async () => {
+    // The ?not-a-shopper= marker link is gone with the rule it fed.
+    const replaceState = vi.fn();
+    at("theolivegoose.ie");
+    vi.stubGlobal("history", { replaceState });
     const mod = await newTab();
-    expect(mod.isAdminBrowser()).toBe(false);
     mod.initAnalytics();
-    expect(mod.isInternalBrowser()).toBe(false);
+    expect(replaceState).not.toHaveBeenCalled();
   });
 });
 

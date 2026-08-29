@@ -207,8 +207,8 @@ const MetaPixelPanel = ({ data, onChange, onSave, saving }: {
               <p className="text-xs font-sans" style={{ color: "#b3282f" }}>
                 That isn't a pixel ID. An ID starting <code className="font-mono">act_</code> is
                 an ad account, and a Business Manager ID is something else again —
-                neither will work here. The pixel's own ID is 15 or 16 digits and
-                nothing else.
+                neither will work here. The pixel's own ID is 15 or 16 digits, and
+                it never starts with a zero.
               </p>
             )}
           </div>
@@ -395,8 +395,8 @@ const MetaPixelPanel = ({ data, onChange, onSave, saving }: {
           <Switch
             checked={data.exclude_internal}
             onChange={(exclude_internal) => onChange({ ...data, exclude_internal })}
-            label="Never load the pixel on the shop's own browsers"
-            hint="Uses the same signal as the Analytics tab's internal-traffic controls. It matters more here than anywhere else: these events don't just count, they teach Meta who to show your ads to. A month of checking your own homepage every morning teaches it to go and find more people like you."
+            label="Never load the pixel while working on localhost"
+            hint="The live shop always reports — a visit to theolivegoose.ie is a real visit whoever made it. This covers the copy of the site you run on your own machine while working on it, and it matters more here than anywhere else: these events don't just count, they teach Meta who to show your ads to. A week of reloading a checkout you are debugging teaches it to go looking for more people like that."
           />
           <Switch
             checked={data.track_ecommerce}

@@ -2690,7 +2690,14 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     const user = rows[0];
     await createUserSession(req, res, user);
-    res.redirect(`${FRONTEND_URL}/auth/callback`);
+    // Whether this was a NEW account or a returning sign-in, passed back so the
+    // callback screen can report the right one. Analytics only ever saw
+    // signup/login from the email-and-password form, so every account opened
+    // with Google — and every Google sign-in — was invisible: the panel said
+    // "sign-ups: 0" on a day one had just happened. `existing` was already
+    // fetched above to decide whether linking was safe, so this costs nothing
+    // and cannot disagree with what the upsert actually did.
+    res.redirect(`${FRONTEND_URL}/auth/callback${existing ? '' : '?new=1'}`);
   } catch (err) {
     console.error('[google callback]', err);
     res.redirect(`${FRONTEND_URL}/auth/callback?error=${encodeURIComponent(IS_PROD ? 'oauth_failed' : err.message)}`);
@@ -2764,7 +2771,8 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
 
     const user = rows[0];
     await createUserSession(req, res, user);
-    res.redirect(`${FRONTEND_URL}/auth/callback`);
+    // Same as the Google path: tell the callback whether an account was created.
+    res.redirect(`${FRONTEND_URL}/auth/callback${existingRows.length ? '' : '?new=1'}`);
   } catch (err) {
     console.error('[facebook callback]', err);
     res.redirect(`${FRONTEND_URL}/auth/callback?error=${encodeURIComponent(IS_PROD ? 'oauth_failed' : err.message)}`);
@@ -2863,13 +2871,45 @@ app.post('/api/auth/phone/verify-otp', authLimiter, async (req, res) => {
 // CART
 // ══════════════════════════════════════════════════════════════════════════════
 
+// A basket row keeps the product as it looked when it was ADDED — POST
+// /api/cart/items stores whatever the browser sent, and nothing has updated it
+// since. That snapshot goes stale in the only way a shopper can see: the photo.
+//
+// The reported symptom was product photos missing on the basket and checkout
+// pages while the very same products showed fine on the shop. The stored snapshot
+// held an image URL routed through a Cloudinary delivery account that has since
+// stopped serving (it answers 401), so every <img> pointing at it was a broken
+// image — even though the live catalogue had been changed back to a working URL.
+// A basket that sat there for a week could equally be showing last week's price
+// or a name the owner has since corrected.
+//
+// So the catalogue is authoritative on the way OUT as well as at checkout, where
+// the same re-snapshot already happens for pricing (see POST /api/checkout).
+// Same rule, same reason: what the shopper sees must be the product as it is now,
+// not as it was when they clicked. A row whose product has left the catalogue
+// keeps its snapshot rather than vanishing — removing it silently is how a basket
+// empties itself with no explanation; checkout is where that item is refused, and
+// it says why.
+const resolveCartRows = async (rows) => {
+  if (!rows.length) return rows;
+  const { rows: catalogRows } = await pool.query(
+    `SELECT value FROM site_settings WHERE key = 'content_products'`
+  );
+  const catalog = catalogRows[0]?.value?.items || [];
+  if (!catalog.length) return rows;
+  return rows.map(r => {
+    const live = catalog.find(p => String(p.id) === String(r.product_id));
+    return live ? { ...r, product_data: { ...live } } : r;
+  });
+};
+
 app.get('/api/cart', requireUserAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
       'SELECT * FROM user_carts WHERE user_id = $1 ORDER BY created_at ASC',
       [req.user.userId]
     );
-    res.json(rows);
+    res.json(await resolveCartRows(rows));
   } catch (err) {
     sendServerError(res, err);
   }
@@ -3126,10 +3166,24 @@ app.post('/api/checkout/session', requireUserAuth, checkoutLimiter, async (req, 
     }
     const trackingNumber = genTrackingNumber();
 
+    // Stripe shows a thumbnail per line on its hosted page when one is given, and
+    // an order summary with no pictures is the last thing a shopper sees before
+    // handing over a card. Taken from the catalogue re-snapshot above, so it is
+    // the same photo the shop is showing right now. Only absolute https URLs —
+    // Stripe fetches these itself and rejects anything else, which would fail the
+    // whole session rather than just drop the picture.
+    const stripeImage = (p) => {
+      const url = String(p?.image_url || '').trim();
+      return /^https:\/\//i.test(url) && url.length <= 2048 ? [url] : undefined;
+    };
+
     const line_items = items.map(i => ({
       price_data: {
         currency: 'eur',
-        product_data: { name: String(i.product_data?.name || 'Candle').slice(0, 500) },
+        product_data: {
+          name: String(i.product_data?.name || 'Candle').slice(0, 500),
+          ...(stripeImage(i.product_data) ? { images: stripeImage(i.product_data) } : {}),
+        },
         unit_amount: Math.round(parsePrice(i.product_data?.price) * 100),
       },
       quantity: i.quantity,
@@ -4328,8 +4382,16 @@ const META_TOKEN_KEY = 'meta_capi_token';
 // admin panel's test button prints verbatim, and the fix is one Railway variable
 // rather than a code change.
 const META_GRAPH_VERSION = String(process.env.META_GRAPH_VERSION || 'v23.0').trim();
+// Overridable for ONE reason: so an end-to-end run can point the Conversions API
+// at a local sink and reconcile what this server actually sends against what
+// Stripe actually charged (see e2e/run-e2e.mjs). Purchases are the only events
+// this shop cannot produce by browsing, so they are the only ones a test can't
+// watch on the wire — and the alternative, letting a test run reach
+// graph.facebook.com, is how a fabricated order ends up in the shop's real ad
+// account. Never set in production; unset, it is Meta.
+const META_GRAPH_ORIGIN = String(process.env.META_GRAPH_ORIGIN || 'https://graph.facebook.com').replace(/\/+$/, '');
 const metaEndpoint = (pixelId) =>
-  `https://graph.facebook.com/${encodeURIComponent(META_GRAPH_VERSION)}/${encodeURIComponent(pixelId)}/events`;
+  `${META_GRAPH_ORIGIN}/${encodeURIComponent(META_GRAPH_VERSION)}/${encodeURIComponent(pixelId)}/events`;
 
 /** The owner's Meta Pixel settings, as saved in Admin → Analytics → Meta Pixel. */
 const getMetaPixelSettings = async () => {
@@ -4576,7 +4638,29 @@ const OBVIOUS_BOT_RE = new RegExp([
 
 // A browser always identifies itself. An empty User-Agent is a script that
 // couldn't be bothered, never a shopper.
-const isNonHuman = (ua) => !String(ua || '').trim() || OBVIOUS_BOT_RE.test(ua);
+// Every browser a person could shop from opens its User-Agent with "Mozilla/" —
+// Chrome, Safari, Firefox, Edge, Samsung Internet, Opera Mini, and every in-app
+// webview inside Instagram, Facebook, TikTok and Pinterest. It is a fossil of the
+// 1990s and it is the most reliable thing in the string.
+//
+// So the filter below is stated as a whitelist rather than an ever-growing list
+// of things to exclude, and that is the point. The named list only ever catches
+// what someone thought to name: Node's own fetch identifies itself as plain
+// "node", which matched nothing, so it was counted as a shopper — and because
+// the front-end tests call the real track() against a dev backend that is wired
+// to the PRODUCTION database, 6,953 of the 7,000 events in the live table were
+// the vitest suite. Visitors, sessions, add-to-carts, searches, the funnel, the
+// device split: all of it was measuring `npm test`.
+//
+// A whitelist cannot be outrun the same way. Whatever the next scripted client
+// is called — undici, bun, some CI runner nobody has written yet — it has no
+// reason to claim it is Mozilla, and if it ever does it is impersonating a
+// browser rather than slipping past a list.
+const BROWSER_UA_RE = /^mozilla\//i;
+const isNonHuman = (ua) => {
+  const s = String(ua || '').trim();
+  return !s || !BROWSER_UA_RE.test(s) || OBVIOUS_BOT_RE.test(s);
+};
 
 // ── Which origins count as "the shop" ─────────────────────────────────────────
 // A visitor id lives in localStorage, and localStorage is scoped to an ORIGIN —
@@ -4663,17 +4747,160 @@ const geoFromHeaders = (req) => {
 // measuring itself instead of silently reporting zero traffic. The origins this
 // exists to exclude — localhost, the Railway hostname, preview builds — are all
 // real browser POSTs that do send the header, so they are still excluded.
+// A developer's own machine, on any port. Kept SEPARATE from the storefront
+// rather than thrown away: the owner asked to be able to look at localhost
+// traffic deliberately, and the only way to answer that is to record it and
+// label it. Everything else about it is unchanged — it is never in the
+// production view, which is what the dashboard shows unless asked otherwise.
+const LOCAL_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+const isLocalOrigin = (origin) => LOCAL_ORIGIN_RE.test(String(origin || ''));
+
+// Which hostname a row belongs to, as the dashboard's slicer names them.
+//   production     — the real storefront (countedOrigins)
+//   localhost      — a developer's machine
+//   (not recorded) — no Origin header; server-written purchase rows land here
+//   anything else  — kept under its own name (a deploy preview, the Railway host)
+const HOST_PRODUCTION = 'production';
+const HOST_LOCAL = 'localhost';
+const HOST_UNRECORDED = '(not recorded)';
+const hostOf = (origin) => {
+  const o = String(origin || '');
+  if (!o) return HOST_UNRECORDED;
+  if (countedOrigins.includes(o)) return HOST_PRODUCTION;
+  if (isLocalOrigin(o)) return HOST_LOCAL;
+  return o;
+};
+
+// The same classification as hostOf(), in SQL.
+//
+// ONE definition, deliberately. Three surfaces ask this question — the dashboard,
+// the recent-visits list and the live "on the site now" tile — and three copies
+// of a CASE expression is how two of them come to disagree about whether a visit
+// was the shop's. The identical mistake is already documented a few hundred lines
+// down, where browsing and money each had their own copy of the internal-traffic
+// rule and stopped agreeing about whose orders counted.
+const HOST_CASE = `CASE
+    WHEN origin IN (${countedOrigins.map((o) => `'${o.replace(/'/g, "''")}'`).join(', ')}) THEN '${HOST_PRODUCTION}'
+    WHEN origin ~* '^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?$' THEN '${HOST_LOCAL}'
+    WHEN origin = '' THEN '${HOST_UNRECORDED}'
+    ELSE origin END`;
+
+/**
+ * The session ids positively known to have come from somewhere that is not the
+ * shop — a developer's machine, or a client that sent no origin at all.
+ *
+ * Stated as an exclusion rather than an inclusion because the shop's own view is
+ * what everyone reads, and it must not lose a session merely because the rows in
+ * front of it cannot place one. A session is judged by its first NON-PURCHASE
+ * event: the confirmed-purchase row is written server-side with no origin, so
+ * judging on that would file every paying visit as "not the shop" and report a
+ * shop with no sales.
+ *
+ * ROWS THAT HAVE AN ORIGIN ARE PREFERRED over rows that don't, rather than simply
+ * taking the earliest. Otherwise a session is classified by whichever row happens
+ * to be first in range — and one row without an origin, from a window edge or an
+ * older schema, would file a whole real visit as "not the shop" and delete it
+ * from the figures. Same idea as placing a visit by wherever it was actually
+ * located and only falling through to Unknown when nothing was: judge on
+ * evidence, and treat the absence of evidence as the last resort, not the first.
+ *
+ * `since` is a SQL predicate on created_at, so each caller can bound the scan to
+ * the period it actually cares about.
+ */
+/**
+ * Sessions where nobody was actually there.
+ *
+ * A real browser announces the end of a page. `visibilitychange → hidden` and
+ * `pagehide` both fire the final flush, and that flush is what carries the
+ * `user_engagement` event and every Web Vital sample the page measured. So a
+ * genuine visit — even a one-second bounce — arrives with more than a bare page
+ * view attached to it.
+ *
+ * These do not. Every one of them is a single `page_view`, no Web Vitals, no
+ * engagement event, no click, no scroll, nothing: the page was fetched, our
+ * script ran long enough for one flush, and then the client stopped existing
+ * rather than closing. On the live shop nine such visits arrived in three days,
+ * from New York, Lincoln and four unnamed US cities, at 03:07, 00:08, 02:46,
+ * 02:56, 03:32, 03:42, 16:45 and 01:51 — each reporting 5000, 5001, 5002 or
+ * 5004 milliseconds of engagement. That is the flush interval to the
+ * millisecond, eight times over. Nobody reads a homepage for exactly five
+ * seconds eight times.
+ *
+ * They cannot be caught by user-agent: they claim to be mobile Safari, they
+ * execute JavaScript, and they pass every name in the bot list. Behaviour is the
+ * only thing that separates them, and this is the most conservative statement of
+ * it available — ANY other event in the session, of any kind, makes it a real
+ * visit. A shopper who does literally nothing but load one page and then has
+ * their browser killed will be misfiled, and that is the price of not
+ * misreporting a scraper as a customer.
+ *
+ * THE DATE IS A GUARD, NOT A SIGNAL. Absence of a rendering signal only means
+ * something once the shop is asking for one. Before RENDER_SIGNALS_FROM every
+ * session carried a bare page view and nothing else, by construction rather than
+ * by intent — so without this clause the rule would reach back and condemn the
+ * shop's entire history to catch this month's scrapers, which is much the worse
+ * of the two errors. A window that predates the measurement keeps every visit.
+ *
+ * WHAT THIS RULE CANNOT PROVE. The user-agent is never stored, so these visits
+ * cannot be named. A real shopper whose closing beacon was lost — a browser
+ * killed rather than closed, an extension that blocks sendBeacon but not fetch —
+ * would leave exactly this trace. What can be said is narrower and checkable: no
+ * browser has ever produced this on this site. A Chrome-emulated iPhone driven
+ * through a visit here reports CLS, TTFB and LCP on the way out, and every one of
+ * the owner's own visits carried three to twelve Web Vital samples. So the
+ * default is to leave them out, the count is always on screen, the rows are
+ * listed and flagged, and one click puts them back.
+ *
+ * Never deleted, never refused at ingestion: filtered here, counted in the panel
+ * so the owner can see what it removed, and listed in Recent visits so it can be
+ * checked.
+ */
+const NO_ONE_WAS_THERE = (since) => `
+    SELECT session_id FROM analytics_events
+     WHERE ${since} AND session_id <> '${NO_SESSION}'
+     GROUP BY session_id
+    HAVING COUNT(*) FILTER (WHERE event_type = 'page_view') > 0
+       AND COUNT(*) FILTER (WHERE event_type <> 'page_view') = 0
+       AND MIN(created_at) >= '${RENDER_SIGNALS_FROM}'::date`;
+
+const NOT_THE_SHOP = (since) => `
+    SELECT sh.session_id FROM (
+      SELECT DISTINCT ON (session_id) session_id, ${HOST_CASE} AS host
+        FROM analytics_events
+       WHERE ${since} AND event_type <> 'purchase' AND session_id <> '${NO_SESSION}'
+       ORDER BY session_id, (origin = ''), created_at ASC, id ASC
+    ) sh WHERE sh.host <> '${HOST_PRODUCTION}'`;
+
+// Whether a batch is STORED at all. Distinct from whether it is counted: a
+// deploy preview or the raw Railway hostname serves the identical SPA and its
+// localStorage mints visitors that never existed, so those are still refused
+// outright. The storefront and localhost are kept, told apart by their origin.
+const originIsRecorded = (origin) =>
+  !origin || countedOrigins.includes(origin) || isLocalOrigin(origin);
+
 const originCounts = (origin) => !origin || countedOrigins.includes(origin);
 
-// ── The shop's own browsing ───────────────────────────────────────────────────
-// Accounts and networks listed here are the shop's, not customers'. Read on
-// every ingest batch and changed about once a year, so it's cached; a failed
-// refresh keeps the last known set rather than briefly counting internal traffic
-// as real.
-let internalUserIds = new Set();
-let internalNetworks = [];
-let internalLoadedAt = 0;
-const INTERNAL_TTL_MS = 60_000;
+// ── Who the shop's own browsing used to be guessed to be ─────────────────────
+// The cache that fed three exclusion rules — a home broadband address, an
+// account list, a browser marked in admin — is gone with the rules themselves.
+// They were guesses about who was behind a live visit, and on a live shop that
+// is not a question a machine can answer: the network rule hid an entire
+// household, the account rule reached backwards through a browser's whole
+// history, and both refused that browser's later events outright.
+//
+// The rule now is the address bar. theolivegoose.ie is the shop, localhost is
+// testing, and the ?host= slicer tells them apart (see HOST_CASE). The one
+// manual exception is the owner pressing "This was me" on a row in Recent
+// visits, which filters at query time and never discards anything.
+//
+// The account list itself survives, because the panel still shows it and the
+// recent-visits table still labels a row that carries it — but it no longer
+// removes anybody's browsing or anybody's money.
+//
+// The IP helpers below are kept because the panel still SHOWS the owner which
+// network they are on, and still validates an address they type in. Showing and
+// validating is all they do now; nothing is excluded on the strength of them.
+
 
 // A home network is one address for every device on it — the owner's laptop, a
 // spouse's phone, a tablet — which is the only signal that covers people who
@@ -4755,36 +4982,6 @@ const matchedNetwork = (ip, networks) => {
 /** True when `ip` is on one of the shop's own networks. */
 const ipIsInternal = (ip, networks) => matchedNetwork(ip, networks) !== null;
 
-const getInternalConfig = async () => {
-  if (internalLoadedAt && Date.now() - internalLoadedAt < INTERNAL_TTL_MS) {
-    return { userIds: internalUserIds, networks: internalNetworks };
-  }
-  try {
-    const { rows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'analytics_internal'`);
-    const emails = (Array.isArray(rows[0]?.value?.emails) ? rows[0].value.emails : [])
-      .map((e) => String(e).toLowerCase().trim()).filter(Boolean);
-    // Same rule the orders side uses (see NOT_INTERNAL_ORDER): an entry starting
-    // with '@' matches every address at that domain, so the QA harness accounts
-    // are covered without listing each one.
-    const exact = emails.filter((e) => !e.startsWith('@'));
-    const domains = emails.filter((e) => e.startsWith('@'));
-    const ids = emails.length
-      ? (await pool.query(
-          `SELECT id FROM users
-            WHERE LOWER(email) = ANY($1::text[])
-               OR EXISTS (SELECT 1 FROM unnest($2::text[]) d WHERE LOWER(email) LIKE '%' || d)`,
-          [exact, domains]
-        )).rows.map((r) => r.id)
-      : [];
-    internalUserIds = new Set(ids);
-    internalNetworks = (Array.isArray(rows[0]?.value?.networks) ? rows[0].value.networks : [])
-      .map((n) => String(n).trim()).filter(Boolean);
-    internalLoadedAt = Date.now();
-  } catch (err) {
-    console.error('Could not refresh internal analytics config:', err.message);
-  }
-  return { userIds: internalUserIds, networks: internalNetworks };
-};
 
 // Device class from the User-Agent the browser sent with this request, with the
 // client's capability hint as a tie-breaker.
@@ -4831,12 +5028,31 @@ const MEASUREMENT_CHANGES = [
     date: '2026-08-24',
     note: 'Engagement rate and average engagement time began being measured on this date, so earlier periods show them as not measured rather than as zero. They follow Google Analytics\' definitions — foreground, visible time, and a session counting as engaged at ten seconds, a second page view, or a purchase — so they can be compared with any published benchmark. The shop\'s own visits are now removed from past periods as well as future ones. Naming one of your own accounts used to take effect only from that account\'s next visit; it now retires everything it ever browsed, and any visit can be retired by hand from "Recent visits". Traffic figures for earlier periods may therefore be lower than they read before this date — the difference is your own testing leaving the numbers, not a fall in trade.',
   },
+  {
+    date: '2026-08-27',
+    note: "How this shop decides whose visit counts changed completely on this date, so figures either side of it are not comparable. Three rules used to guess who was behind a visit — your home broadband, a list of accounts, and a flag written into whatever browser opened this panel — and each was wrong in a way nobody could see: the broadband rule hid everyone else in the house, the account rule reached backwards through a browser's whole history, and the browser flag attached itself the first time you looked at your own dashboard and stayed for good. Between them they had hidden real card payments and most of the shop's real browsing. They are gone. The rule now is the address bar: every visit to theolivegoose.ie is a real visit and every payment taken there is a real sale, whoever made it, and work on the site belongs on localhost, which is recorded separately and never counted here. Revenue is now simply every payment taken less anything refunded or returned, so it reconciles with Stripe. Traffic and revenue for earlier periods will read HIGHER than they did before this date — that is your own real activity coming back into the numbers, not a jump in trade. Separately, visits that fetch a page and never render it — scrapers — are now identified and left out, and counted on screen so you can see how many there were.",
+  },
 ];
 
 // Purchase events written by finalizeCheckoutSession when the client never sent
 // its analytics ids land on this sentinel id. It is not a real browsing session:
 // every such order would otherwise collapse into ONE distinct session_id and add
 // a phantom visitor to traffic, so it's excluded from every session/visitor count.
+// When the shop started asking browsers to report that they rendered a page —
+// Web Vitals samples and foreground engagement time. Same date as the second
+// entry in MEASUREMENT_CHANGES above, and it is referenced rather than repeated
+// because the two must not drift: this is the date before which the absence of a
+// rendering signal means "not measured", and after which it means "nothing
+// rendered". See NO_ONE_WAS_THERE.
+const RENDER_SIGNALS_FROM = '2026-08-24';
+// Named, not read off the end of the list above. It was briefly the last entry's
+// date, which is the same value and quietly wrong: adding a note dated later —
+// which happened within the hour — silently moved the rule with it. A constant
+// this load-bearing must not change because someone documented something else.
+if (!MEASUREMENT_CHANGES.some((c) => c.date === RENDER_SIGNALS_FROM)) {
+  throw new Error(`RENDER_SIGNALS_FROM ${RENDER_SIGNALS_FROM} has no measurement note explaining it`);
+}
+
 const NO_SESSION = 'server';
 
 // ── Who is on the shop's own list ─────────────────────────────────────────────
@@ -4941,10 +5157,28 @@ const PRICE_NUM = (expr) =>
 // or not its browser was ever seen again. Saving the list also backfills the
 // visitor table from it (see the PUT below), which is what additionally retires
 // the ANONYMOUS browsing either side of that sign-in.
+// Retirements the owner made BY HAND, and only those.
+//
+// The table also holds marks written automatically by rules that no longer run —
+// 'own network', 'internal account', 'browser marked in admin'. Those rules were
+// guesses about who was behind a visit, they were wrong about real customers and
+// real sales, and they are not consulted any more. The rows stay where they are
+// rather than being deleted: they are a record of what was hidden and when, and
+// deleting evidence to fix a bug is how the next person loses the trail.
+const HAND_RETIRED = "'marked from recent visits'";
+
+// What the dashboard reads instead of the raw table: the same rows, minus the
+// browsers the owner has pointed at and said "that one was me".
+//
+// It is a drop-in for `analytics_events` — aliased back to that name at each use
+// site — precisely so the exclusion cannot be forgotten in one of the twenty-odd
+// queries below and leave two figures on the same screen disagreeing about who
+// counts. The filter is by visitor, so retiring a browser removes its whole
+// history, and un-retiring it brings the whole thing back.
 const EXCLUDE_INTERNAL = `
   SELECT * FROM analytics_events ae
-   WHERE NOT EXISTS (SELECT 1 FROM analytics_internal_visitors iv WHERE iv.visitor_id = ae.visitor_id)
-     AND NOT EXISTS (SELECT 1 FROM users iu WHERE iu.id = ae.user_id AND ${INTERNAL_EMAIL_MATCH('iu.email')})`;
+   WHERE NOT EXISTS (SELECT 1 FROM analytics_internal_visitors iv
+                      WHERE iv.visitor_id = ae.visitor_id AND iv.reason = ${HAND_RETIRED})`;
 const EVENTS = `(${EXCLUDE_INTERNAL})`;
 
 // ── POST /api/analytics/events — batched ingestion from the storefront ────────
@@ -4961,56 +5195,54 @@ app.post('/api/analytics/events', analyticsLimiter, express.text({ type: 'text/p
   if (!visitorId || !sessionId || !events.length) return res.status(400).json({ error: 'Invalid payload' });
   if (isNonHuman(req.headers['user-agent'])) return res.status(204).end();
 
-  // Preview builds, the raw Railway hostname and localhost are the shop looking
-  // at itself on a different origin — each with its own localStorage, so each
-  // inventing visitors that never existed. 204 so the browser never retries.
+  // Preview builds and the raw Railway hostname are the shop looking at itself on
+  // a different origin — each with its own localStorage, so each inventing
+  // visitors that never existed. Refused outright; 204 so the browser never
+  // retries.
+  //
+  // Localhost is the exception, and it is a deliberate one. It used to be refused
+  // here too, which meant the owner could not answer "what did I just do on my
+  // own machine?" at all. It is now STORED, tagged with its origin, and kept out
+  // of every production figure by the dashboard's hostname slicer — which
+  // defaults to production and has to be moved off it by hand. Recording it and
+  // labelling it is what makes it answerable; dropping it only made it invisible.
   const origin = requestOrigin(req);
-  if (!originCounts(origin)) return res.status(204).end();
+  if (!originIsRecorded(origin)) return res.status(204).end();
 
   const { city, country } = geoFromHeaders(req);
 
   const userId = userIdFromSessionCookie(req);
 
-  // The owner's own browsing, by either route: signed in as an internal account,
-  // or a browser they've explicitly marked in Admin → Analytics.
+  // WHAT COUNTS AS THE SHOP'S OWN IS THE HOSTNAME, AND NOTHING ELSE.
   //
-  // What's remembered is the VISITOR, not the moment. The same browser was
-  // testing anonymously before the sign-in and will be again after the sign-out,
-  // and those events are just as much the shop's own traffic — so once a visitor
-  // id is known to be internal, everything it ever did is excluded, backwards as
-  // well as forwards (see EVENTS in the dashboard query below).
-  const { userIds, networks } = await getInternalConfig();
-  const flaggedByBrowser = body?.internal === true;
-  const isInternalAccount = !!userId && userIds.has(userId);
-  // Compared and discarded — see ipIsInternal. The address is never written down,
-  // and is only consulted when the edge vouched for it (see edgeClientIp).
-  const edgeIp = edgeClientIp(req);
-  // WHICH network matched is recorded alongside the mark, so removing that one
-  // network later releases exactly these visitors and no others.
-  const onNetwork = edgeIp ? matchedNetwork(edgeIp, networks) : null;
-  const reason = onNetwork ? 'own network'
-    : isInternalAccount ? 'internal account'
-    : 'browser marked in admin';
-  // Which network, or which account. Same purpose in both cases: an exclusion
-  // that cannot name its own cause cannot be released when that cause goes, and
-  // the release below would then have to guess.
-  const detail = onNetwork || (isInternalAccount ? String(userId) : '');
-  try {
-    if (flaggedByBrowser || isInternalAccount || onNetwork) {
-      await pool.query(
-        `INSERT INTO analytics_internal_visitors (visitor_id, reason, detail) VALUES ($1, $2, $3)
-         ON CONFLICT (visitor_id) DO NOTHING`,
-        [visitorId, reason, detail]
-      );
-      return res.status(204).end();
-    }
-    const known = await pool.query(`SELECT 1 FROM analytics_internal_visitors WHERE visitor_id = $1`, [visitorId]);
-    if (known.rowCount) return res.status(204).end();
-  } catch (err) {
-    // Never let the exclusion lookup cost us a real customer's events — an
-    // over-count is recoverable at query time, a dropped event is not.
-    console.error('Internal-visitor check failed, recording event anyway:', err.message);
-  }
+  // The live shop is the live shop: every visit to theolivegoose.ie is a real
+  // visit, and every card payment made there is a real sale, whoever was sitting
+  // at the keyboard. Testing happens on localhost, which is recorded under its
+  // own hostname and never appears in the shop's figures (see HOST_CASE and the
+  // ?host= slicer on the dashboard).
+  //
+  // This used to guess instead, and the guesses were wrong in the worst possible
+  // direction — silently, and on real data:
+  //
+  //   • ANY visit from the owner's home broadband was retired, so a friend, a
+  //     partner or a customer on the same wifi disappeared as well;
+  //   • signing in as a listed account retired that browser's whole history,
+  //     backwards, including visits that had nothing to do with the shop;
+  //   • the admin panel registered whatever browser opened it, so opening the
+  //     dashboard once cost that browser every visit it would ever make;
+  //   • and a visitor once retired had its later events REFUSED at this route —
+  //     not filtered later, discarded, with no way to get them back.
+  //
+  // Between them those rules had hidden 3 real card payments and most of the
+  // shop's real browsing, which is how a dashboard came to report €1.50 of
+  // revenue with zero purchasing sessions and a 0% conversion rate.
+  //
+  // Nothing is inferred here now and nothing is dropped. The one remaining way a
+  // visit leaves the numbers is the owner pressing "This was me" on that row in
+  // Recent visits — an explicit, visible, reversible decision about one browser,
+  // which is honoured at QUERY time (see EXCLUDE_INTERNAL) so the underlying
+  // events always survive to be counted again.
+
   // Classified once per batch from this request's own User-Agent — never from
   // the browser's viewport, which is what made narrow desktop windows "tablets".
   const device = classifyDevice(req.headers['user-agent'], clip(body?.events?.[0]?.device, 20));
@@ -5141,11 +5373,23 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   // disagree about whose visits were the shop's own.
   //
   // Requires the orders row to be aliased `o`, which every use site below does.
-  const NOT_INTERNAL_ORDER = `NOT EXISTS (
-    SELECT 1 FROM users iu
-     WHERE iu.id = o.user_id AND ${INTERNAL_EMAIL_MATCH('iu.email')})`;
-
-  const PAID = `payment_status = 'paid' AND refund_status <> 'refunded' AND ${NOT_INTERNAL_ORDER}`;
+  // Orders that count as a sale: paid, and not handed back.
+  //
+  // THAT IS THE WHOLE RULE, and it is deliberately the same rule Stripe applies.
+  // A revenue figure whose only job is to be trusted must reconcile against the
+  // payment processor to the cent, and every clause that quietly removes a real
+  // charge is a reason for it not to.
+  //
+  // There used to be a second test here: orders from an address on the internal
+  // account list were not sales. It is gone, and it should be. It hid three real
+  // €0.50 card payments that Stripe had taken, on a live shop where — by the
+  // owner's own rule — everything that happens is real. Testing belongs on
+  // localhost; the live site is the live site.
+  //
+  // The honest way to take money out of this figure is to refund it, which the
+  // clauses below already follow: a full refund drops the order, and an approved
+  // return deducts exactly what was handed back (see REFUNDED_VALUE).
+  const PAID = `payment_status = 'paid' AND refund_status <> 'refunded'`;
 
   // Money handed back through an approved return, which `refund_status` does NOT
   // record: applyReturnStatusChange refunds a single line (its price × quantity)
@@ -5204,11 +5448,54 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
   const device = ['mobile', 'tablet', 'desktop'].includes(String(req.query.device)) ? String(req.query.device) : null;
   const rawSource = typeof req.query.source === 'string' ? req.query.source.slice(0, 100) : '';
   const source = rawSource && rawSource !== 'all' ? rawSource : null;
-  const filtered = !!(device || source);
+
+  // ── Which hostname ────────────────────────────────────────────────────────
+  // The slicer that answers "is this figure the shop, or is it me?".
+  //
+  // DEFAULTS TO PRODUCTION, and that default is the point. These numbers get
+  // shown to investors, and the alternative — a dashboard that reads the whole
+  // table and hopes nothing else got in — is exactly how 6,950 fabricated rows
+  // from the test suite came to be reported as trade. A view that includes
+  // anything else now has to be asked for by name, and the panel says so on
+  // screen while it is.
+  //
+  // ?host=all lifts it; ?host=localhost isolates a developer's own machine;
+  // ?host=<origin> picks any other hostname that turned up.
+  const rawHost = typeof req.query.host === 'string' ? req.query.host.slice(0, 200) : '';
+  const host = rawHost === 'all' ? null : (rawHost || HOST_PRODUCTION);
+
+  // Two different questions, and conflating them is a bug waiting to happen.
+  //   `narrowed`  — has the reader asked for a SLICE of the shop's trade?
+  //                 That is what makes revenue a subset and needs saying on
+  //                 screen. Only device and source do it.
+  //   `filtered`  — is any session-membership condition in play at all? Drives
+  //                 the SQL. Hostname joins this one and not the other: showing
+  //                 the storefront rather than the storefront plus a developer's
+  //                 laptop is not a slice of trade, it is the correct scope.
+  const narrowed = !!(device || source);
+  // Automated traffic. Excluded by default and counted separately, because a
+  // scraper is not a shopper and nine of them made the shop look four times
+  // busier than it was — with a device split and a location map to match.
+  // ?machines=include puts them back for a window.
+  const withMachines = String(req.query.machines) === 'include';
+  // `filtered` decides whether the previous-window bound ($3) is passed at all,
+  // and the machine subquery spans both windows — so leaving it out here binds
+  // two parameters to a statement that references three, and every query on the
+  // page 500s the moment someone picks "Everything recorded".
+  const filtered = !!(device || source || host) || !withMachines;
 
   // One row per session: the device and source of its first tracked browsing
   // event. Spans both windows ($3 → $2) so the same definition serves the
   // current period and the one it's compared against.
+
+  // The hostname a session belongs to, in SQL. A session cannot span two of
+  // them — a visitor id lives in localStorage and localStorage is per-origin —
+  // so resolving it from the landing event is exact, not an approximation.
+  //
+  // It has to be a SESSION dimension rather than a row filter for the same
+  // reason device and source are: a confirmed purchase is written server-side
+  // with no origin at all, so filtering rows by origin would drop every purchase
+  // and report the storefront with zero revenue and 100% abandonment.
   const SESSION_DIMS = `
     SELECT DISTINCT ON (session_id) session_id,
            COALESCE(NULLIF(device, ''), 'unknown') AS device,
@@ -5219,25 +5506,104 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       AND session_id <> '${NO_SESSION}'
     ORDER BY session_id, created_at ASC, id ASC`;
 
+  // Hostname is resolved SEPARATELY from device and source, over a wider set of
+  // rows: everything except the server-written purchase.
+  //
+  // Device and source come from the landing *browsing* event on purpose — a page
+  // speed sample is not where a visit came from. But a speed sample does know
+  // which hostname it was measured on, and some sessions are nothing but speed
+  // samples. Folding host into the landing-event query left those sessions with
+  // no hostname at all, so a default of "show me the shop" silently dropped the
+  // shop's own Web Vitals — a page-speed card that empties itself is exactly the
+  // kind of quiet wrong this dashboard is supposed to be free of.
+  const SESSION_HOSTS = `
+    SELECT DISTINCT ON (session_id) session_id, ${HOST_CASE} AS host
+    FROM ${EVENTS} analytics_events
+    WHERE created_at >= ${T3} AND created_at < ${T2}
+      AND event_type <> 'purchase'
+      AND session_id <> '${NO_SESSION}'
+    ORDER BY session_id, (origin = ''), created_at ASC, id ASC`;
+
   // Filter params start at $4 and are identical for every query, so the whole
   // set can share one params array — no per-query index bookkeeping.
   const filterParams = [];
   const dimConds = [];
   if (device) { dimConds.push(`sd.device = $${4 + filterParams.length}`); filterParams.push(device); }
   if (source) { dimConds.push(`sd.source = $${4 + filterParams.length}`); filterParams.push(source); }
-  /** ` AND <col> IN (…matching sessions…)`, or '' when no filter is active. */
-  const SF = (col = 'session_id') =>
-    filtered ? ` AND ${col} IN (SELECT sd.session_id FROM (${SESSION_DIMS}) sd WHERE ${dimConds.join(' AND ')})` : '';
+  // A quoted literal rather than a bound param, so adding this dimension does not
+  // renumber $4… for every other query in the file. Escaped the same way the
+  // storefront origins are a few lines up; it is the only value here that can be
+  // an arbitrary hostname.
+  const hostLit = host ? `'${host.replace(/'/g, "''")}'` : null;
+
+  /**
+   * ` AND …` restricting a column of session ids to the chosen hostname.
+   *
+   * The two directions are deliberately NOT symmetrical.
+   *
+   * The shop's own view is the default, so it must never lose a session merely
+   * because this window cannot place it — a visit that began before the window
+   * opened has no landing event inside it, and a strict test would drop that
+   * session, its order and its revenue from the one view nobody asked for and
+   * everybody reads. So production means "not known to have come from anywhere
+   * else", which keeps the unplaceable and still excludes anything positively
+   * identified as a developer's machine or as not-a-browser.
+   *
+   * Any other hostname is asked for by name, and there the honest answer is the
+   * strict one: show what is known to have come from there, and nothing on the
+   * strength of not knowing.
+   *
+   * Written as IN / NOT IN against an UNCORRELATED subquery rather than as a
+   * correlated EXISTS. Several call sites pass a bare `session_id`, and inside a
+   * correlated subquery a bare column name binds to the INNERMOST table first —
+   * so `WHERE sh.session_id = session_id` silently compares the subquery's own
+   * column to itself, is true for every row, and turns the filter into "is any
+   * session anywhere on another hostname", which excludes the entire shop. The
+   * outer column sitting on the left of IN cannot be captured that way.
+   */
+  const HOST_SF = (col) => {
+    if (!hostLit) return '';
+    const from = `FROM (${SESSION_HOSTS}) sh`;
+    return host === HOST_PRODUCTION
+      ? ` AND ${col} NOT IN (SELECT sh.session_id ${from} WHERE sh.host <> ${hostLit})`
+      : ` AND ${col} IN (SELECT sh.session_id ${from} WHERE sh.host = ${hostLit})`;
+  };
+
+  /**
+   * ` AND <col> IN (…matching sessions…)`, or '' when nothing is filtered.
+   *
+   * `withHost` exists because the hostname must scope BROWSING but never the
+   * MONEY. Revenue comes from the orders table and an order is an order — a paid
+   * card payment does not stop being one because the session that placed it was
+   * never tied to a hostname. Narrowing revenue by this filter would quietly
+   * under-report trade on the very dashboard that gets shown to investors, which
+   * is the one direction of error worth engineering against.
+   */
+  const MACHINES = withMachines ? '' :
+    ` AND session_id NOT IN (${NO_ONE_WAS_THERE(`created_at >= ${T3} AND created_at < ${T2}`)})`;
+
+  const SF = (col = 'session_id', withHost = true) => {
+    let out = '';
+    if (dimConds.length) {
+      out += ` AND ${col} IN (SELECT sd.session_id FROM (${SESSION_DIMS}) sd WHERE ${dimConds.join(' AND ')})`;
+    }
+    if (withHost) out += HOST_SF(col);
+    // Deliberately inside SF so it reaches every event-derived figure at once —
+    // traffic, funnel, devices, locations, pages, vitals — rather than being
+    // remembered at twenty call sites and forgotten at one.
+    if (MACHINES) out += MACHINES.replace(/\bsession_id NOT IN\b/, `${col} NOT IN`);
+    return out;
+  };
 
   // Restricts the orders table to orders whose purchase event belongs to a
   // matching session. Keeps filtered revenue on the authoritative order total
   // (refunds excluded, discounts applied) instead of the props snapshot, so a
   // filtered figure is always a true subset of the unfiltered one.
   const ORDER_ATTR = (idCol) =>
-    filtered
+    narrowed
       ? ` AND ${idCol}::text IN (SELECT props->>'order_id' FROM ${EVENTS} analytics_events
            WHERE event_type = 'purchase'
-             AND created_at >= ${T3} AND created_at < ${T2G}${SF()})`
+             AND created_at >= ${T3} AND created_at < ${T2G}${SF('session_id', false)})`
       : '';
 
   // ?attr=source|medium|campaign switches the attribution table's grouping.
@@ -5268,7 +5634,7 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
     const PC = filtered ? [...w, ...filterParams] : [start, endExcl];
     const PW = [...w, ...filterParams];
 
-    const [traffic, newVsReturning, funnel, daily, sales, customers, topProducts, topPages, landingPages, sources, devices, vitals, locations, vitalsByPage, abandoned, signinWall, accounts, searches] = await Promise.all([
+    const [traffic, newVsReturning, funnel, daily, sales, customers, topProducts, topPages, landingPages, sources, machines, hosts, devices, vitals, locations, vitalsByPage, abandoned, signinWall, accounts, searches] = await Promise.all([
 
       // Traffic KPIs — current window vs the previous window of the same length.
       pool.query(
@@ -5683,17 +6049,29 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // who buy rather than merely people. The two answer different questions
       // and routinely disagree about which page matters.
       //
-      // Everything past the top ten is folded rather than dropped, for the same
-      // reason the location table folds: every session has a landing page, so a
-      // reader will total this column.
+      // Everything past the top ten is folded rather than dropped, because a
+      // reader totals this column against the Sessions tile.
+      //
+      // That used to be justified with "every session has a landing page", which
+      // is not true: a session whose only event is the server-written purchase
+      // never viewed a page, so it has no landing row — and it is counted as a
+      // session upstairs. Left out, this column came up one short of the tile
+      // above it with nothing to explain the difference. It is named instead.
       pool.query(
-        `WITH landing AS (
+        `WITH counted AS (
+           SELECT DISTINCT session_id FROM ${EVENTS} analytics_events
+           WHERE created_at >= ${T1} AND created_at < ${T2}
+             AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}
+         ), first_page AS (
            SELECT DISTINCT ON (session_id) session_id, path
            FROM ${EVENTS} analytics_events
            WHERE event_type = 'page_view'
              AND created_at >= ${T1} AND created_at < ${T2}
              AND session_id <> '${NO_SESSION}'${SF()}
            ORDER BY session_id, created_at ASC, id ASC
+         ), landing AS (
+           SELECT c.session_id, COALESCE(f.path, '(no page view recorded)') AS path
+           FROM counted c LEFT JOIN first_page f USING (session_id)
          ), converted AS (${CONVERTED}
          ), grouped AS (
            SELECT l.path, COUNT(*)::int AS sessions,
@@ -5721,12 +6099,47 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // Everything past the top 10 is folded into one row so the columns still
       // add up to the session and revenue totals above.
       pool.query(
-        `WITH landing AS (
+        `WITH counted AS (
+           -- Every session the Sessions tile counts, defined by exactly the same
+           -- predicate. This table is read as a distribution — a reader tots the
+           -- column and compares it to that tile — so it has to start from the
+           -- same set rather than from whatever happens to have a source.
+           SELECT DISTINCT session_id FROM ${EVENTS} analytics_events
+           WHERE created_at >= ${T1} AND created_at < ${T2}
+             AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${SF()}
+         ), landing AS (
            SELECT DISTINCT ON (session_id) session_id, ${ATTR_EXPRS[attr]} AS source
            FROM ${EVENTS} analytics_events
            WHERE created_at >= ${T1} AND created_at < ${T2}
              AND event_type NOT IN ('web_vital', 'purchase') AND session_id <> '${NO_SESSION}'${SF()}
            ORDER BY session_id, created_at ASC, id ASC
+         ), earlier AS (
+           -- Sessions that were already browsing before this window opened. Their
+           -- landing event — and therefore their source — is outside it.
+           SELECT DISTINCT session_id FROM ${EVENTS} analytics_events
+           WHERE created_at < ${T1}
+             AND event_type NOT IN ('web_vital', 'purchase')
+             AND session_id <> '${NO_SESSION}'
+         ), placed AS (
+           -- Every counted session gets a row, including the two kinds that have
+           -- no source of their own. Both used to be dropped, so this column came
+           -- up short of the Sessions tile above it and the reader was left to
+           -- notice. They are named instead — the same way the device split says
+           -- "unknown" and the map says "Unknown" — and they are named
+           -- SEPARATELY, because they are different facts:
+           --
+           --   • a visit that began before this window has a source, just not one
+           --     this window can see;
+           --   • a session whose only event is the server-written purchase never
+           --     browsed at all, so there is nothing to attribute.
+           SELECT c.session_id,
+                  COALESCE(l.source,
+                           CASE WHEN e.session_id IS NOT NULL
+                                THEN '(visit began before this period)'
+                                ELSE '(source not recorded)' END) AS source
+           FROM counted c
+           LEFT JOIN landing l USING (session_id)
+           LEFT JOIN earlier e ON e.session_id = c.session_id
          ), attributed AS (
            -- One row per ORDER in the window that carries a tracked purchase
            -- event. Keyed on the order and deduped with DISTINCT ON: a
@@ -5745,20 +6158,24 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
          ), purchases AS (
            SELECT session_id, COUNT(*)::int AS orders, SUM(net) AS revenue
            FROM attributed GROUP BY session_id
-         ), grouped AS (
-           SELECT l.source, COUNT(*)::int AS sessions,
-                  COALESCE(SUM(p.orders), 0)::int AS orders,
-                  COALESCE(SUM(p.revenue), 0) AS revenue
-           FROM landing l LEFT JOIN purchases p USING (session_id)
-           GROUP BY l.source
+         ), parts AS (
+           SELECT l.source, 1 AS sessions,
+                  COALESCE(p.orders, 0) AS orders, COALESCE(p.revenue, 0) AS revenue
+           FROM placed l LEFT JOIN purchases p USING (session_id)
            UNION ALL
-           -- Orders bought by a session that started BEFORE this window — a
-           -- visit that spanned the boundary, or a checkout resumed later. They
-           -- count in the Revenue KPI, so omitting them here would leave this
-           -- table quietly failing to add up to the figure above it.
-           SELECT '(visit began before this period)', 0, COUNT(*)::int, SUM(net)
-           FROM attributed WHERE session_id NOT IN (SELECT session_id FROM landing)
-           HAVING COUNT(*) > 0
+           -- Orders bought by a session with no presence in this window at all —
+           -- a checkout resumed long afterwards. They count in the Revenue KPI,
+           -- so omitting them here would leave this table quietly failing to add
+           -- up to the figure above it.
+           SELECT '(visit began before this period)', 0, 1, net
+           FROM attributed WHERE session_id NOT IN (SELECT session_id FROM placed)
+         ), grouped AS (
+           -- Aggregated AFTER the union, so a carried-over visit that is present
+           -- in this window and one that is not land in the same row instead of
+           -- printing the same label twice.
+           SELECT source, SUM(sessions)::int AS sessions,
+                  SUM(orders)::int AS orders, SUM(revenue) AS revenue
+           FROM parts GROUP BY source
          ), ranked AS (
            SELECT *, ROW_NUMBER() OVER (ORDER BY sessions DESC, source ASC) AS rn FROM grouped
          )
@@ -5770,6 +6187,46 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
          FROM ranked WHERE rn > 10 HAVING COUNT(*) > 0
          ORDER BY ord`,
         PC
+      ),
+
+      // How many automated visits this window is holding back. Reported whether
+      // or not they are being filtered, so the panel can always say what the
+      // difference between the two views would be.
+      pool.query(
+        `SELECT COUNT(*)::int AS n FROM (
+           ${NO_ONE_WAS_THERE(`created_at >= ${T1} AND created_at < ${T2}`)}
+         ) m
+         WHERE m.session_id IN (
+           SELECT session_id FROM ${EVENTS} analytics_events
+            WHERE created_at >= ${T1} AND created_at < ${T2}
+              AND session_id <> '${NO_SESSION}'${HOST_SF('session_id')})`,
+        // The previous-window bound is referenced only when the hostname filter
+        // is active; passing it unconditionally binds a parameter the statement
+        // never mentions, which Postgres rejects outright.
+        hostLit ? w : [start, endExcl]
+      ),
+
+      // What hostnames turned up in this window, for the slicer's options.
+      //
+      // Deliberately NOT scoped by the host filter — a dropdown built from the
+      // filtered set collapses to whatever is already selected, and the owner
+      // could never find their way back to the other views. Deliberately not
+      // scoped by device or source either: this list answers "what else is in
+      // this table", which is a question about the table, not about the
+      // current slice.
+      //
+      // Sessions, not events, so the sizes here mean the same thing as the
+      // Sessions tile: 6,950 fabricated event rows were 49 sessions, and the
+      // event count would have made the contamination look ten times worse
+      // than the thing it actually distorted.
+      pool.query(
+        `SELECT sh.host, COUNT(DISTINCT e.session_id)::int AS sessions
+         FROM ${EVENTS} e
+         JOIN (${SESSION_HOSTS}) sh USING (session_id)
+         WHERE e.created_at >= ${T1} AND e.created_at < ${T2}
+           AND e.session_id <> '${NO_SESSION}'
+         GROUP BY 1 ORDER BY sessions DESC, sh.host ASC`,
+        w
       ),
 
       // Device mix by sessions. The device is a property of the session (taken
@@ -6080,10 +6537,18 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
       // dates it asked for, so a clamped range can't be read as a fall in trade.
       start, end, days: lenDays, timezone: STORE_TZ,
       clamped,
-      filters: { device, source, attr },
+      filters: { device, source, attr, host: host ?? 'all' },
+      // Every hostname present in this window, largest first, so the slicer can
+      // offer what actually exists rather than a fixed list that goes stale.
+      hosts: hosts.rows,
+      // Visits this window judged to be automated — a page fetched, one flush,
+      // and then nothing. Always reported, so the figure can say what it left
+      // out rather than quietly reading low.
+      machine_sessions: machines.rows[0]?.n ?? 0,
+      machines_included: withMachines,
       // True when a device/source filter is active, so event-derived metrics
       // cover only orders that could be tied back to a matching session.
-      attributed: filtered,
+      attributed: narrowed,
       abandoned: abandoned.rows[0],
       // Null when nothing in this window went through the gate — a window that
       // predates the event must show nothing rather than a row of confident
@@ -6170,7 +6635,19 @@ app.get('/api/admin/analytics', requireAuth, async (req, res) => {
 
 // ── GET /api/admin/analytics/live — who's on the site right now ───────────────
 // "Active" = any tracked event in the last 5 minutes. Cheap enough to poll.
+//
+// THE SHOP ONLY, and unlike the dashboard there is no control to say otherwise —
+// there is no reading of "2 people on the site right now" that usefully includes
+// a developer running the site on their own laptop. This tile used to be safe by
+// accident, because localhost was refused at ingestion; now that it is recorded
+// so it can be looked at deliberately, this has to say so itself.
+//
+// The window is wider than the tile's own five minutes on purpose. A session is
+// placed by its first browsing event, and someone who has been reading for ten
+// minutes has that event outside the five-minute slice — judging them on the last
+// five minutes alone would leave them unplaceable and let them through.
 app.get('/api/admin/analytics/live', requireAuth, async (_req, res) => {
+  const THE_SHOP = ` AND session_id NOT IN (${NOT_THE_SHOP(`created_at > NOW() - INTERVAL '12 hours'`)})`;
   try {
     const [counts, pages] = await Promise.all([
       pool.query(
@@ -6178,13 +6655,13 @@ app.get('/api/admin/analytics/live', requireAuth, async (_req, res) => {
                 COUNT(DISTINCT visitor_id)::int AS active_visitors
          FROM ${EVENTS} analytics_events
          WHERE created_at > NOW() - INTERVAL '5 minutes'
-           AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'`
+           AND event_type <> 'web_vital' AND session_id <> '${NO_SESSION}'${THE_SHOP}`
       ),
       // Where each active session currently is — its most recent page view.
       pool.query(
         `SELECT path, COUNT(*)::int AS sessions FROM (
            SELECT DISTINCT ON (session_id) session_id, path FROM ${EVENTS} analytics_events
-           WHERE created_at > NOW() - INTERVAL '5 minutes' AND event_type = 'page_view'
+           WHERE created_at > NOW() - INTERVAL '5 minutes' AND event_type = 'page_view'${THE_SHOP}
            ORDER BY session_id, created_at DESC
          ) t GROUP BY path ORDER BY sessions DESC LIMIT 5`
       ),
@@ -6376,9 +6853,9 @@ app.put('/api/admin/analytics/internal', requireAuth, async (req, res) => {
       );
     }
 
-    // The ingest cache would otherwise serve the old list for up to a minute,
-    // which reads as "I saved it and it did nothing".
-    internalLoadedAt = 0;
+    // No cache to invalidate any more: ingestion no longer consults either list.
+    // They are kept for what the panel displays, and nothing reads them to decide
+    // whose visit counts — the hostname does that now (see HOST_CASE).
     res.json({ success: true, emails, networks });
   } catch (err) { sendServerError(res, err); }
 });
@@ -6430,6 +6907,18 @@ app.get('/api/admin/analytics/sessions', requireAuth, async (req, res) => {
   const days  = Math.min(Math.max(parseInt(req.query.days, 10)  || 7, 1), 90);
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
   const only  = ['counted', 'excluded'].includes(String(req.query.only)) ? String(req.query.only) : 'all';
+  // Same slicer as the dashboard above, and the same default: this list is where
+  // "was that visit real?" gets answered one row at a time, so it must be able to
+  // show the storefront on its own. 'all' lifts it. Unlike the dashboard it also
+  // PRINTS the hostname per row, because the whole job of this table is telling
+  // visits apart.
+  const rawHost = typeof req.query.host === 'string' ? req.query.host.slice(0, 200) : '';
+  const host = rawHost === 'all' ? null : (rawHost || HOST_PRODUCTION);
+  // Automated visits are LISTED here even though the dashboard leaves them out,
+  // and flagged rather than hidden. This table is the evidence the owner checks
+  // the figures against — a filter that removes rows from the numbers and from
+  // the audit trail at the same time is one nobody can verify.
+  const machineOnly = String(req.query.machines) === 'only';
 
   // Same source rule the dashboard uses, so a row here reads the same as the
   // attribution table it will be compared against.
@@ -6437,6 +6926,7 @@ app.get('/api/admin/analytics/sessions', requireAuth, async (req, res) => {
     NULLIF(utm_source, ''),
     substring(referrer from '^[a-zA-Z][a-zA-Z0-9+.-]*://(?:www\\.)?([^/:?#]+)'),
     CASE WHEN NULLIF(referrer, '') IS NULL THEN 'direct' ELSE '(unrecognised referrer)' END)`;
+
 
   try {
     const { rows } = await pool.query(
@@ -6465,6 +6955,31 @@ app.get('/api/admin/analytics/sessions', requireAuth, async (req, res) => {
                 COALESCE(NULLIF(device, ''), 'unknown') AS device, ${SRC} AS source
            FROM scoped WHERE event_type <> 'purchase'
           ORDER BY session_id, created_at ASC, id ASC
+       ), machine AS (
+         -- The same rule the dashboard filters on, and it must read from the RAW
+         -- table rather than from the scoped CTE above: scoped drops web_vital rows,
+         -- which are the single strongest sign that a real browser rendered the
+         -- page. Judging on scoped flagged every genuine one-page bounce as a
+         -- machine — the table would have contradicted the figures it exists to
+         -- let the owner verify.
+         SELECT ae.session_id FROM analytics_events ae
+          WHERE ae.created_at >= NOW() - make_interval(days => $1::int)
+            AND ae.session_id <> '${NO_SESSION}'
+          GROUP BY ae.session_id
+         HAVING COUNT(*) FILTER (WHERE ae.event_type = 'page_view') > 0
+            AND COUNT(*) FILTER (WHERE ae.event_type <> 'page_view') = 0
+            AND MIN(ae.created_at) >= '${RENDER_SIGNALS_FROM}'::date
+       ), host AS (
+         -- Resolved separately from the landing row above, and by a different
+         -- rule. Landing wants the FIRST browsing event, because that is what
+         -- "where did they arrive from" means. Hostname wants the first that
+         -- carries an origin: one origin-less row is not evidence that a visit
+         -- came from somewhere other than the shop, and letting it decide would
+         -- file a real visit under the wrong heading in the one table whose whole
+         -- job is telling visits apart.
+         SELECT DISTINCT ON (session_id) session_id, ${HOST_CASE} AS host
+           FROM scoped WHERE event_type <> 'purchase'
+          ORDER BY session_id, (origin = ''), created_at ASC, id ASC
        ), geo AS (
          -- Located rows first, so a session is placed by wherever it browsed
          -- from and only falls through to Unknown when nothing was located.
@@ -6490,24 +7005,41 @@ app.get('/api/admin/analytics/sessions', requireAuth, async (req, res) => {
               COALESCE(l.entry_path, '') AS entry_path,
               COALESCE(l.device, 'unknown') AS device,
               COALESCE(l.source, 'direct') AS source,
+              COALESCE(h.host, '${HOST_UNRECORDED}') AS host,
+              (m.session_id IS NOT NULL) AS automated,
               COALESCE(g.city, 'Unknown') AS city, COALESCE(g.country, '') AS country,
               COALESCE(o.orders, 0)::int AS orders, COALESCE(o.revenue, 0)::float AS revenue,
-              (iv.visitor_id IS NOT NULL OR a.internal_account) AS excluded,
-              COALESCE(iv.reason, CASE WHEN a.internal_account THEN 'internal account' ELSE '' END) AS excluded_reason,
+              -- Exactly what the dashboard above leaves out, and nothing else.
+              -- This flag used to mean "anything in the exclusion table, plus any
+              -- listed account", which is no longer what any figure is filtered
+              -- by. A row marked Retired here that is in fact being counted up
+              -- there is the dashboard disagreeing with itself, and it is the
+              -- exact contradiction this table exists to let the owner resolve.
+              (iv.visitor_id IS NOT NULL) AS excluded,
+              COALESCE(iv.reason, '') AS excluded_reason,
               COALESCE(iv.detail, '') AS excluded_detail
          FROM agg a
          LEFT JOIN landing l USING (session_id)
+         LEFT JOIN host h USING (session_id)
+         LEFT JOIN machine m USING (session_id)
          LEFT JOIN geo g USING (session_id)
          LEFT JOIN ord o USING (session_id)
-         LEFT JOIN analytics_internal_visitors iv ON iv.visitor_id = a.visitor_id
-        WHERE $3 = 'all'
-           OR ($3 = 'excluded' AND (iv.visitor_id IS NOT NULL OR a.internal_account))
-           OR ($3 = 'counted'  AND iv.visitor_id IS NULL AND NOT a.internal_account)
+         -- Hand-made retirements only. The table also holds marks written by
+         -- rules that no longer run ('own network', 'browser marked in admin',
+         -- 'internal account'); those rows are history, not a filter, and
+         -- showing them as Retired would claim visits are hidden that are not.
+         LEFT JOIN analytics_internal_visitors iv
+                ON iv.visitor_id = a.visitor_id AND iv.reason = ${HAND_RETIRED}
+        WHERE ($3 = 'all'
+           OR ($3 = 'excluded' AND iv.visitor_id IS NOT NULL)
+           OR ($3 = 'counted'  AND iv.visitor_id IS NULL))
+          AND ($4::text IS NULL OR COALESCE(h.host, '${HOST_UNRECORDED}') = $4)
+          AND ($5 = false OR m.session_id IS NOT NULL)
         ORDER BY a.started_at DESC
         LIMIT $2`,
-      [days, limit, only]
+      [days, limit, only, host, machineOnly]
     );
-    res.json({ days, sessions: rows });
+    res.json({ days, host: host ?? 'all', sessions: rows });
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -6626,7 +7158,13 @@ app.post('/api/admin/ga4/test', requireAuth, async (_req, res) => {
     if (!apiSecret)
       return res.json({ ok: false, problem: 'No API secret saved yet — the server can only report purchases with one.' });
 
-    const clientId = `${Math.floor(Math.random() * 1e9)}.${Math.floor(Date.now() / 1000)}`;
+    // STABLE, not random. A GA4 client id IS a user: a fresh one on every press
+    // registered a brand-new user in the property each time the owner pressed
+    // "Send a test event" — permanently, in the numbers the shop is judged on.
+    // Derived from the measurement id so it is the same id every time, for this
+    // property, for ever: ten presses are one user, not ten.
+    const digest = crypto.createHash('sha256').update(`admin-test:${settings.measurementId}`).digest();
+    const clientId = `${digest.readUInt32BE(0)}.${digest.readUInt32BE(4)}`;
     const common = { measurementId: settings.measurementId, apiSecret, clientId };
 
     const check = await sendGa4Event({
@@ -6650,7 +7188,10 @@ app.post('/api/admin/ga4/test', requireAuth, async (_req, res) => {
     const live = await sendGa4Event({
       ...common,
       name: 'admin_test',
-      params: { source: 'admin_panel', debug_mode: true },
+      // Labelled internal so GA4's own filter can drop it, on top of the stable
+      // client id above. A diagnostic must not be able to move the shop's
+      // reported audience.
+      params: { source: 'admin_panel', traffic_type: 'internal', debug_mode: true },
     });
 
     res.json({

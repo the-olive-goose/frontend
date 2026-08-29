@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { consumeAuthReturn } from "@/lib/authReturn";
+import { track } from "@/lib/analytics";
 
 // How the account was originally created, phrased for a shopper who has no idea
 // what a "provider" is.
@@ -64,7 +65,20 @@ const AuthCallback = () => {
     // The backend already set the session cookie during the OAuth redirect —
     // just confirm it took and load the user.
     completeOAuthLogin().then(ok => {
-      if (ok) { navigate(returnTo, { replace: true }); return; }
+      if (ok) {
+        // The only place a Google sign-in can be reported. Signing in with
+        // Google is a full-page round trip through the backend, so it never
+        // passes through the sign-in form that fires these events — every
+        // account opened this way was invisible to analytics, to GA4 and to the
+        // Pixel, and the panel read "sign-ups: 0" on a day one had happened.
+        //
+        // `new=1` is set by the backend, which is the only side that knows
+        // whether the account already existed. Tracked BEFORE navigating: the
+        // redirect replaces this page, and an event queued after it is a race.
+        track(params.get("new") === "1" ? "signup" : "login", { method: "google" });
+        navigate(returnTo, { replace: true });
+        return;
+      }
       setError("Failed to complete sign-in. Please try again.");
       setTimeout(() => navigate(returnTo, { replace: true }), 3000);
     });

@@ -11,6 +11,7 @@ import { cartSubtotal, formatPrice } from "@/lib/cart";
 import { track, lineItems } from "@/lib/analytics";
 import { computeBundleSavings } from "@/lib/bundleSavings";
 import { getBundleNudges } from "@/lib/bundleNudges";
+import { fallbackOnError } from "@/lib/imageFallback";
 import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
 import FooterSection from "@/components/sections/FooterSection";
@@ -204,6 +205,7 @@ const BasketPage = () => {
                         {/* Product image */}
                         <a href="/shop" className="shrink-0">
                           <img src={img} alt={item.product.name}
+                            onError={fallbackOnError(FALLBACK_IMGS[idx % 2])}
                             className="rounded-lg object-cover"
                             style={{ width: "clamp(72px,20vw,120px)", height: "clamp(72px,20vw,120px)", mixBlendMode: "multiply" }} />
                         </a>

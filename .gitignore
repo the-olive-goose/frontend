@@ -60,6 +60,8 @@ backend/uploads/
 
 # e2e isolated Postgres data
 .e2e-pgdata/
+# Every Conversions API call the e2e run's Meta sink recorded — see e2e/setup/meta-sink.mjs
+.e2e-meta-sink.jsonl
 .analytics-pgdata/
 playwright-report/
 

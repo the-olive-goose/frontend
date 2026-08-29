@@ -40,6 +40,14 @@ const PG_DIR = path.join(REPO, ".analytics-pgdata");
 const DB = `postgresql://postgres:postgres@localhost:${PG_PORT}/analytics_check`;
 const PORT = Number(process.env.ANALYTICS_BACKEND_PORT) || 3055;
 const API = `http://localhost:${PORT}`;
+
+// Every helper below posts as a browser, because ingestion now requires one:
+// a User-Agent that does not open with "Mozilla/" is not a person and is turned
+// away (see isNonHuman in backend/index.js). Node's fetch says "node", so
+// without this every check in this file would be asserting against an empty
+// table — which is exactly the failure mode this constant exists to make loud.
+const BROWSER_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const ADMIN = { email: "analytics-check@test.local", password: "E2eAdmin123!" };
 const ADMIN_HASH = "$2a$10$r.uiYaq6WeUsL5yheEzQ1Oup06Vq8wafTH/mlYWV88UPAEahfCpZi";
 const TZ = "Europe/Dublin";
@@ -162,7 +170,14 @@ async function seed(pool) {
   await ev("s2", "v2", "purchase", at(2, 12, 3), { path: "/checkout/success", props: { order_id: O2, total: 50 } });
 
   // S3 — mobile, direct, single page view, no engagement → a true bounce.
+  //
+  // The Web Vital is not decoration. A bouncing browser still reports on the way
+  // out — verified against a real one driving this very site — and a fixture
+  // without it models a browser that does not exist. It would also be
+  // indistinguishable from the scrapers this suite checks for further down, so
+  // leaving it off would quietly assert that every real bounce is a robot.
   await ev("s3", "v3", "page_view", at(2, 9), { path: "/", dev: "mobile" });
+  await ev("s3", "v3", "web_vital", at(2, 9, 1), { path: "/", dev: "mobile", props: { metric: "TTFB", value: 180 } });
 
   // S4 — desktop/google, browses, reads a product and carts it, never buys.
   await ev("s4", "v4", "page_view", at(1, 14), { path: "/shop", src: "google", dev: "desktop" });
@@ -201,6 +216,8 @@ async function seed(pool) {
   // Under UTC bucketing this lands on the wrong calendar day. Also the one
   // visitor who declined cookies, so their id dies with the tab.
   await ev("s6", "v6", "page_view", at(1, 0, 30), { path: "/", dev: "desktop", scope: "session" });
+  // Same reason as S3: a real browser says it rendered.
+  await ev("s6", "v6", "web_vital", at(1, 0, 31), { path: "/", dev: "desktop", scope: "session", props: { metric: "TTFB", value: 210 } });
 
   // S7 — a LEGACY-shaped session, 20 days back so it falls outside both the
   // main window and the previous one it is compared against. It carries only the
@@ -274,6 +291,22 @@ async function main() {
   console.log("backend up\n");
 
   const pool = new Pool({ connectionString: DB });
+
+  // Every fixture row below is written straight to the table rather than through
+  // ingestion, and a row written that way has no `origin` — which real traffic
+  // always carries, because a browser sends an Origin header on every POST. That
+  // used not to matter; it does now that the dashboard reports the STOREFRONT by
+  // default and has to be asked for anything else (?host=). Left as-is, every
+  // fixture in this file would model traffic from nowhere and the whole suite
+  // would assert against an empty shop.
+  //
+  // So the column defaults to the storefront for the duration of this run: the
+  // fixtures mean what they have always meant, and the handful of checks that
+  // care about origin set it explicitly over HTTP anyway.
+  await pool.query(
+    `ALTER TABLE analytics_events ALTER COLUMN origin SET DEFAULT '${COUNTED_ORIGIN}'`
+  );
+
   await seed(pool);
 
   const login = await fetch(`${API}/api/auth/login`, {
@@ -542,24 +575,71 @@ async function main() {
   const rowsFor = async (visitor) =>
     (await pool.query(`SELECT COUNT(*)::int AS n FROM analytics_events WHERE visitor_id = $1`, [visitor])).rows[0].n;
 
+  // How many VISITS a browser has made, as distinct from how many rows it wrote.
+  // A visit now carries a rendering signal alongside its page view, so a raw row
+  // count would read double and mean neither thing.
+  const visitsFor = async (visitor) =>
+    (await pool.query(
+      `SELECT COUNT(*)::int AS n FROM analytics_events
+        WHERE visitor_id = $1 AND event_type = 'page_view'`, [visitor])).rows[0].n;
+
+  // The visitor ids the dashboard would report under each hostname. Read from the
+  // table through the same CASE the dashboard uses, so this asserts the SPLIT
+  // rather than re-implementing it: a localhost row that is stored but leaks into
+  // the storefront's figures is the failure this is here to catch.
+  const hostsOf = async () => {
+    const { rows } = await pool.query(
+      `SELECT visitor_id,
+              CASE WHEN origin = $1 THEN 'production'
+                   WHEN origin ~* '^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?$' THEN 'localhost'
+                   WHEN origin = '' THEN '(not recorded)'
+                   ELSE origin END AS host
+         FROM analytics_events`, [COUNTED_ORIGIN]);
+    return {
+      production: rows.filter(r => r.host === "production").map(r => r.visitor_id),
+      localhost: rows.filter(r => r.host === "localhost").map(r => r.visitor_id),
+    };
+  };
+
   const send = async (visitor, origin, extraHeaders = {}) => {
     const r = await fetch(`${API}/api/analytics/events`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}), ...extraHeaders },
+      headers: {
+        "Content-Type": "application/json", "User-Agent": BROWSER_UA,
+        ...(origin ? { Origin: origin } : {}), ...extraHeaders,
+      },
       body: JSON.stringify({
         visitor_id: visitor, session_id: visitor, visitor_scope: "persistent",
-        events: [{ type: "page_view", path: "/" }],
+        events: [
+          { type: "page_view", path: "/" },
+          // A real browser reports that it rendered — verified against one
+          // driving this site. Without this every visitor in this file would be
+          // a single bare page view, which is the exact shape of the automated
+          // traffic checked for further down: the suite would be asserting that
+          // real shoppers are scrapers.
+          { type: "web_vital", path: "/", props: { metric: "TTFB", value: 190 } },
+        ],
       }),
     });
     // 403 is the CORS layer refusing an origin the shop doesn't serve, which is
     // the earlier of the two ways a stray hostname is turned away. Both end in
     // no row, and no row is what these checks are actually about.
     if (![204, 403].includes(r.status)) throw new Error(`ingest ${r.status}`);
-    return rowsFor(visitor);
+    return visitsFor(visitor);
   };
 
   eq("the real storefront is counted", await send("origin-real", COUNTED_ORIGIN), 1);
-  eq("localhost pointed at this database is not", await send("origin-localhost", "http://localhost:8080"), 0);
+  // Localhost is now KEPT rather than dropped — and then kept out of the shop's
+  // numbers by the dashboard's hostname slicer, which reports the storefront
+  // unless asked otherwise (see ?host= in GET /api/admin/analytics).
+  //
+  // Dropping it at the door meant the owner could not answer "what did I just do
+  // on my own machine?" at all; a visit that isn't recorded isn't excluded, it is
+  // invisible. Recording it and labelling it is what makes it answerable, and the
+  // separation is asserted below rather than assumed.
+  eq("localhost pointed at this database is recorded", await send("origin-localhost", "http://localhost:8080"), 1);
+  eq("…but it is NOT the shop's traffic", (await hostsOf()).production.includes("origin-localhost"), false);
+  eq("…and it can be looked at on its own", (await hostsOf()).localhost.includes("origin-localhost"), true);
   eq("the Railway hostname serving the same SPA is not", await send("origin-railway", "https://frontend-production-a1bd.up.railway.app"), 0);
   eq("a deploy preview is not", await send("origin-preview", "https://deploy-preview-12--og.netlify.app"), 0);
   // Fails open on purpose: if a proxy ever stops forwarding the header the shop
@@ -569,25 +649,220 @@ async function main() {
     (await pool.query(`SELECT origin FROM analytics_events WHERE visitor_id = 'origin-real'`)).rows[0].origin,
     COUNTED_ORIGIN);
 
+  // ── The hostname slicer ─────────────────────────────────────────────────────
+  // What the owner asked for after finding the dashboard reporting the test
+  // suite: a control that answers "is this figure my shop, or is it me?".
+  //
+  // The default answer must be the shop. These numbers get screenshotted for
+  // investors, and a dashboard that reads the whole table and hopes nothing else
+  // got in is precisely how 6,950 fabricated rows came to be reported as trade.
+  console.log("\n\x1b[1mthe hostname slicer\x1b[0m");
+
+  const hostRow = (payload, name) => payload.hosts.find(h => h.host === name);
+  const shop = await get();
+  const everywhere = await get("&host=all");
+  const mine = await get("&host=localhost");
+
+  // The list of hostnames is built ignoring the filter — a dropdown assembled
+  // from the filtered set would collapse to whatever is already selected and
+  // leave no way back to the other views.
+  eq("the shop's own view still offers the other hostnames", !!hostRow(shop, "localhost"), true);
+  eq("…and names how big each one is", hostRow(shop, "localhost").sessions, 1);
+
+  // The separation itself, in both directions.
+  eq("localhost is not in the shop's numbers", shop.traffic.sessions < everywhere.traffic.sessions, true);
+  eq("…and can be looked at on its own", mine.traffic.sessions, 1);
+  eq("…where it is the only thing shown", mine.traffic.visitors, 1);
+
+  // A batch that arrived claiming no origin — the shape every event the test
+  // suite wrote had. Recorded, and kept out of the shop unless asked for.
+  eq("traffic from nowhere is not the shop's either",
+    everywhere.traffic.sessions - shop.traffic.sessions >= 2, true);
+
+  // THE ONE THAT MATTERS MOST. Revenue comes from the orders table and an order
+  // is an order: a paid card payment does not stop being one because the session
+  // that placed it cannot be tied to a hostname. Narrowing the money by this
+  // filter would under-report trade on the dashboard shown to investors, which
+  // is the one direction of error worth engineering against.
+  eq("the slicer never moves the money", shop.sales.revenue, everywhere.sales.revenue);
+  eq("…nor the order count", shop.sales.orders, everywhere.sales.orders);
+  eq("…and it is not reported as a narrowed view", shop.attributed, false);
+
+  eq("the shop's view says which slice it is", shop.filters.host, "production");
+  eq("…and 'everywhere' says so too", everywhere.filters.host, "all");
+
+  // ── Which hostname a visit belongs to ──────────────────────────────────────
+  // Judged on the first event that actually CARRIES an origin, not simply the
+  // earliest event. A visit that began before the window has no landing row
+  // inside it, and one origin-less row must not be enough to file a real session
+  // as "not the shop" and delete it from the figures. Absence of evidence is the
+  // last resort here, never the first.
+  // A real browser: a page view AND the rendering signal that comes with it.
+  // Without the second row these fixtures would be excluded as machines, and the
+  // hostname assertions below would pass for entirely the wrong reason.
+  const plant = async (sid, origin, when) => {
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, device, origin, created_at)
+       VALUES ($1,$1,'page_view','/','desktop',$2,$3)`, [sid, origin, when]);
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, device, origin, created_at)
+       VALUES ($1,$1,'web_vital','/','{"metric":"TTFB","value":180}','desktop',$2,$3)`, [sid, origin, when]);
+  };
+
+  const beforeCarry = (await get()).traffic.sessions;
+  await plant("carried-over-visit", COUNTED_ORIGIN, at(3, 12));   // landed earlier
+  await plant("carried-over-visit", "", at(1, 12));               // still here, origin missing
+  eq("a visit that landed before the window still counts inside it",
+    (await get()).traffic.sessions, beforeCarry + 1);
+
+  // The contrasting shape, and the one that was flooding the live table: nothing
+  // anywhere in the session says it came from the shop.
+  // A real browser — rendering signal and all — that simply arrived without an
+  // origin. Excluded by HOSTNAME, which is what this checks; if it were a bare
+  // page view it would be excluded as a machine instead and prove nothing.
+  const beforeNowhere = (await get()).traffic.sessions;
+  await plant("from-nowhere-at-all", "", at(1, 13));
+  eq("a visit with no origin anywhere does not", (await get()).traffic.sessions, beforeNowhere);
+  eq("…and neither drifts into the localhost view on the strength of not knowing",
+    (await get("&host=localhost")).traffic.sessions, 1);
+
+  // ── Traffic where nobody was actually there ────────────────────────────────
+  // Nine of these arrived on the live shop in three days and made it look four
+  // times busier than it was. Every one was a single page view claiming five
+  // seconds of engagement — 5000, 5001, 5002, 5004 ms, which is the flush
+  // interval to the millisecond — with no Web Vitals, no clicks and no
+  // end-of-visit signal, from a "mobile" device in a US city at three in the
+  // morning. They dragged a device split and a location map along with them:
+  // the owner had used a desktop, in Ireland, and the panel said four of nine
+  // visits were mobile and most were American.
+  //
+  // They cannot be caught by name — they claim to be mobile Safari, they run
+  // JavaScript, and they pass every entry in the bot list. What gives them away
+  // is that a real browser announces the END of a page: visibilitychange or
+  // pagehide fires the final flush, and that flush carries user_engagement and
+  // every Web Vital the page measured. These never fire it, because nothing
+  // closed the page — the client simply stopped existing.
+  console.log("\n\x1b[1mtraffic where nobody was actually there\x1b[0m");
+
+  const oneFlushAndGone = (visitor) => fetch(`${API}/api/analytics/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": BROWSER_UA, Origin: COUNTED_ORIGIN },
+    body: JSON.stringify({
+      visitor_id: visitor, session_id: visitor, visitor_scope: "persistent",
+      engagement_ms: 5001,                       // exactly one flush, to the ms
+      events: [{ type: "page_view", path: "/", device: "mobile" }],
+    }),
+  });
+
+  const beforeMachines = await get();
+  await oneFlushAndGone("scraper-one-page-a");
+  await oneFlushAndGone("scraper-one-page-b");
+  const withMachines = await get();
+
+  eq("a page fetched and abandoned is not a visitor",
+    withMachines.traffic.visitors, beforeMachines.traffic.visitors);
+  eq("…nor a session", withMachines.traffic.sessions, beforeMachines.traffic.sessions);
+  eq("…and it does not put a phone in the device split",
+    withMachines.devices.reduce((n, d) => n + d.sessions, 0),
+    beforeMachines.devices.reduce((n, d) => n + d.sessions, 0));
+  // Counted and named, never silently removed: a figure that reads low without
+  // saying why is the thing that destroys confidence in the whole page.
+  eq("…but it IS counted, and reported", withMachines.machine_sessions, beforeMachines.machine_sessions + 2);
+  eq("…and can be put back",
+    (await get("&machines=include")).traffic.sessions - beforeMachines.traffic.sessions, 2);
+  eq("…which says so on the payload", (await get("&machines=include")).machines_included, true);
+
+  // The conservative half, and the one that matters most: ANY other event makes
+  // a visit real. A shopper who bounces still reports Web Vitals on the way out.
+  const realBounce = async (visitor) => {
+    await fetch(`${API}/api/analytics/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": BROWSER_UA, Origin: COUNTED_ORIGIN },
+      body: JSON.stringify({
+        visitor_id: visitor, session_id: visitor, visitor_scope: "persistent",
+        engagement_ms: 1200,
+        events: [
+          { type: "page_view", path: "/", device: "mobile" },
+          { type: "web_vital", path: "/", props: { metric: "TTFB", value: 210 } },
+        ],
+      }),
+    });
+  };
+  const beforeBounce = await get();
+  await realBounce("a-one-second-bounce");
+  eq("a real one-second bounce is still a visitor",
+    (await get()).traffic.visitors, beforeBounce.traffic.visitors + 1);
+  eq("…and is not counted as automated",
+    (await get()).machine_sessions, beforeBounce.machine_sessions);
+
+  // Listed, not hidden. The visits table is what the figures get checked
+  // against, so a visit the dashboard left out must appear there saying so.
+  const machineRows = await (await fetch(
+    `${API}/api/admin/analytics/sessions?days=7&limit=200&machines=only`, { headers: auth })).json();
+  eq("an automated visit is listed, and flagged",
+    machineRows.sessions.some(r => r.visitor_id === "scraper-one-page-a" && r.automated), true);
+  eq("…and a real one is not flagged",
+    machineRows.sessions.some(r => r.visitor_id === "a-one-second-bounce"), false);
+
+  // ── Who is on the site right now ───────────────────────────────────────────
+  // The live tile has no slicer of its own, and no reading of "2 people on the
+  // site right now" usefully includes a developer running the shop on a laptop.
+  // It was safe by accident while localhost was refused at ingestion; now that
+  // localhost is recorded so it can be looked at deliberately, it has to say so.
+  const rightNow = (sid, origin) => pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, device, origin, created_at)
+     VALUES ($1,$1,'page_view','/','desktop',$2, NOW() - INTERVAL '1 minute')`, [sid, origin]);
+  // A delta, not an absolute: everything this suite has ingested over HTTP landed
+  // seconds ago and is legitimately "on the site right now" too.
+  const liveNow = async () => (await fetch(`${API}/api/admin/analytics/live`, { headers: auth })).json();
+  const liveBefore = await liveNow();
+  await rightNow("live-a-real-shopper", COUNTED_ORIGIN);
+  await rightNow("live-a-developer00", "http://localhost:8080");
+  await rightNow("live-from-nowhere0", "");
+  const liveAfter = await liveNow();
+  eq("three arrive, and exactly one of them is on the shop",
+    liveAfter.active_sessions - liveBefore.active_sessions, 1);
+  eq("…counted as one visitor, not three",
+    liveAfter.active_visitors - liveBefore.active_visitors, 1);
+  eq("…and the page list agrees with the count",
+    liveAfter.top_pages.reduce((n, p) => n + p.sessions, 0)
+      - liveBefore.top_pages.reduce((n, p) => n + p.sessions, 0), 1);
+
   const visitors = async () => (await get()).traffic.visitors;
   const baseline = await visitors();
 
-  // A browser the owner marks in Admin → Analytics. The exclusion keys on the
-  // visitor, so it has to retire what that browser already sent — marking it
-  // only from now on would leave the inflated number on screen.
+  // ── Nothing about a live visit is guessed at ───────────────────────────────
+  // The live shop is the live shop. A visit to it is a real visit and a payment
+  // taken on it is a real sale, whoever was at the keyboard; testing happens on
+  // localhost, which has its own hostname and never reaches these figures.
+  //
+  // Three rules used to guess instead, and each was wrong in the direction that
+  // cannot be noticed — silently, on real data:
+  //
+  //   • the home-broadband rule retired ANY visit from that address, so a
+  //     partner, a housemate or a customer on the same wifi vanished too;
+  //   • signing in as a listed account retired that browser's whole history,
+  //     backwards, including visits that had nothing to do with the shop;
+  //   • the admin panel marked whatever browser opened it, so looking at the
+  //     dashboard once cost that browser every visit it would ever make.
+  //
+  // Between them they hid three real card payments and most of the shop's real
+  // browsing, which is how a dashboard came to report revenue with no purchasing
+  // sessions and a 0% conversion rate. What follows is the guarantee that they
+  // are gone, stated as the thing that used to fail.
+
+  // The admin's own browser, opening the panel, is still a visitor.
   await send("owner-phone", COUNTED_ORIGIN);
-  eq("an unmarked browser is a visitor", await visitors(), baseline + 1);
+  eq("a browser is a visitor", await visitors(), baseline + 1);
   const mark = await fetch(`${API}/api/admin/analytics/internal/browser`, {
     method: "POST", headers: { ...auth, "Content-Type": "application/json" },
     body: JSON.stringify({ visitor_id: "owner-phone" }),
   });
-  eq("marking the browser succeeds", mark.status, 200);
-  eq("…and takes its whole history with it", await visitors(), baseline);
-  eq("…and it stops being recorded at all", await send("owner-phone", COUNTED_ORIGIN), 1);
+  eq("…and marking it in admin no longer removes it", await visitors(), baseline + 1);
+  eq("…and it keeps being recorded", await send("owner-phone", COUNTED_ORIGIN), 2);
+  void mark;
 
-  // The account route. It matters that this reaches BACKWARDS: a test checkout
-  // is anonymous browsing followed by a sign-in, and only the sign-in identifies
-  // it — so the page views before it are just as much the shop's own traffic.
+  // The account route, which used to reach backwards through a whole history.
   const ownerId = (await pool.query(
     `INSERT INTO users (email, full_name) VALUES ('owner@test.local','Owner') RETURNING id`
   )).rows[0].id;
@@ -598,30 +873,53 @@ async function main() {
     method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
     body: JSON.stringify({ emails: ["owner@test.local", "not-an-email", "OTHER@Test.Local"] }),
   });
-  eq("the account list saves, normalised and validated",
+  eq("the account list still saves, normalised and validated",
     (await saved.json()).emails, ["owner@test.local", "other@test.local"]);
   await send("owner-laptop", COUNTED_ORIGIN, { Cookie: sessionCookie(ownerId) });
-  eq("signing in as an internal account retires that browser's earlier browsing too",
-    await visitors(), withOwner - 1);
-  eq("…and nothing new is stored for it", await rowsFor("owner-laptop"), 2);
+  eq("signing in as a listed account does not erase that browser's browsing",
+    await visitors(), withOwner);
+  eq("…and its events are still being stored", await visitsFor("owner-laptop"), 3);
 
-  // A customer who happens to be signed in is still a customer.
+  // A customer who happens to be signed in was always a customer, and still is.
   const shopper = (await pool.query(`SELECT id FROM users WHERE email = 'c1@test.local'`)).rows[0].id;
   const after = await visitors();
   await send("real-shopper", COUNTED_ORIGIN, { Cookie: sessionCookie(shopper) });
-  eq("a signed-in customer is not excluded", await visitors(), after + 1);
+  eq("a signed-in customer is counted", await visitors(), after + 1);
+
+  // The one manual exception, and the whole point of it being manual: it is a
+  // decision about one browser, it is visible on the row that made it, and it is
+  // reversible — the events themselves are never discarded, only filtered.
+  const beforeHand = await visitors();
+  await send("a-friend-i-asked", COUNTED_ORIGIN);
+  eq("a visit the owner has not touched is counted", await visitors(), beforeHand + 1);
+  const byHand = (enabled) => fetch(`${API}/api/admin/analytics/internal/visitor`, {
+    method: "POST", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ visitor_id: "a-friend-i-asked", enabled }),
+  });
+  await byHand(true);
+  eq("pressing 'This was me' takes that browser out", await visitors(), beforeHand);
+  eq("…without discarding what it recorded", await visitsFor("a-friend-i-asked") > 0, true);
+  eq("…and it keeps recording, so this stays undoable",
+    await send("a-friend-i-asked", COUNTED_ORIGIN), 2);
+  await byHand(false);
+  eq("pressing 'Count it' brings the whole browser back", await visitors(), beforeHand + 1);
+  await byHand(true);
 
   // ── The shop's own money ────────────────────────────────────────────────────
-  // Browsing lives in analytics_events, but MONEY lives in the orders table, and
-  // the internal-traffic exclusion does not reach across on its own. Until it
-  // did, a €0.20 test checkout landed in Revenue, in average order value, in the
-  // customer count, and at the top of Top products under the name "Test Product".
-  // That is the figure an owner shows an investor.
+  // Revenue reconciles with Stripe, and that is the whole specification.
+  //
+  // It used to carry a second rule: an order from an address on the internal
+  // account list was not a sale. On a live shop that is a way of losing money
+  // that actually moved. It hid three real €0.50 card payments Stripe had taken,
+  // leaving a dashboard that reported €0 of revenue beside a Stripe dashboard
+  // that reported €1.50 — and there is no reading of that pair a person can act
+  // on. The live shop is the live shop; testing goes to localhost.
+  //
+  // So a sale is a payment that was taken and not handed back. The only way to
+  // remove one from this figure is to refund it, which is a real event with a
+  // real trail on both sides.
   console.log("\n\x1b[1mthe shop's own money\x1b[0m");
 
-  // Set the list this section depends on explicitly rather than relying on what
-  // an earlier check left behind — including the '@domain' form, which is how
-  // the shop keeps QA accounts out without naming each one.
   await fetch(`${API}/api/admin/analytics/internal`, {
     method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
     body: JSON.stringify({ emails: ["owner@test.local", "@olivegoose-test.local"] }),
@@ -629,44 +927,75 @@ async function main() {
 
   const beforeMoney = await get();
 
-  // An order placed by an account on the internal list, and one by a QA-harness
-  // account matched only by its domain.
   const ownerBuyer = (await pool.query(
     `SELECT id FROM users WHERE email = 'owner@test.local'`
   )).rows[0].id;
-  const qaBuyer = (await pool.query(
-    `INSERT INTO users (email, full_name) VALUES ('qa.bot@olivegoose-test.local','QA') RETURNING id`
-  )).rows[0].id;
 
-  const internalOrder = async (id, user, total) => pool.query(
+  const anOrder = async (id, user, total, extra = {}) => pool.query(
     `INSERT INTO orders (id, user_id, items, subtotal, shipping, total, discount_amount,
                          tracking_number, payment_status, refund_status, created_at)
-     VALUES ($1,$2,$3,$4,0,$4,0,'T-INT','paid','not_applicable',$5)`,
+     VALUES ($1,$2,$3,$4,0,$4,0,'T-INT',$6,$7,$5)`,
     [id, user, JSON.stringify([{ product_id: "test-1", quantity: 1,
-        product_data: { name: "Test Product 1", price: "€" + total } }]), total, at(2, 12)]
+        product_data: { name: "Test Product 1", price: "€" + total } }]), total, at(2, 12),
+     extra.payment || "paid", extra.refund || "not_applicable"]
   );
-  await internalOrder("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", ownerBuyer, 999);
-  await internalOrder("bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", qaBuyer, 888);
 
-  const afterMoney = await get();
+  // An order placed on the live shop from the OWNER'S OWN listed account. It is
+  // still a payment Stripe took, so it is still revenue.
+  await anOrder("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", ownerBuyer, 999);
+  const afterOwnerOrder = await get();
+  eq("a payment taken on the live shop is revenue, whoever made it",
+    afterOwnerOrder.sales.revenue, beforeMoney.sales.revenue + 999);
+  eq("…and an order", afterOwnerOrder.sales.orders, beforeMoney.sales.orders + 1);
+  eq("…and it appears in top products",
+    afterOwnerOrder.top_products.some(p => p.name === "Test Product 1"), true);
+  eq("…and on the daily chart",
+    +afterOwnerOrder.daily.reduce((n, d) => n + d.revenue, 0).toFixed(2),
+    +(beforeMoney.daily.reduce((n, d) => n + d.revenue, 0) + 999).toFixed(2));
 
-  eq("a test order does not become revenue", afterMoney.sales.revenue, beforeMoney.sales.revenue);
-  eq("…nor an order", afterMoney.sales.orders, beforeMoney.sales.orders);
-  eq("…nor moves average order value", afterMoney.sales.aov, beforeMoney.sales.aov);
-  eq("…nor creates a customer", afterMoney.customers.total_customers, beforeMoney.customers.total_customers);
-  eq("…nor a new customer this period", afterMoney.customers.new_customers, beforeMoney.customers.new_customers);
-  eq("…nor distorts lifetime value", afterMoney.customers.avg_lifetime_value, beforeMoney.customers.avg_lifetime_value);
-  eq("…nor appears in top products",
-    afterMoney.top_products.some(p => p.name === "Test Product 1"), false);
-  eq("…nor shows up on the daily chart",
-    afterMoney.daily.reduce((n, d) => n + d.revenue, 0), beforeMoney.daily.reduce((n, d) => n + d.revenue, 0));
-  // The QA account is excluded by its DOMAIN, never having been listed by name —
-  // which is what stops a fixture account created next month from counting.
-  eq("a QA-harness account is excluded by its domain alone",
-    afterMoney.sales.orders, beforeMoney.sales.orders);
+  // Retiring the browsing behind a sale is a statement about the VISIT. The
+  // money is untouched, because the money moved.
+  await pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, created_at)
+     VALUES ('retired-buyer-visitor','retired-buyer-session','purchase','/checkout/success',$1,$2)`,
+    [JSON.stringify({ order_id: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", total: 999 }), at(2, 12)]
+  );
+  await pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, device, origin, created_at)
+     VALUES ('retired-buyer-visitor','retired-buyer-session','page_view','/','desktop',$1,$2)`,
+    [COUNTED_ORIGIN, at(2, 11)]
+  );
+  const setRetired = (visitorId, enabled) => fetch(`${API}/api/admin/analytics/internal/visitor`, {
+    method: "POST", headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ visitor_id: visitorId, enabled }),
+  });
+
+  const beforeRetiring = await get();
+  await setRetired("retired-buyer-visitor", true);
+  const afterRetiring = await get();
+
+  eq("retiring the browser removes the VISIT",
+    afterRetiring.traffic.sessions, beforeRetiring.traffic.sessions - 1);
+  eq("…and leaves the MONEY exactly where it was",
+    afterRetiring.sales.revenue, beforeRetiring.sales.revenue);
+  eq("…and the order still counts as an order",
+    afterRetiring.sales.orders, beforeRetiring.sales.orders);
+  eq("…and is still on the daily chart",
+    afterRetiring.daily.reduce((n, d) => n + d.revenue, 0),
+    beforeRetiring.daily.reduce((n, d) => n + d.revenue, 0));
+  await setRetired("retired-buyer-visitor", false);
+
+  // Refunding is the one thing that does take money back out, on both sides.
+  await pool.query(
+    `UPDATE orders SET refund_status = 'refunded' WHERE id = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'`
+  );
+  const afterRefund = await get();
+  eq("a refunded payment stops being revenue", afterRefund.sales.revenue, beforeMoney.sales.revenue);
+  eq("…and stops being an order", afterRefund.sales.orders, beforeMoney.sales.orders);
+
+  const afterMoney = afterRefund;
 
   // Real sales are untouched by all of it.
-  eq("real revenue is unchanged", afterMoney.sales.revenue, beforeMoney.sales.revenue);
   eq("real revenue is still non-zero", afterMoney.sales.revenue > 0, true);
 
   // ── Where visitors are ──────────────────────────────────────────────────────
@@ -775,186 +1104,71 @@ async function main() {
   eq("the site-wide LCP still covers every sample including the rare page",
     vitalsWindow.web_vitals.find(v => v.metric === "LCP").samples, 15);
 
-  // ── The household network ───────────────────────────────────────────────────
-  // The signal that covers people who never sign in: a home connection is one
-  // address for every device on it. `trust proxy` is on, so an X-Forwarded-For
-  // sent to a test server on localhost is exactly what a real proxied visit
-  // looks like from the route's point of view.
-  // The address comes from the edge header, never from X-Forwarded-For: behind
-  // Netlify AND Railway, req.ip is a proxy, and matching on it would have
-  // compared a shared edge address to itself and excluded every visitor at once.
-  const fromIp = (visitor, ip) => send(visitor, COUNTED_ORIGIN, { "X-Og-Client-Ip": ip });
-
-  await fromIp("home-laptop", "203.0.113.7");   // the browser doing the excluding
-  await fromIp("home-phone", "203.0.113.7");    // someone else in the house
-  const beforeHome = await visitors();
-  await fetch(`${API}/api/admin/analytics/internal`, {
-    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
-    body: JSON.stringify({ networks: ["203.0.113.7"], visitor_id: "home-laptop" }),
-  });
-  // Excluding a network can't reach backwards by itself — no visitor's IP is
-  // stored, so there is nothing to match old rows against. What it CAN do is
-  // clear the browser that did the excluding, so the number moves immediately
-  // instead of leaving the owner wondering whether the setting took.
-  eq("the excluding browser's own history goes at once", await visitors(), beforeHome - 1);
-  eq("…and nothing more is stored from it", await fromIp("home-laptop", "203.0.113.7"), 1);
-  // The whole point: a second person on the same wifi, never signed in. Their
-  // earlier visit clears on their next one, which is the honest guarantee.
-  eq("…and a different device on the same wifi records nothing new", await fromIp("home-phone", "203.0.113.7"), 1);
-  eq("…and that visit takes its earlier ones out of the count too", await visitors(), beforeHome - 2);
-  eq("a visitor somewhere else is untouched", await fromIp("someone-else", "198.51.100.9"), 1);
-
-  // The failure that would have emptied the dashboard: a request whose client
-  // address is unknown must be COUNTED, never matched. Behind two proxies the
-  // backend's own idea of "the client" is a shared edge address, so a version
-  // that fell back to it would have excluded the entire site the moment the
-  // owner pressed one button.
-  await fetch(`${API}/api/admin/analytics/internal`, {
-    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
-    body: JSON.stringify({ networks: ["203.0.113.7"] }),
-  });
-  const stranger = await send("proxy-visitor", COUNTED_ORIGIN, { "X-Forwarded-For": "203.0.113.7" });
-  eq("an address the edge did not vouch for is never matched", stranger, 1);
-  const noHeaders = await send("no-ip-visitor", COUNTED_ORIGIN);
-  eq("a visit with no client address at all is counted, not excluded", noHeaders, 1);
-
-  // Saving one list must not silently blank the other — they are separate
-  // controls on the same card, and losing the accounts by editing networks would
-  // be invisible until the numbers moved.
-  const both = await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json();
-  // Whatever the account list currently holds, saving NETWORKS must not touch it.
-  eq("saving networks kept the account list", both.emails, ["owner@test.local", "@olivegoose-test.local"]);
-
-  // IPv6: every device on a home connection — and every privacy-extension
-  // rotation on one device — gets a different address inside the same /64, so
-  // matching the whole address would exclude nobody.
-  await fetch(`${API}/api/admin/analytics/internal`, {
-    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
-    body: JSON.stringify({ networks: ["2001:db8:abcd:1::1"] }),
-  });
-  eq("an IPv6 device in the same /64 is the same household",
-    await fromIp("v6-other-device", "2001:db8:abcd:1:f0e1:d2c3:b4a5:9687"), 0);
-  eq("a different /64 is a different household",
-    await fromIp("v6-elsewhere", "2001:db8:abcd:2::5"), 1);
-
-  // CIDR, for a connection that moves around inside a block.
-  await fetch(`${API}/api/admin/analytics/internal`, {
-    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
-    body: JSON.stringify({ networks: ["203.0.113.0/24"] }),
-  });
-  eq("a CIDR block covers the addresses inside it", await fromIp("cidr-inside", "203.0.113.44"), 0);
-  eq("…and nothing outside it", await fromIp("cidr-outside", "203.0.114.44"), 1);
-
-  // An entry that can't be matched would sit on screen looking like protection.
-  const junk = await (await fetch(`${API}/api/admin/analytics/internal`, {
-    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
-    body: JSON.stringify({ networks: ["203.0.113.0/24", "not-an-address", "999.1.1.1"] }),
-  })).json();
-  eq("unmatchable entries are refused, not stored", junk.networks, ["203.0.113.0/24"]);
-
-  // Undoing the exclusion has to give the traffic back, or a mis-click is
-  // permanent data loss dressed up as a setting.
-  await fetch(`${API}/api/admin/analytics/internal`, {
-    method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
-    body: JSON.stringify({ networks: [] }),
-  });
-  const released = await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json();
-  eq("removing every network releases the visitors it hid",
-    released.excluded_visitors.some(v => v.reason === "own network"), false);
-
-
-  // ── Exclusions that reach backwards ─────────────────────────────────────────
-  // Every control on the card is described to the owner as "your own visits stop
-  // counting", and two of them quietly meant "…from the next visit onwards":
+  // ── Nothing infers who was behind a visit ──────────────────────────────────
+  // Two whole mechanisms used to live here, and both are gone: excluding a home
+  // broadband address, and excluding an account. They were built to keep the
+  // owner's own testing out of the numbers, and on a live shop that is not a
+  // question a machine can answer. What they actually did was hide real people.
   //
-  //   • naming an account did nothing at all to what that account had already
-  //     browsed, because the exclusion list is written at INGEST — so the test
-  //     checkouts it was added to hide stayed in the numbers, and the panel said
-  //     they were gone;
-  //   • removing one of two excluded networks released NOTHING, because the
-  //     release only ran when the last one went. Real shoppers stayed hidden
-  //     permanently, which is the one direction of error no other figure on the
-  //     dashboard can reveal — the count only ever looks calm.
-  console.log("\n\x1b[1mexclusions reach backwards\x1b[0m");
+  // The home-network rule matched on the address a visit ARRIVED from, which is
+  // one address for a whole household — a partner, a housemate, a guest on the
+  // wifi, all gone. It could not see a VPN or a phone on mobile data, so it
+  // missed the owner it was built for while catching the customers it was not.
+  // The account rule reached backwards through a browser's entire history the
+  // moment a listed address signed in. And a browser caught by either had its
+  // later batches REFUSED at ingestion — discarded, not filtered, unrecoverable.
+  //
+  // The rule now is the address bar: theolivegoose.ie is the shop, localhost is
+  // testing, and the slicer tells them apart. This section is the guarantee that
+  // the old machinery cannot come back, written as the failures it used to cause.
+  console.log("\n\x1b[1mnothing infers who was behind a visit\x1b[0m");
 
+  const fromIp = (visitor, ip) => send(visitor, COUNTED_ORIGIN, { "X-Og-Client-Ip": ip });
   const setInternal = (patch) => fetch(`${API}/api/admin/analytics/internal`, {
     method: "PUT", headers: { ...auth, "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   }).then(r => r.json());
 
-  // A visit shaped like every test checkout: anonymous browsing, a sign-in, then
-  // more anonymous browsing. Only the middle of it carries the account, so an
-  // exclusion that keys on the account alone would leave two thirds behind.
+  // Two devices on one broadband connection: the owner's laptop, and somebody
+  // else in the house who has never signed in and never opened the admin panel.
+  await fromIp("home-laptop", "203.0.113.7");
+  await fromIp("home-phone", "203.0.113.7");
+  const beforeHome = await visitors();
+  await setInternal({ networks: ["203.0.113.7"], visitor_id: "home-laptop" });
+
+  eq("excluding a network takes nobody out of the shop's numbers",
+    await visitors(), beforeHome);
+  await fromIp("home-laptop", "203.0.113.7");
+  await fromIp("home-phone", "203.0.113.7");
+  eq("…and both devices keep being recorded", await visitsFor("home-phone"), 2);
+  eq("…so the person who never touched the shop's admin is still a shopper",
+    await visitors(), beforeHome);
+
+  // The account route, and the case it was worst at: anonymous browsing, a
+  // sign-in, more anonymous browsing. It used to swallow all three.
   const lateId = (await pool.query(
     `INSERT INTO users (email, full_name) VALUES ('late@test.local','Late') RETURNING id`
   )).rows[0].id;
   await send("late-browser", COUNTED_ORIGIN);
   await send("late-browser", COUNTED_ORIGIN, { Cookie: sessionCookie(lateId) });
   await send("late-browser", COUNTED_ORIGIN);
-
   const beforeLate = await visitors();
-  eq("an account not yet on the list is an ordinary visitor", await rowsFor("late-browser"), 3);
 
   await setInternal({ emails: ["owner@test.local", "@olivegoose-test.local", "late@test.local"] });
-  eq("naming the account afterwards retires what it ALREADY browsed",
-    await visitors(), beforeLate - 1);
-  // The exclusion must hide the visit, never delete it: an undo that cannot get
-  // the rows back is data loss with a checkbox in front of it.
-  eq("…without destroying a single row", await rowsFor("late-browser"), 3);
-  // The anonymous page views either side of the sign-in carry no account at all,
-  // so only retiring the VISITOR takes the whole visit.
-  eq("…including the anonymous browsing either side of the sign-in",
-    (await pool.query(
-      `SELECT COUNT(*)::int AS n FROM analytics_internal_visitors WHERE visitor_id = 'late-browser'`
-    )).rows[0].n, 1);
-
-  // The mark has to survive an unrelated save. Once a browser is marked,
-  // ingestion DROPS its batches — so a browser that has only ever visited while
-  // its account was already listed has NO stored events naming that account, and
-  // a release that looked only for events would throw the mark away the next
-  // time any setting was touched. The owner would watch a morning of their own
-  // testing walk back into the numbers with nothing on screen to explain it.
-  const heldByAccount = await visitors();
-  await send("late-browser", COUNTED_ORIGIN, { Cookie: sessionCookie(lateId) }); // dropped, not stored
-  await setInternal({ networks: [] });                                          // an unrelated save
-  eq("an unrelated save does not hand the account's browsing back",
-    await visitors(), heldByAccount);
-  eq("…because the mark records which account made it",
-    (await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json())
-      .excluded_visitors.find(v => v.visitor_id === "late-browser")?.detail, lateId);
-
+  eq("naming an account does not erase what it browsed", await visitors(), beforeLate);
+  eq("…and not a single row is destroyed", await visitsFor("late-browser"), 3);
+  await send("late-browser", COUNTED_ORIGIN, { Cookie: sessionCookie(lateId) });
+  eq("…and it keeps being recorded while signed in", await visitsFor("late-browser"), 4);
   await setInternal({ emails: ["owner@test.local", "@olivegoose-test.local"] });
-  eq("removing the account gives its browsing back", await visitors(), beforeLate);
 
-  // Two networks, then one removed. The released set must be exactly the one
-  // that was removed — releasing both would put the owner's own household back
-  // in the numbers, releasing neither is what shipped.
-  await fromIp("net-a-device", "192.0.2.10");
-  await fromIp("net-b-device", "198.51.100.20");
-  const beforeNets = await visitors();
-  await setInternal({ networks: ["192.0.2.10", "198.51.100.20"] });
-  // Neither device is excluded yet — no address is stored, so nothing can be
-  // matched retroactively. Each drops out on its own next visit.
-  await fromIp("net-a-device", "192.0.2.10");
-  await fromIp("net-b-device", "198.51.100.20");
-  eq("both networks' devices drop out as they return", await visitors(), beforeNets - 2);
-
-  await setInternal({ networks: ["198.51.100.20"] });
-  eq("removing ONE network releases exactly its own devices", await visitors(), beforeNets - 1);
-  const afterOne = await (await fetch(`${API}/api/admin/analytics/internal`, { headers: auth })).json();
-  eq("…and the network still on the list keeps hiding its own",
-    afterOne.excluded_visitors.some(v => v.visitor_id === "net-b-device"), true);
-  eq("…and records which network hid it, so this stays reversible",
-    afterOne.excluded_visitors.find(v => v.visitor_id === "net-b-device")?.detail, "198.51.100.20");
-
+  // Ingestion never refuses a live visit. This is the guarantee that matters
+  // most, because a refused batch cannot be recovered by any later fix.
+  const stubborn = await send("never-refused-visitor", COUNTED_ORIGIN);
+  eq("every live visit is stored, whatever any list says", stubborn, 1);
+  await setInternal({ networks: ["203.0.113.7"], emails: ["owner@test.local", "@olivegoose-test.local"] });
+  eq("…and the next one too", await send("never-refused-visitor", COUNTED_ORIGIN), 2);
   await setInternal({ networks: [] });
-  eq("removing the last one releases the rest", await visitors(), beforeNets);
 
-  // ── Retiring a visit after the fact ─────────────────────────────────────────
-  // The gap none of the rules above can close. A VPN puts the owner's laptop on
-  // an address in another country, so the home network never matches and the
-  // visit lands in the numbers as a shopper in Stockholm — with nothing anywhere
-  // that could say otherwise afterwards.
   console.log("\n\x1b[1mretiring a visit after the fact\x1b[0m");
 
   await send("vpn-laptop", COUNTED_ORIGIN, {
@@ -980,7 +1194,12 @@ async function main() {
 
   eq("retiring it succeeds", (await retire("vpn-laptop", true)).status, 200);
   eq("…and it leaves the numbers", await visitors(), beforeVpn - 1);
-  eq("…and stops being recorded at all", await send("vpn-laptop", COUNTED_ORIGIN), 1);
+  // It keeps RECORDING. Retiring hides a browser at query time and never at the
+  // door, so the events are all still there and pressing Count it puts the whole
+  // history back — including whatever arrived while it was hidden. An exclusion
+  // that discards what it hides is data loss with a button in front of it.
+  eq("…while its events keep being stored, so this stays undoable",
+    await send("vpn-laptop", COUNTED_ORIGIN), 2);
   eq("…and is still listed, so the decision can be undone",
     (await listSessions()).find(r => r.visitor_id === "vpn-laptop")?.excluded, true);
   eq("…and shows up under the retired filter",
@@ -991,15 +1210,12 @@ async function main() {
   await retire("vpn-laptop", false);
   eq("putting it back counts it again", await visitors(), beforeVpn);
 
-  // An account excluded by the LIST cannot be released from this button — the
-  // list is where that decision lives, and a control that silently fails is
-  // worse than one that isn't offered.
-  await setInternal({ emails: ["owner@test.local", "@olivegoose-test.local", "late@test.local"] });
-  const held = await visitors();
-  await retire("late-browser", false);
-  eq("a visit excluded by the account list is not released by this button",
-    await visitors(), held);
-  await setInternal({ emails: ["owner@test.local", "@olivegoose-test.local"] });
+  // Pressing Count it returns EVERYTHING that browser sent, including the batch
+  // that arrived while it was retired. The hidden visit is not a hole in the
+  // record, only a filter over it.
+  eq("…and brings back what arrived while it was hidden",
+    (await listSessions()).filter(r => r.visitor_id === "vpn-laptop").length > 0, true);
+  eq("…with none of its rows destroyed", await visitsFor("vpn-laptop"), 2);
 
   // ── Where a visit came from ─────────────────────────────────────────────────
   // The source is the referrer's HOST. It used to be produced with
@@ -1009,9 +1225,17 @@ async function main() {
   // source out of a top-ten table.
   console.log("\n\x1b[1mwhere a visit came from\x1b[0m");
 
-  const rev = (sid, vid, ref) => pool.query(
-    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, referrer, visitor_scope, created_at)
-     VALUES ($1,$2,'page_view','/',$3,'persistent',NOW())`, [vid, sid, ref]);
+  // The rendering signal a real browser sends with any page view; without it
+  // these fixtures are indistinguishable from the automated traffic checked for
+  // above, and would be filtered out of the very tables they exist to fill.
+  const rev = async (sid, vid, ref) => {
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, referrer, visitor_scope, created_at)
+       VALUES ($1,$2,'page_view','/',$3,'persistent',NOW())`, [vid, sid, ref]);
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, visitor_scope, created_at)
+       VALUES ($1,$2,'web_vital','/','{"metric":"TTFB","value":180}','persistent',NOW())`, [vid, sid]);
+  };
 
   await rev("ref-s1", "ref-v1", "https://t.co/abc?utm=1");
   await rev("ref-s2", "ref-v2", "https://t.co/def?utm=2");
@@ -1257,12 +1481,13 @@ async function main() {
   eq("attribution — revenue follows the session", from("newsletter")?.revenue, 300);
   eq("attribution accounts for every attributed order", total(C.sources, "orders"), C.sales.attributed_orders);
   eq("…and all of their revenue", total(C.sources, "revenue"), C.sales.revenue);
-  // The one honest shortfall: a visit that started before the window is not a
-  // session OF the window, so the Sessions column is under the tile by exactly
-  // that many. The panel prints the difference rather than leaving it to be
-  // spotted.
-  eq("sessions are short only by the visits that began earlier",
-    C.traffic.sessions - total(C.sources, "sessions"), 1);
+  // This column used to come up short of the Sessions tile, with the difference
+  // left for the reader to notice. It no longer does: a visit whose source lies
+  // outside the window is named rather than dropped, so the column totals AND
+  // still says what it could not attribute.
+  eq("the column adds up to the sessions tile", total(C.sources, "sessions"), C.traffic.sessions);
+  eq("…naming the visits whose source is outside the window",
+    C.sources.find(s => /before this period/.test(s.source))?.sessions, 1);
   const byMedium = await (await fetch(
     `${API}/api/admin/analytics?start=${day(300)}&end=${day(280)}&attr=medium`, { headers: auth }
   )).json();
@@ -1318,7 +1543,8 @@ async function main() {
   const keys = (o) => Object.keys(o).sort();
   eq("top level", keys(C), [
     "abandoned", "accounts", "attributed", "clamped", "customers", "daily", "days", "devices",
-    "end", "filters", "funnel", "landing_pages", "locations", "measurement_notes", "sales",
+    "end", "filters", "funnel", "hosts", "landing_pages", "locations", "machine_sessions",
+    "machines_included", "measurement_notes", "sales",
     "searches", "signin_wall", "sources", "start", "timezone", "top_pages", "top_products",
     "traffic", "web_vitals", "web_vitals_by_page",
   ]);
@@ -1335,7 +1561,7 @@ async function main() {
     "new_customers", "returning_customers", "total_customers",
   ]);
   eq("abandoned", keys(C.abandoned), ["abandoned_sessions", "checkout_sessions", "lost_revenue"]);
-  eq("filters", keys(C.filters), ["attr", "device", "source"]);
+  eq("filters", keys(C.filters), ["attr", "device", "host", "source"]);
   eq("daily row", keys(C.daily[0]), ["day", "orders", "pageviews", "revenue", "sessions", "visitors"]);
   eq("top_products row", keys(C.top_products[0]), [
     "add_to_carts", "cart_to_buy_pct", "name", "removals", "revenue", "units", "view_to_cart_pct", "views",
@@ -1373,7 +1599,7 @@ async function main() {
 
   const junkProps = async (visitor, type, props) => {
     await fetch(`${API}/api/analytics/events`, {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: COUNTED_ORIGIN },
+      method: "POST", headers: { "Content-Type": "application/json", "User-Agent": BROWSER_UA, Origin: COUNTED_ORIGIN },
       body: JSON.stringify({
         visitor_id: visitor, session_id: visitor, visitor_scope: "persistent",
         events: [{ type, path: "/", props }],
@@ -1445,6 +1671,17 @@ async function main() {
   await asAgent("facebook-preview", "facebookexternalhit/1.1", false);
   await asAgent("no-user-agent-at-all", "", false);
 
+  // The one that actually got in, and the reason the filter is now a whitelist.
+  // Node's global fetch identifies itself as bare "node" — it matched nothing in
+  // the named bot list, sends no Origin header (which fails open on purpose), and
+  // so arrived as a shopper. The front-end test suite calls the real track()
+  // against a dev backend wired to the production database, and 6,953 of the
+  // 7,000 events in the live table were `npm test` before this check existed.
+  await asAgent("nodes-own-fetch", "node", false);
+  await asAgent("undici", "undici", false);
+  await asAgent("bun", "Bun/1.1.0", false);
+  await asAgent("a-name-nobody-has-listed-yet", "some-future-http-client/3.0", false);
+
   await asAgent("safari-on-a-mac", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15", true);
   await asAgent("iphone-safari", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1", true);
   // The four that a careless filter costs you, and every one of them is a
@@ -1468,6 +1705,10 @@ async function main() {
       `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, geo_city, geo_country, visitor_scope, created_at)
        VALUES ($1,$1,'page_view','/',$2,'IE','persistent',NOW())`,
       [`manycity-v${i}`, `Town${String(i).padStart(2, "0")}`]);
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, geo_city, geo_country, visitor_scope, created_at)
+       VALUES ($1,$1,'web_vital','/','{"metric":"TTFB","value":180}',$2,'IE','persistent',NOW())`,
+      [`manycity-v${i}`, `Town${String(i).padStart(2, "0")}`]);
   }
   const mapped = await get();
   eq("the table is capped at fifteen cities plus a fold row", mapped.locations.length, 16);
@@ -1488,7 +1729,7 @@ async function main() {
   console.log("\n\x1b[1mhow long anyone actually spent here\x1b[0m");
 
   const engaged = (visitor, ms, events) => fetch(`${API}/api/analytics/events`, {
-    method: "POST", headers: { "Content-Type": "application/json", Origin: COUNTED_ORIGIN },
+    method: "POST", headers: { "Content-Type": "application/json", "User-Agent": BROWSER_UA, Origin: COUNTED_ORIGIN },
     body: JSON.stringify({
       visitor_id: visitor, session_id: visitor, visitor_scope: "persistent",
       engagement_ms: ms, events,
@@ -1613,6 +1854,33 @@ async function main() {
   // nowhere — the same defect already found and fixed on the location table.
   console.log("\n\x1b[1mtables read as totals must total\x1b[0m");
 
+  // A session whose only event is the server-written purchase never viewed a
+  // page and never carried a referrer, so it has no landing page and no source.
+  // It IS counted as a session, so both tables used to come up one short of the
+  // tile above them with nothing on screen to explain the gap — the exact class
+  // of quiet mismatch this section exists to prevent. Both now name it.
+  const soldWithNoBrowsing = "abcdef01-2222-4222-8222-abcdef012345";
+  await anOrder(soldWithNoBrowsing, ownerBuyer, 55);
+  await pool.query(
+    `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, created_at)
+     VALUES ('purchase-only-visitor','purchase-only-session','purchase','/checkout/success',$1,$2)`,
+    [JSON.stringify({ order_id: soldWithNoBrowsing, total: 55 }), at(2, 12)]
+  );
+  const withOrphan = await get();
+  const colTotal = (rows, k) => rows.reduce((n, r) => n + (r[k] || 0), 0);
+  eq("a sale with no browsing behind it is still a session",
+    withOrphan.traffic.sessions > 0, true);
+  eq("landing pages still add up to the sessions tile",
+    colTotal(withOrphan.landing_pages, "sessions"), withOrphan.traffic.sessions);
+  eq("…and say so rather than dropping the row",
+    withOrphan.landing_pages.some(p => p.path === "(no page view recorded)"), true);
+  eq("attribution still adds up to the sessions tile",
+    colTotal(withOrphan.sources, "sessions"), withOrphan.traffic.sessions);
+  eq("…and names the session it cannot place",
+    withOrphan.sources.some(r => r.source === "(source not recorded)"), true);
+  eq("…without counting its money twice",
+    colTotal(withOrphan.sources, "revenue") <= withOrphan.sales.revenue + 0.011, true);
+
   const many = async (n, fn) => { for (let i = 0; i < n; i++) await fn(i); };
   await many(14, async (i) => {
     const id = `many-${String(i).padStart(2, "0")}`;
@@ -1623,6 +1891,12 @@ async function main() {
     await pool.query(
       `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, visitor_scope, created_at)
        VALUES ($1,$1,'page_view',$2,'persistent',NOW())`, [`manypage-v${i}`, `/page-${i}`]);
+    // Same reason as everywhere else: a bare page view and nothing else is the
+    // signature of a machine, and these are meant to be readers.
+    await pool.query(
+      `INSERT INTO analytics_events (visitor_id, session_id, event_type, path, props, visitor_scope, created_at)
+       VALUES ($1,$1,'web_vital',$2,'{"metric":"TTFB","value":180}','persistent',NOW())`,
+      [`manypage-v${i}`, `/page-${i}`]);
   });
 
   const wide = await get();
@@ -1656,7 +1930,7 @@ async function main() {
   const fromEdge = (edgeIp, n) => fetch(`${API}/api/analytics/events`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json", Origin: COUNTED_ORIGIN,
+      "Content-Type": "application/json", "User-Agent": BROWSER_UA, Origin: COUNTED_ORIGIN,
       "X-Og-Client-Ip": edgeIp,
       // Both shoppers arrive through the same pair of proxies, which is the
       // shape production has and the reason req.ip is useless here.

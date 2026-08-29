@@ -24,7 +24,26 @@ async function copyContent() {
     ssl: /railway|amazonaws|supabase|neon/i.test(SEED_SOURCE_DATABASE_URL) ? { rejectUnauthorized: false } : false,
     options: "-c default_transaction_read_only=on", // hard guarantee: never writes to the source
   });
-  const settings = await source.query(`SELECT key, value FROM site_settings`);
+  // CONTENT ONLY — the `content_` prefix, which is the same line backend/index.js
+  // already draws for /api/content and for exactly this reason: everything
+  // without it is either a credential or internal state.
+  //
+  // `site_settings` holds two access tokens — `meta_capi_token` (Meta's
+  // Conversions API) and `ga4_api_secret` — and the default seed source is
+  // backend/.env's DATABASE_URL, which is the LIVE database. A blanket
+  // `SELECT key, value FROM site_settings` therefore copied the shop's real ad
+  // credentials onto this machine, into a throwaway Postgres, on every e2e run.
+  //
+  // The consequence was not theoretical. With the real Meta pixel id and the
+  // real token both present, any e2e spec that accepts cookies and completes a
+  // Stripe test payment reports that fabricated order to the shop's LIVE Meta
+  // pixel: invented revenue in Events Manager, and ad delivery taught to go
+  // looking for more people like a Playwright script. An allow-list rather than
+  // a deny-list, so the next credential added to this table is safe on the day
+  // it is added rather than on the day someone remembers this file.
+  const settings = await source.query(
+    `SELECT key, value FROM site_settings WHERE key LIKE 'content\\_%'`
+  );
   for (const row of settings.rows) {
     await local.query(
       `INSERT INTO site_settings (key, value) VALUES ($1, $2)
@@ -32,6 +51,7 @@ async function copyContent() {
       [row.key, JSON.stringify(row.value)]
     );
   }
+
   for (const table of ["shop_categories", "shop_candles"]) {
     const { rows } = await source.query(`SELECT * FROM ${table}`);
     for (const r of rows) {
@@ -45,6 +65,61 @@ async function copyContent() {
   }
   await source.end();
   console.log(`[seed] copied ${settings.rows.length} content rows from source (read-only)`);
+}
+
+/**
+ * Overwrite whatever the source said about the two advertising tags.
+ *
+ * Belt to copyContent's braces. The pixel id and the GA4 measurement id are not
+ * credentials — they ship in the page source of every site that has them — so
+ * they arrive with the content above, and a test run that loaded the shop's REAL
+ * pixel id would be one intercept away from writing into its real ad account.
+ *
+ * So the ids are replaced with test ones. The Meta pixel is left ENABLED and its
+ * consent gate switched off, because e2e/__meta-purchase.spec.ts exists to watch
+ * the funnel actually reach the wire and can then assert on a pixel id no real
+ * account has ever owned. GA4 stays off: nothing asserts on it end to end, and a
+ * tag nobody is watching should not be running.
+ */
+async function pinAdTagsToTest() {
+  const metaPixel = {
+    enabled: true,
+    // 16 digits, no leading zero — the shape fbevents.js accepts (one that starts
+    // with a zero it rejects outright with `Invalid PixelID: null`), and not an id
+    // Meta has issued to anyone. A placeholder is enough to prove the pixel loads
+    // and is gated correctly; it is NOT enough to watch events on the wire, because
+    // fbevents.js sends nothing for a pixel Meta does not recognise. Set
+    // E2E_META_PIXEL_ID to a scratch pixel you own to assert that half too — see
+    // the note at the top of e2e/__meta-purchase.spec.ts.
+    pixel_id: process.env.E2E_META_PIXEL_ID || "9999999999999999",
+    // As production has it, so every other suite — none of which answers the
+    // cookie banner — never loads fbevents.js at all. Only the spec that is
+    // watching the pixel seeds a consent choice, and it seeds "accepted".
+    require_consent: true,
+    // The one setting that has to differ. The e2e storefront is served from
+    // localhost, which is exactly what exclude_internal exists to keep the pixel
+    // away from, so leaving it on would mean the suite watched a pixel that had
+    // correctly refused to load.
+    exclude_internal: false,
+    track_ecommerce: true,
+    advanced_matching: true,
+    test_event_code: "",
+  };
+  await local.query(
+    `INSERT INTO site_settings (key, value) VALUES ('content_metaPixel', $1)
+     ON CONFLICT (key) DO UPDATE SET value = site_settings.value || $1::jsonb`,
+    [JSON.stringify(metaPixel)]
+  );
+  await local.query(
+    `INSERT INTO site_settings (key, value) VALUES ('content_googleAnalytics', '{"enabled": false}')
+     ON CONFLICT (key) DO UPDATE SET value = site_settings.value || '{"enabled": false}'::jsonb`
+  );
+  // And the credentials themselves, in case a database from an older seed is
+  // being reused: they can only have come from the source.
+  await local.query(
+    `DELETE FROM site_settings WHERE key IN ('meta_capi_token', 'ga4_api_secret')`
+  );
+  console.log("[seed] ad tags pinned to test ids; no credentials copied");
 }
 
 async function seedUsers() {
@@ -108,6 +183,7 @@ const mode = process.argv[2] || "full";
 try {
   if (mode === "full") {
     await copyContent();
+    await pinAdTagsToTest();
     await seedUsers();
     await seedFixtures();
   } else if (mode === "fixtures") {

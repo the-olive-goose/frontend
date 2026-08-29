@@ -8,16 +8,24 @@
 // FOUR THINGS MUST ALL BE TRUE before a single byte reaches Google:
 //   1. the owner enabled it in Admin → Analytics → Google Analytics,
 //   2. a measurement id that looks like one is saved,
-//   3. this browser isn't the shop's own (see isInternalBrowser / isAdminBrowser),
+//   3. this is the live shop and not a copy on localhost (isDevelopmentOrigin),
 //   4. the visitor accepted cookies — unless the owner deliberately turned that
 //      requirement off.
 //
-// (3) is the standing rule, and it is stricter here than it is first-party: the
-// first-party pipeline records the owner's visits and marks them internal so
-// they can be excluded from the reports afterwards. GA4 has no such lever —
-// once a hit is in a property it is in it — so the tag is simply never loaded
-// on the shop's own devices. There is nothing to clean up later, which is the
-// point.
+// (3) draws the line at work vs. trade: a copy on localhost never reports,
+// because a hit that reaches a GA4 property is in it for good and there is no
+// undo. The live shop always reports.
+//
+// That leaves the owner's own visits to the live site, which ARE hits like any
+// other. They are not blocked — blocking them silently is what the old
+// browser-flag rule did, and it disabled GA4 for good on any device that ever
+// opened the admin panel. Instead they are LABELLED: a browser signed in to
+// admin sends `traffic_type: 'internal'`, which is GA4's own designed hook for
+// this, and GA4's Internal Traffic filter excludes them at reporting time.
+// Visible, reversible, and it cannot silently swallow a real customer.
+//
+// IT DOES NOTHING UNTIL THE FILTER IS SWITCHED ON. GA4 ships that filter in
+// "Testing" mode, which excludes nothing — see the admin panel's own note.
 //
 // (4) is what keeps the shop's legal footing. The first-party analytics measure
 // everyone precisely because the data never leaves our own server; a GA4 tag is
@@ -25,8 +33,8 @@
 // the full reasoning and lib/defaults.ts for the consequence — GA4 will always
 // report fewer visitors than the Analytics tab, and that is correct, not a bug.
 
-import { onTrack, isInternalBrowser, isAdminBrowser, isPaymentReturn, type EventType } from './analytics';
-import { cookiesAccepted } from './cookieConsent';
+import { onTrack, isDevelopmentOrigin, isAdminBrowser, isPaymentReturn, type EventType } from './analytics';
+import { cookieBannerAnswered, cookiesAccepted } from './cookieConsent';
 import type { GoogleAnalyticsContent } from './defaults';
 
 const CURRENCY = 'EUR';
@@ -60,7 +68,7 @@ export type GaBlockedReason =
   | 'disabled'
   | 'no_measurement_id'
   | 'bad_measurement_id'
-  | 'internal_browser'
+  | 'development_origin'
   | 'admin_path'
   | 'prerendering'
   | 'awaiting_consent'
@@ -70,7 +78,7 @@ export const GA_BLOCKED_COPY: Record<GaBlockedReason, string> = {
   disabled: 'Turned off — nothing is sent to Google.',
   no_measurement_id: 'No measurement ID saved yet.',
   bad_measurement_id: "That measurement ID isn't a GA4 web stream id (they look like G-XXXXXXXXXX).",
-  internal_browser: "This browser is the shop's own, so the tag never loads here. That's deliberate — your own visits stay out of Google's numbers.",
+  development_origin: 'This is a copy of the site running on localhost, so the tag never loads here. The live shop always reports — a visit to it is a real visit, whoever made it.',
   admin_path: 'The admin panel is never measured.',
   prerendering: 'The browser is speculatively loading this page — it is not a visit until someone looks at it.',
   awaiting_consent: 'Waiting for this visitor to answer the cookie banner.',
@@ -102,13 +110,36 @@ export const gaBlockedReason = (
   // invisible: it looks exactly like a real visitor who left immediately.
   if (isPrerendering()) return 'prerendering';
 
-  if (settings.exclude_internal && (isInternalBrowser() || isAdminBrowser())) return 'internal_browser';
+  // Work in progress, not trade. The live shop always reports; a copy running on
+  // localhost never does, because a hit that reaches a GA4 property is in it for
+  // good and there is no undo.
+  //
+  // This used to key on a flag written into whatever browser opened the admin
+  // panel — so looking at your own dashboard once stopped GA4 firing for you on
+  // the real site, permanently and silently, while the shop's own analytics went
+  // on counting you. Two systems that disagree for a reason nobody can see are
+  // worse than one.
+  if (settings.exclude_internal && isDevelopmentOrigin()) return 'development_origin';
 
   if (settings.require_consent && !opts.ignoreConsent) {
     if (!cookiesAccepted()) {
       // Not yet answered vs. answered "no" are different states to the owner:
       // one resolves itself, the other never will for this visitor.
-      return readAnswered() ? 'consent_declined' : 'awaiting_consent';
+      //
+      // cookieConsent's own reader, not a second copy of it. This read the
+      // `og_cookie_consent` key directly, which answers "is there a value in
+      // storage" — a different question. Anything readCookieConsent refuses to
+      // recognise (junk, a half-written value, another browser's data) is NOT
+      // an answer, and it stays in the slot, so the raw read reported it as a
+      // settled "declined" for ever and the panel blamed a visitor for a
+      // decision they never made.
+      //
+      // The expiry case survived only by luck: cookiesAccepted() above runs
+      // first and readCookieConsent clears an expired choice as it reads it, so
+      // the slot is already empty by the time this line runs. Relying on that
+      // is what made the bug hard to see. Fixed in lib/meta.ts first; the two
+      // gates are pinned together by analyticsEventParity.test.ts.
+      return cookieBannerAnswered() ? 'consent_declined' : 'awaiting_consent';
     }
   }
   return null;
@@ -117,12 +148,6 @@ export const gaBlockedReason = (
 const isPrerendering = () =>
   typeof document !== 'undefined' &&
   (document as Document & { prerendering?: boolean }).prerendering === true;
-
-// Read through the same storage the banner writes, without importing the whole
-// consent module's TTL logic twice.
-const readAnswered = (): boolean => {
-  try { return localStorage.getItem('og_cookie_consent') !== null; } catch { return false; }
-};
 
 // ── The tag ────────────────────────────────────────────────────────────────────
 
@@ -269,6 +294,16 @@ export const configureGoogleAnalytics = (settings: GoogleAnalyticsContent): GaBl
     // exactly as before. Confirmed by watching the `dr` parameter: boolean, and
     // Stripe is still reported as the traffic source; string, and it is gone.
     ...(isPaymentReturn() ? { ignore_referrer: 'true', page_referrer: window.location.origin } : {}),
+    // The shop's own browsing of its own live site, labelled rather than
+    // blocked. A browser that has been signed in to the admin panel is the
+    // shop's by definition (see isAdminBrowser), and `traffic_type: 'internal'`
+    // is the parameter GA4's Internal Traffic filter matches on.
+    //
+    // Labelling instead of blocking is the whole point: the events still exist,
+    // so nothing is silently missing, and the exclusion happens in GA4 where it
+    // can be seen, changed and undone. Blocking was the old behaviour and it
+    // turned off measurement permanently for any device that ever opened admin.
+    ...(isAdminBrowser() ? { traffic_type: 'internal' } : {}),
     ...(settings.debug_mode ? { debug_mode: true } : {}),
   });
 
@@ -687,11 +722,36 @@ export const awaitGaDelivery = (timeoutMs = 400): Promise<void> => {
  * and every search result looks like it earned nothing. Verified against a live
  * cookie, not assumed.
  *
+ * NOTHING IS RETURNED UNLESS THE TAG IS ACTUALLY LIVE FOR THIS VISITOR, and
+ * that gate is the whole correctness of this function rather than a tidy-up.
+ *
+ * Reading the cookies alone was wrong, and wrong in the direction that matters.
+ * `_ga` is written with a TWO-YEAR expiry; a consent answer lapses after
+ * CONSENT_TTL_MS, which is six months. Declining does not delete the cookie —
+ * `consent update DENIED` only stops gtag.js writing new ones, and no code
+ * anywhere removes it. So a shopper who accepted once and later declined (or
+ * simply let the answer lapse and then said no) still carries a perfectly valid
+ * `_ga`, and checkout forwarded it, and the server posted their purchase to
+ * Google.
+ *
+ * Two things wrong at once: a visitor who refused was reported to a third party
+ * anyway, and the sale arrived in a property that holds NO browsing for them —
+ * the tag never loaded — so GA4 filed a conversion with no session behind it and
+ * credited it to "(direct) / (none)". Revenue the shop really earned, attached
+ * to a journey that does not exist, quietly inflating direct attribution at the
+ * expense of the campaign that actually earned it.
+ *
+ * `isGoogleAnalyticsActive()` is the same question getMetaIds() asks via
+ * isMetaPixelActive(): not "is there a cookie" but "were we permitted to measure
+ * this person on this page". An ad blocker that stops gtag.js loading costs
+ * nothing here — the cookies would not exist either way.
+ *
  * Both absent is the normal case for a visitor who declined cookies — the
  * purchase is then simply not reported to GA4, which is the correct outcome.
  */
 export const getGaIds = (): { ga_client_id?: string; ga_session_id?: string } => {
   if (typeof document === 'undefined') return {};
+  if (!isGoogleAnalyticsActive()) return {};
   const jar = document.cookie.split(';').map(c => c.trim());
 
   const out: { ga_client_id?: string; ga_session_id?: string } = {};

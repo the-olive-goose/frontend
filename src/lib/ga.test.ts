@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { installMemoryStorage } from "@/test/memoryStorage";
 import { track } from "./analytics";
-import { writeCookieConsent } from "./cookieConsent";
+import { CONSENT_TTL_MS, writeCookieConsent } from "./cookieConsent";
 import type { GoogleAnalyticsContent } from "./defaults";
 import {
   configureGoogleAnalytics,
@@ -107,6 +107,38 @@ describe("what blocks the tag", () => {
     expect(gaBlockedReason(ON)).toBe(null);
   });
 
+  it("re-asks once the answer has expired, because the read clears it", () => {
+    // Expiry is safe here for a reason worth pinning: gaBlockedReason asks
+    // cookiesAccepted() FIRST, and readCookieConsent DELETES both keys as it
+    // finds them expired. Whatever reads the storage next therefore sees an
+    // empty slot and correctly reports "waiting".
+    //
+    // So this passes even against the old raw-key reader — it is not what
+    // caught that bug (the two tests around it are). It is here because the
+    // clearing side-effect is load-bearing and invisible: drop it from
+    // cookieConsent and the expiry case starts reporting a six-month-old
+    // refusal as a live one, with nothing else in the suite objecting.
+    writeCookieConsent("declined");
+    expect(gaBlockedReason(ON)).toBe("consent_declined");
+
+    localStorage.setItem(
+      "og_cookie_consent_at",
+      String(Date.now() - CONSENT_TTL_MS - 1)
+    );
+    expect(gaBlockedReason(ON)).toBe("awaiting_consent");
+    expect(localStorage.getItem("og_cookie_consent")).toBe(null);
+  });
+
+  it("treats an unreadable consent value as unanswered, not as a refusal", () => {
+    // THE CASE THE RAW-KEY READER GOT WRONG. Junk under the key — another
+    // browser's data, a half-written value, a hand-edit — is not an answer.
+    // readCookieConsent returns null for it and leaves it in place, so a
+    // reader that only asks "is the slot non-empty" says "declined" for ever,
+    // and the panel blames a visitor for a decision they never made.
+    localStorage.setItem("og_cookie_consent", "yes");
+    expect(gaBlockedReason(ON)).toBe("awaiting_consent");
+  });
+
   it("measures everyone when the owner turns the consent gate off", () => {
     expect(gaBlockedReason({ ...ON, require_consent: false })).toBe(null);
   });
@@ -143,19 +175,32 @@ describe("what blocks the tag", () => {
     expect(eventNames()).toEqual(["page_view", "view_item"]);
   });
 
-  it("never loads on a browser marked as the shop's own", () => {
-    // The standing rule, applied harder than it is first-party: our own events
-    // can be marked internal and filtered out afterwards, but a hit that has
-    // reached a GA4 property can never be taken back out of it.
+  it("always loads on the live shop, whoever is at the keyboard", () => {
+    // This used to be gated on a flag written into whatever browser opened the
+    // admin panel — so looking at your own dashboard once stopped the tag
+    // firing for you on the real site, permanently and silently, while the
+    // shop's own analytics carried on counting you.
     writeCookieConsent("accepted");
-    localStorage.setItem("og_analytics_internal", "1");
-    expect(gaBlockedReason(ON)).toBe("internal_browser");
+    localStorage.setItem("admin_token", "a.b.c");
+    expect(gaBlockedReason({ ...ON, exclude_internal: true })).toBeNull();
   });
 
-  it("never loads on a browser signed in to admin", () => {
+  it("never loads on a copy running on localhost", () => {
+    // The one separation left: the live shop is trade, localhost is work. A hit
+    // that reaches the property is in it for good, so this is the strict side.
     writeCookieConsent("accepted");
-    localStorage.setItem("admin_token", "a.jwt.value");
-    expect(gaBlockedReason(ON)).toBe("internal_browser");
+    const live = window.location;
+    vi.stubGlobal("location", { ...live, hostname: "localhost" });
+    expect(gaBlockedReason({ ...ON, exclude_internal: true })).toBe("development_origin");
+    vi.stubGlobal("location", live);
+  });
+
+  it("…unless the owner has turned that off", () => {
+    writeCookieConsent("accepted");
+    const live = window.location;
+    vi.stubGlobal("location", { ...live, hostname: "localhost" });
+    expect(gaBlockedReason({ ...ON, exclude_internal: false })).toBeNull();
+    vi.stubGlobal("location", live);
   });
 
   it("still loads on the owner's browser if they explicitly stop excluding it", () => {
@@ -274,6 +319,28 @@ describe("loading the tag", () => {
     const config = dataLayer().find((a) => a[0] === "config")![2] as Record<string, unknown>;
     expect(config.ignore_referrer).toBeUndefined();
     expect(config.page_referrer).toBeUndefined();
+  });
+
+  it("labels the shop's own browsing instead of blocking it", () => {
+    // The owner's visits to the LIVE site are real hits and are not suppressed —
+    // blocking them silently is what the old browser-flag rule did, and it
+    // killed measurement for good on any device that ever opened admin.
+    // `traffic_type: 'internal'` is GA4's own hook: the events still exist, and
+    // GA4's Internal Traffic filter excludes them at reporting time.
+    writeCookieConsent("accepted");
+    localStorage.setItem("admin_token", "a.jwt.value");
+    configureGoogleAnalytics(ON);
+    const config = dataLayer().find((a) => a[0] === "config")![2] as Record<string, unknown>;
+    expect(config.traffic_type).toBe("internal");
+    // Labelled, not blocked — the tag is still running.
+    expect(isGoogleAnalyticsActive()).toBe(true);
+  });
+
+  it("does not label an ordinary shopper as internal", () => {
+    writeCookieConsent("accepted");
+    configureGoogleAnalytics(ON);
+    const config = dataLayer().find((a) => a[0] === "config")![2] as Record<string, unknown>;
+    expect(config.traffic_type).toBeUndefined();
   });
 
   it("turns off gtag's own page_view so the SPA can send its own", () => {
@@ -646,6 +713,13 @@ describe("translating the vocabulary", () => {
 });
 
 describe("handing the visit to the server", () => {
+  /** Consent given and the tag booted — the only state in which ids may travel. */
+  const withLiveTag = () => {
+    writeCookieConsent("accepted");
+    configureGoogleAnalytics(ON);
+    expect(isGoogleAnalyticsActive()).toBe(true);
+  };
+
   it("reads the session id out of the CURRENT (GS2) cookie format", () => {
     // Copied verbatim from a live cookie written by gtag.js. GS2 packs its
     // fields as `s<session>$o<n>$g…` and is NOT dot-delimited, so a parser
@@ -655,6 +729,7 @@ describe("handing the visit to the server", () => {
     // GA4 and still counts its revenue, attached to no session — so every sale
     // is credited to "(direct) / (none)" and every campaign that actually
     // earned it looks worthless.
+    withLiveTag();
     document.cookie = "_ga=GA1.1.1546987988.1787691831; path=/";
     document.cookie = "_ga_CG102GMHD0=GS2.1.s1787691830$o1$g0$t1787691830$j60$l0$h0; path=/";
     expect(getGaIds()).toEqual({
@@ -664,6 +739,7 @@ describe("handing the visit to the server", () => {
   });
 
   it("still reads the legacy (GS1) cookie format", () => {
+    withLiveTag();
     document.cookie = "_ga=GA1.1.1234567890.1700000000; path=/";
     document.cookie = "_ga_ABC1234567=GS1.1.1700000500.1.1.1700000600.0.0.0; path=/";
     expect(getGaIds()).toEqual({
@@ -675,6 +751,51 @@ describe("handing the visit to the server", () => {
   it("returns nothing when the tag never ran", () => {
     // The normal case for a visitor who declined cookies — and the reason the
     // backend simply doesn't report that purchase to Google.
+    //
+    // The cookies are planted deliberately. Without them this asserted only
+    // that an empty jar reads as empty, which was true before the tag was ever
+    // consulted and so proved nothing about the gate.
+    document.cookie = "_ga=GA1.1.1546987988.1787691831; path=/";
+    document.cookie = "_ga_CG102GMHD0=GS2.1.s1787691830$o1$g0$t1787691830$j60$l0$h0; path=/";
+    expect(isGoogleAnalyticsActive()).toBe(false);
+    expect(getGaIds()).toEqual({});
+  });
+
+  it("stops forwarding ids the moment a visitor withdraws consent", () => {
+    // THE CASE THAT WAS BROKEN, and it is not a rare one.
+    //
+    // `_ga` is written with a two-year expiry. A consent answer lapses after
+    // six months (CONSENT_TTL_MS), and declining never deletes the cookie —
+    // `consent update DENIED` only stops gtag.js writing new ones. So an
+    // accept-then-decline leaves a valid `_ga` sitting in the browser, and
+    // reading the jar directly meant checkout forwarded it and the server
+    // posted that shopper's purchase to Google.
+    //
+    // Two failures in one: a visitor who said no was reported to a third party,
+    // and the sale landed in a property holding no browsing for them at all, so
+    // GA4 filed a conversion with no session behind it and credited it to
+    // "(direct) / (none)" — real revenue attached to a journey that never
+    // happened.
+    withLiveTag();
+    document.cookie = "_ga=GA1.1.1546987988.1787691831; path=/";
+    document.cookie = "_ga_CG102GMHD0=GS2.1.s1787691830$o1$g0$t1787691830$j60$l0$h0; path=/";
+    expect(getGaIds()).not.toEqual({});
+
+    applyGoogleAnalyticsConsent(ON, false);
+
+    // The cookie is deliberately still there — that is the whole point.
+    expect(document.cookie).toContain("_ga=");
+    expect(getGaIds()).toEqual({});
+  });
+
+  it("forwards nothing once the owner switches GA4 off mid-visit", () => {
+    // Same shape, different cause: the shop turned the tag off while a shopper
+    // was mid-basket. gtag.js cannot be unloaded, and its cookies stay put.
+    withLiveTag();
+    document.cookie = "_ga=GA1.1.1546987988.1787691831; path=/";
+    expect(getGaIds().ga_client_id).toBe("1546987988.1787691831");
+
+    configureGoogleAnalytics({ ...ON, enabled: false });
     expect(getGaIds()).toEqual({});
   });
 });
@@ -683,6 +804,24 @@ describe("handing the visit to the server", () => {
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const read = (rel: string) => readFileSync(path.join(REPO, rel), "utf8");
+
+describe("the admin test button cannot move the numbers", () => {
+  it("uses a client id that is stable per property, not random", () => {
+    // A GA4 client id IS a user. A fresh one per press registered a brand-new
+    // user every time the owner pressed "Send a test event" — permanently, in
+    // the property the shop is judged on.
+    const backend = read("backend/index.js");
+    expect(backend, "the test client id must not be random").not.toMatch(
+      /const clientId = `\$\{Math\.floor\(Math\.random/
+    );
+    expect(backend).toMatch(/createHash\('sha256'\)\.update\(`admin-test:\$\{settings\.measurementId\}`\)/);
+  });
+
+  it("labels its own event as internal traffic", () => {
+    const backend = read("backend/index.js");
+    expect(backend).toMatch(/name: 'admin_test'[\s\S]{0,400}traffic_type: 'internal'/);
+  });
+});
 
 describe("the two systems stay in step", () => {
   it("has a deliberate answer for every event the shop can record", () => {

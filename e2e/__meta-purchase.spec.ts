@@ -19,26 +19,57 @@ import { fillDeliveryAddress } from "./address-form";
 
 const BASE = process.env.E2E_BASE ?? "http://localhost:8081";
 
-type Hit = { url: string };
+// THE PIXEL ID DOES NOT HAVE TO BE REAL for any of this to work, which is worth
+// knowing before someone tries to make it real. fbevents.js sends to
+// www.facebook.com/tr for any WELL-FORMED id, so the seeded placeholder
+// (e2e/setup/seed.mjs) produces a complete funnel on the wire — asserted below —
+// and this file aborts every one of those requests so nothing leaves the machine.
+//
+// A MALFORMED id is a different story: given one with a leading zero fbevents.js
+// logs `Invalid PixelID: null`, never fetches the pixel's config and discards
+// every queued call. Observed against the live library, and the reason
+// PIXEL_ID_RE in src/lib/meta.ts refuses a leading zero.
+//
+// E2E_META_PIXEL_ID overrides the placeholder if you would rather watch these
+// events arrive in a scratch pixel's Events Manager.
+
+type Hit = { url: string; method: string; body: string | null };
 const capture = async (page: Page) => {
   const hits: Hit[] = [];
   // ONLY the collection host. connect.facebook.net has to be left alone —
   // fbevents.js is what turns the queued calls into requests, so blocking the
   // script means blocking every hit and watching an empty list forever.
+  //
+  // THE BODY IS CAPTURED, NOT JUST THE URL, and that is not thoroughness — it is
+  // the difference between this suite seeing the sale and not. See decode().
   await page.route("**://*.facebook.com/**", async (route, req: Request) => {
-    hits.push({ url: req.url() });
+    hits.push({ url: req.url(), method: req.method(), body: req.postData() });
     await route.abort();
   });
   return hits;
 };
 
+/**
+ * One hit, whichever way fbevents.js chose to send it.
+ *
+ * IT DOES NOT ALWAYS USE A GET, and this cost a full misdiagnosis. Small events
+ * go out as a query string on an image beacon; a Purchase carrying a basket,
+ * an order id and eleven matching fields is too long for a URL, so fbevents
+ * switches to a POST and the parameters move into the body. A decoder that reads
+ * only `new URL(...).searchParams` therefore sees the whole browsing funnel and
+ * is BLIND TO THE SALE — which reads exactly like the sale not being sent, and
+ * sent me looking for a race in the success page that does not exist.
+ *
+ * So both are read, and the shape of the event decides nothing about whether the
+ * test can see it.
+ */
 const decode = (hits: Hit[]) =>
   hits
     .filter((h) => h.url.includes("/tr"))
     .map((h) => {
-      const sp = new URL(h.url).searchParams;
       const p: Record<string, string> = {};
-      sp.forEach((v, k) => { p[k] = v; });
+      new URL(h.url).searchParams.forEach((v, k) => { p[k] = v; });
+      if (h.body) new URLSearchParams(h.body).forEach((v, k) => { p[k] = v; });
       return { name: p.ev ?? "?", p };
     });
 
@@ -125,8 +156,9 @@ test("a real purchase: the browser's funnel, then the server's sale", async ({ p
     expect(e.p["ud[em]"]).toMatch(/^[0-9a-f]{64}$/);
     expect(new URL(e.p.dl).href).not.toContain("@");
   }
-  // The pixel must never send a Purchase — the server owns that one, and two
-  // sources without deduplication is double-counted revenue.
+  // Nothing has been bought yet, so there is nothing to report. The Purchase is
+  // asserted after the card is paid, where it belongs — and it is asserted twice
+  // over, because the shop deliberately sends it from both ends.
   expect(names).not.toContain("Purchase");
 
   const paid = await payStripeTestCard(page).catch(() => false);
@@ -147,10 +179,33 @@ test("a real purchase: the browser's funnel, then the server's sale", async ({ p
   // (25 + 4.99 is stored as 29.990000000000002), a currency mismatch, revenue
   // reported for a payment that never settled, and a value that silently drops
   // shipping or a discount.
+  const order = await lastOrder();
+
+  // ── Both halves of the sale, and the id that makes them one ─────────────────
+  //
+  // The purchase is reported twice on purpose: by the server the moment Stripe
+  // confirms payment (which survives a shopper who closes the tab, and an ad
+  // blocker), and by this browser when it lands back on the success page (which
+  // survives an access token that has expired or been revoked — the failure with
+  // nothing to announce it, because Meta is never asked and so never complains).
+  //
+  // What makes that two reports of one sale rather than double revenue is a
+  // shared `event_id`. Meta deduplicates on event name + event id, and there is
+  // no error for getting it wrong: Events Manager simply shows twice the money.
+  // So the two strings are compared here, on the wire, against each other.
+  const browserPurchases = decode(hits).filter((e) => e.name === "Purchase");
+  console.log("BROWSER PURCHASE:", JSON.stringify(
+    browserPurchases.map((e) => ({
+      eid: e.p.eid, value: e.p["cd[value]"], currency: e.p["cd[currency]"],
+      order: e.p["cd[order_id]"], num: e.p["cd[num_items]"],
+    })), null, 2));
+
+  expect(browserPurchases, "the browser sent no Purchase from the success page").toHaveLength(1);
+  expect(browserPurchases[0].p.eid).toBe(`order-${order.id}`);
+  expect(browserPurchases[0].p["cd[currency]"]).toBe("EUR");
+
   const captured = readSinkPurchases();
   test.skip(captured === null, "no Conversions API sink attached — run this through the sink to reconcile revenue");
-
-  const order = await lastOrder();
   const event = captured!.find((e) => e.custom_data?.order_id === order.id);
   expect(event, `no Purchase was reported to Meta for order ${order.id}`).toBeTruthy();
 
@@ -173,6 +228,12 @@ test("a real purchase: the browser's funnel, then the server's sale", async ({ p
   );
   expect(forThisOrder).toHaveLength(1);
   expect(event!.event_id).toBe(`order-${order.id}`);
+  // THE ONE COMPARISON THIS FILE EXISTS FOR: the two copies of the sale carry the
+  // same id, so Meta counts them once. Different ids here means this shop's
+  // reported revenue is exactly double what it took.
+  expect(browserPurchases[0].p.eid).toBe(event!.event_id);
+  // …and the same money, so whichever copy Meta keeps reports the same figure.
+  expect(Math.round(Number(browserPurchases[0].p["cd[value]"]) * 100)).toBe(session!.amount_total);
 });
 
 // ── Reconciliation helpers ────────────────────────────────────────────────────

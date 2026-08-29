@@ -226,15 +226,22 @@ const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
     setSearchOpen(false);
   }, [location.pathname, location.search]);
 
-  // Live search results — top 6 closest matches
-  const searchResults = searchQuery.trim().length >= 1
+  // Every match, and separately the six the dropdown has room for.
+  //
+  // These were one list, capped at six, and the cap was being reported as the
+  // answer: a search that turned up eleven candles was recorded as having found
+  // six. `results` is meant to say whether the shop could answer the shopper —
+  // "0" is the signal worth acting on — and a number that silently stops counting
+  // at six cannot be compared with anything.
+  const searchMatches = searchQuery.trim().length >= 1
     ? allProducts.filter(p => {
         const q = searchQuery.toLowerCase();
         return p.name.toLowerCase().includes(q) ||
                p.description?.toLowerCase().includes(q) ||
                p.tag?.toLowerCase().includes(q);
-      }).slice(0, 6)
+      })
     : [];
+  const searchResults = searchMatches.slice(0, 6);
 
   const openShop  = () => { if (shopTimerRef.current) clearTimeout(shopTimerRef.current); setShopOpen(true); };
   const closeShop = () => { shopTimerRef.current = setTimeout(() => setShopOpen(false), 120); };
@@ -253,7 +260,16 @@ const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
     // "caf") and make the popular-terms list meaningless. `results` records
     // whether the shop could answer: searches that return nothing are the
     // shopper telling you what to stock next.
-    track("search", { query: q.slice(0, 100), results: searchResults.length });
+    // `result_ids` is capped at ten and carries ids only: it is what lets the
+    // Meta Pixel report "searched for something we sell" as a retargetable
+    // audience rather than a bare string. Ids rather than names and prices on
+    // purpose — the ingest route truncates a props blob at 2000 characters and
+    // replaces whatever it broke with {}, which would take the search term with it.
+    track("search", {
+      query: q.slice(0, 100),
+      results: searchMatches.length,
+      result_ids: searchMatches.slice(0, 10).map(p => p.id),
+    });
     navigate(`/shop?search=${encodeURIComponent(q)}`);
     setMobileOpen(false);
   };

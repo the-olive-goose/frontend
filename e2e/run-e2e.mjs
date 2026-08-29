@@ -56,6 +56,34 @@ function killPort(port) {
   }
 }
 
+// ── The Conversions API, intercepted ──────────────────────────────────────────
+//
+// The Purchase is the one event nobody can produce by browsing: it is written by
+// the server, from a Stripe-confirmed order, and it is the only one that carries
+// money. So it is the one event most worth watching — and the only way to watch
+// it is to be the endpoint.
+//
+// e2e/setup/meta-sink.mjs stands in for graph.facebook.com and records every call
+// for e2e/__meta-purchase.spec.ts to reconcile against Stripe. It is not only a
+// convenience: without it the backend posts e2e's fabricated orders to the real
+// Meta, which is how a test run ends up as revenue in someone's ad account.
+//
+// Spawned as its own process, not run in here, because this process drives
+// Playwright with spawnSync and is blocked for the whole run — see that file.
+const META_SINK_PORT = Number(process.env.E2E_META_SINK_PORT) || 3057;
+const META_SINK_FILE = path.join(REPO_ROOT, ".e2e-meta-sink.jsonl");
+
+function startMetaSink() {
+  killPort(META_SINK_PORT);
+  const child = spawn(
+    process.execPath,
+    [path.join(REPO_ROOT, "e2e", "setup", "meta-sink.mjs"), String(META_SINK_PORT), META_SINK_FILE],
+    { cwd: REPO_ROOT, stdio: "inherit" }
+  );
+  children.push(child);
+  return child;
+}
+
 function startBackend(extraEnv) {
   killPort(BACKEND_PORT);
   const child = spawn(process.execPath, [BACKEND_ENTRY], {
@@ -70,6 +98,19 @@ function startBackend(extraEnv) {
       RESEND_API_KEY: "",
       STRIPE_SECRET_KEY: backendEnvValue("STRIPE_SECRET_KEY") || "",
       FRONTEND_URL: BASE_URL,
+      // In this stack the frontend under test IS the shop, so it is the origin
+      // analytics counts as the storefront. Without this the backend falls back
+      // to the real theolivegoose.ie, every visit the suite makes classifies as
+      // "localhost", and the dashboard — which reports the storefront unless
+      // asked for another hostname — correctly shows an empty shop.
+      ANALYTICS_ORIGINS: BASE_URL,
+      // Meta's Conversions API, pointed at the local sink above. Both are set
+      // explicitly rather than inherited: a developer with META_CAPI_TOKEN in
+      // their shell would otherwise hand this stack a credential for the shop's
+      // real pixel, and the token has to be non-empty or reportPurchaseToMeta
+      // returns before it ever builds a payload.
+      META_GRAPH_ORIGIN: `http://127.0.0.1:${META_SINK_PORT}`,
+      META_CAPI_TOKEN: "e2e-sink-token",
       ...extraEnv,
     },
     stdio: "inherit",
@@ -110,6 +151,9 @@ function runPlaywright(specs, extraEnv) {
         // Test-mode Stripe key so the discount spec can retrieve a Checkout
         // Session and assert the discount actually reached the payment amount.
         STRIPE_SECRET_KEY: backendEnvValue("STRIPE_SECRET_KEY") || "",
+        // Where __meta-purchase.spec.ts reads back what the server actually sent
+        // to Meta, to reconcile the revenue against what Stripe actually charged.
+        META_SINK_FILE,
         ...extraEnv,
       },
     }
@@ -137,6 +181,10 @@ async function main() {
 
   log("starting embedded Postgres…");
   pg = await startPg();
+
+  log("starting Meta Conversions API sink…");
+  startMetaSink();
+  await waitForPort(META_SINK_PORT);
 
   log("starting backend (schema init) + frontend…");
   // First boot creates the schema and seeds the admin; then seed content/users.

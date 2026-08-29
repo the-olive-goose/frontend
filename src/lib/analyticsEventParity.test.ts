@@ -23,6 +23,8 @@ const backendSrc = readFileSync(path.join(REPO, "backend/index.js"), "utf8");
 const clientSrc = readFileSync(path.join(REPO, "src/lib/analytics.ts"), "utf8");
 const apiSrc = readFileSync(path.join(REPO, "src/lib/api.ts"), "utf8");
 const adminSrc = readFileSync(path.join(REPO, "src/pages/AdminDashboard.tsx"), "utf8");
+const gaSrc = readFileSync(path.join(REPO, "src/lib/ga.ts"), "utf8");
+const metaSrc = readFileSync(path.join(REPO, "src/lib/meta.ts"), "utf8");
 
 /** The names the API will accept and store. */
 const serverTypes = (): string[] => {
@@ -79,22 +81,70 @@ describe("analytics event vocabulary", () => {
     expect(analyticsKey).toBe(apiKey);
   });
 
-  it("has the admin panel tell the server which browser it is", () => {
-    // track() refuses to record anything on an /admin path, so the admin panel
-    // never SENDS an ingest batch — which means signing in to admin marks the
-    // browser locally and the server never hears about it. The exclusion then
-    // only lands the next time that browser loads a storefront page.
+  it("does not let the admin panel mark the browser that opened it", () => {
+    // The reverse of what this used to pin, and pinned just as hard.
     //
-    // That is backwards for the commonest sequence there is: deploy, open the
-    // shop to check it works, then open admin to look at the numbers. The
-    // storefront visit is recorded before the browser carries any mark, and sits
-    // in the figures as one visitor, one session, one page view.
+    // Opening the dashboard used to flag that browser as the shop's own — locally
+    // and on the server — and the flag reached backwards through everything it
+    // had ever recorded. It also gated the GA4 tag and the Meta Pixel, so looking
+    // at your own numbers once stopped both firing for you on the real site,
+    // permanently and silently, while the shop's own analytics carried on
+    // counting you: two measurement systems disagreeing for a reason nothing on
+    // screen could explain.
     //
-    // So AdminDashboard registers the visitor id on mount. Pinned here because
-    // deleting those three lines breaks nothing visible, fails no other test,
-    // and quietly puts the owner back in their own traffic.
-    expect(adminSrc).toMatch(/isAdminBrowser\(\)/);
-    expect(adminSrc).toMatch(/setAnalyticsInternalBrowser\(\s*getVisitorId\(\)\s*,\s*true\s*\)/);
+    // The live shop is the live shop. Work happens on localhost, which is
+    // recorded under its own hostname and never reaches the figures, and a single
+    // visit can still be taken out by hand from Recent visits. Re-adding either
+    // of these calls would break nothing visible and fail no other test.
+    expect(adminSrc).not.toMatch(/setInternalBrowser\(/);
+    expect(adminSrc).not.toMatch(/setAnalyticsInternalBrowser\(/);
+  });
+
+  it("gates the third-party tags on the hostname, not on a flag in the browser", () => {
+    // Both tags must ask the same question about whether to LOAD AT ALL, and it
+    // must be about WHERE the page is, not about who is looking at it. Gating on
+    // a browser flag is what silently killed measurement for good on any device
+    // that had once opened the admin panel.
+    for (const src of [gaSrc, metaSrc]) {
+      expect(src).toMatch(/isDevelopmentOrigin\(\)/);
+      // The retired per-browser flag, gone with the rule it fed.
+      expect(src).not.toMatch(/isInternalBrowser\(/);
+      // No blocked-reason may be derived from who the browser belongs to.
+      expect(src).not.toMatch(/isAdminBrowser\(\)\)\s*return/);
+    }
+  });
+
+  it("asks the consent module the question, rather than reading its key", () => {
+    // Both tags must decide "declined" vs "not asked yet" through
+    // cookieBannerAnswered, which is the only reader that knows a choice
+    // EXPIRES. A local `localStorage.getItem('og_cookie_consent') !== null`
+    // answers a different question — "is there a value there" — and so reports
+    // a six-month-old refusal, or an unreadable one, as a settled no.
+    //
+    // The cost is a panel that states the wrong reason for its own silence:
+    // the owner is told a visitor refused when nobody has been asked since
+    // the answer lapsed. It was fixed in meta.ts and left standing in ga.ts,
+    // which is exactly the drift this file exists to catch — the two gates are
+    // written to be identical and nothing else compares them.
+    for (const src of [gaSrc, metaSrc]) {
+      expect(src).toMatch(/cookieBannerAnswered\(\)/);
+      expect(src).not.toMatch(/getItem\(\s*'og_cookie_consent'\s*\)/);
+    }
+  });
+
+  it("labels the owner's own live-site visits rather than hiding them", () => {
+    // The other half of the same decision, and the half that is easy to lose.
+    //
+    // Not blocking the owner is right — but it leaves their browsing in the
+    // property, and these numbers go to investors. GA4's own hook for that is
+    // `traffic_type: 'internal'`, which its Internal Traffic filter matches on:
+    // the events still exist, so nothing is silently missing, and the exclusion
+    // happens where it can be seen and undone.
+    //
+    // Delete this and the shop counts itself, in the one report it cannot
+    // afford to have wrong, with nothing on screen to reveal it.
+    expect(gaSrc).toMatch(/traffic_type: 'internal'/);
+    expect(gaSrc).toMatch(/isAdminBrowser\(\)\s*\?\s*\{\s*traffic_type/);
   });
 
   it("builds the funnel from events the API accepts", () => {

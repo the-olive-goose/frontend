@@ -29,6 +29,7 @@ import FreeShippingBar from "@/components/FreeShippingBar";
 import TrustBadges from "@/components/TrustBadges";
 import FooterSection from "@/components/sections/FooterSection";
 import RichText from "@/lib/richtext";
+import { fallbackOnError } from "@/lib/imageFallback";
 import m1 from "@/assets/M1.png";
 import m2 from "@/assets/M2.png";
 
@@ -706,7 +707,7 @@ const CheckoutPage = () => {
                     const lineTotal = isNaN(unitPrice) ? formatPrice(item.product.price) : `€${(unitPrice * item.quantity).toFixed(2)}`;
                     return (
                       <div key={item.product.id} className="flex items-center gap-4 px-5 py-3" style={{ borderBottom: i < items.length - 1 ? "1px solid #EEE" : "none" }}>
-                        <img src={img} alt={item.product.name} className="rounded-lg object-cover shrink-0" style={{ width: 52, height: 52, mixBlendMode: "multiply" }} />
+                        <img src={img} alt={item.product.name} onError={fallbackOnError(FALLBACK_IMGS[i % 2])} className="rounded-lg object-cover shrink-0" style={{ width: 52, height: 52, mixBlendMode: "multiply" }} />
                         <div className="flex-1 min-w-0">
                           <p className="font-sans text-sm font-semibold truncate" style={{ color: "#0F1111" }}>{item.product.name}</p>
                           <p className="font-sans text-xs" style={{ color: "#555" }}>Qty: {item.quantity}</p>

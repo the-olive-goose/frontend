@@ -29,12 +29,12 @@ vi.mock("@/lib/api", async () => {
     getAnalyticsInternal: vi.fn(),
     saveAnalyticsInternal: vi.fn(),
     setAnalyticsInternalBrowser: vi.fn().mockResolvedValue(undefined),
-    getAnalyticsSessions: vi.fn().mockResolvedValue({ days: 7, sessions: [] }),
+    getAnalyticsSessions: vi.fn().mockResolvedValue({ days: 7, host: "production", sessions: [] }),
     setAnalyticsInternalVisitor: vi.fn().mockResolvedValue(undefined),
   };
 });
 
-const { getAdminAnalytics, getAnalyticsInternal, saveAnalyticsInternal } = await import("@/lib/api");
+const { getAdminAnalytics, getAnalyticsInternal, saveAnalyticsInternal, getAnalyticsSessions } = await import("@/lib/api");
 
 const internal = (o: Partial<AnalyticsInternal> = {}): AnalyticsInternal => ({
   emails: [], networks: [], current_ip: "203.0.113.7", current_ip_excluded: false,
@@ -44,13 +44,16 @@ const internal = (o: Partial<AnalyticsInternal> = {}): AnalyticsInternal => ({
 
 const overview = (o: Partial<AnalyticsOverview> = {}): AnalyticsOverview => ({
   start: "2026-07-01", end: "2026-07-30", days: 30, timezone: "Europe/Dublin",
-  filters: { device: null, source: null, attr: "source" },
+  filters: { device: null, source: null, attr: "source", host: "production" },
   attributed: false,
   abandoned: { checkout_sessions: 3, abandoned_sessions: 1, lost_revenue: 75 },
   signin_wall: null,
   measurement_notes: [],
   searches: [],
   landing_pages: [],
+  hosts: [{ host: "production", sessions: 6 }],
+  machine_sessions: 0,
+  machines_included: false,
   accounts: { newsletter_signups: 4, account_signups: 2, sign_ins: 7 },
   traffic: {
     visitors: 6, sessions: 6, pageviews: 9, pages_per_session: 1.5, bounce_rate: 16.7,
@@ -373,71 +376,53 @@ describe("AnalyticsPanel", () => {
   // private window, cleared site data — arrives as several strangers. These
   // controls are the way to say "that was us", and the copy around them is the
   // only thing telling the owner what each one actually reaches.
-  describe("internal traffic", () => {
-    it("offers the network the admin is on, by address", async () => {
+  // ── Whose visits count ──────────────────────────────────────────────────────
+  // This card used to hold three controls that guessed who was behind a visit —
+  // exclude my wifi, exclude my account, mark this browser. They were wrong in
+  // the worst direction and silently: the wifi rule hid everyone else in the
+  // house, the account rule reached backwards through a browser's whole history,
+  // and the browser mark attached itself to whatever opened the admin panel.
+  // Between them they hid three real card payments and most of the shop's real
+  // browsing. They are gone, and what replaces them has to state the rule that
+  // now applies rather than leave a blank where a control used to be.
+  describe("whose visits count", () => {
+    const render_ = async () => {
+      vi.mocked(getAdminAnalytics).mockResolvedValue(overview());
       render(<AnalyticsPanel />);
-      // Await the loaded address, not the static heading — the heading renders
-      // before the request resolves, so asserting on it races the fetch.
-      expect(await screen.findByText("203.0.113.7")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /don't count this network/i })).toBeInTheDocument();
+      await screen.findByText("Whose visits count");
+    };
+
+    it("states the rule: the live shop counts, testing goes to localhost", async () => {
+      await render_();
+      expect(screen.getByText(/Every visit to/)).toBeInTheDocument();
+      expect(screen.getByText("theolivegoose.ie")).toBeInTheDocument();
+      expect(screen.getByText(/recorded\s*separately/)).toBeInTheDocument();
     });
 
-    it("promises only what a network exclusion can deliver", async () => {
-      render(<AnalyticsPanel />);
-      await screen.findByText("203.0.113.7");
-      // No visitor's IP is stored, so this cannot retire yesterday's rows for a
-      // device that hasn't been back. Saying it did would be the same species of
-      // wrong as the count that started this.
-      expect(screen.getByText(/next time it loads the shop/i)).toBeInTheDocument();
-      expect(screen.getByText(/No visitor's IP address is ever stored/i)).toBeInTheDocument();
+    it("offers no control that guesses who was behind a visit", async () => {
+      await render_();
+      // The exact controls that were removed. A button here that no longer acts
+      // would be worse than the bug it was meant to fix.
+      expect(screen.queryByText(/Your network/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/exclude your wifi/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/203\.0\.113\.7/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /this browser/i })).not.toBeInTheDocument();
     });
 
-    it("sends this browser's visitor id when excluding the network", async () => {
-      vi.mocked(saveAnalyticsInternal).mockResolvedValue({ emails: [], networks: ["203.0.113.7"] });
-      render(<AnalyticsPanel />);
-      await screen.findByText("203.0.113.7");
-
-      fireEvent.click(screen.getByRole("button", { name: /don't count this network/i }));
-
-      // Without the id the owner sees no change at all until some device on the
-      // wifi happens to reload the shop — which reads as the setting not working.
-      await waitFor(() => expect(saveAnalyticsInternal).toHaveBeenCalledWith(
-        expect.objectContaining({ networks: ["203.0.113.7"], visitor_id: expect.any(String) })
-      ));
+    it("points at the one manual exception that does still exist", async () => {
+      await render_();
+      // Named as the exact words on the button, and pointed at the table that
+      // carries it — a rule that says "use the other control" and doesn't say
+      // which one sends the reader hunting.
+      expect(screen.getByText("This was me")).toBeInTheDocument();
+      expect(screen.getAllByText(/Recent visits/).length).toBeGreaterThan(0);
     });
 
-    it("says a network is already covered rather than offering it twice", async () => {
-      vi.mocked(getAnalyticsInternal).mockResolvedValue(
-        internal({ networks: ["203.0.113.7"], current_ip_excluded: true })
-      );
-      render(<AnalyticsPanel />);
-      expect(await screen.findByText(/already excluded/i)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /count this network again/i })).toBeInTheDocument();
-    });
-
-    it("names the other hostnames that were minting duplicate visitors", async () => {
-      vi.mocked(getAnalyticsInternal).mockResolvedValue(internal({
-        origins_seen: [
-          { origin: "https://theolivegoose.ie", visitors: 40, events: 900 },
-          { origin: "https://frontend-production-a1bd.up.railway.app", visitors: 3, events: 20 },
-        ],
-      }));
-      render(<AnalyticsPanel />);
-
-      // The second hostname serves the same shop from a different origin, so
-      // everyone who used it got a second visitor id. Naming it is what turns an
-      // inexplicable count into an explicable one.
-      expect(await screen.findByText(/frontend-production-a1bd/)).toBeInTheDocument();
-      expect(screen.queryByText(/^https:\/\/theolivegoose\.ie —/)).not.toBeInTheDocument();
-    });
-
-    it("stays quiet about hostnames when only the real shop has reported in", async () => {
-      vi.mocked(getAnalyticsInternal).mockResolvedValue(internal({
-        origins_seen: [{ origin: "https://theolivegoose.ie", visitors: 40, events: 900 }],
-      }));
-      render(<AnalyticsPanel />);
-      await screen.findByText("203.0.113.7");
-      expect(screen.queryByText("Other addresses seen")).not.toBeInTheDocument();
+    it("promises revenue that reconciles with Stripe", async () => {
+      // The figure an investor is most likely to check against another source.
+      await render_();
+      expect(screen.getByText(/reconciles with your Stripe dashboard/)).toBeInTheDocument();
+      expect(screen.getByText(/To take money out of it, refund it/)).toBeInTheDocument();
     });
   });
 
@@ -447,19 +432,23 @@ describe("AnalyticsPanel", () => {
   // cannot cover everything, the shortfall is printed rather than left for the
   // reader to notice by adding up a column.
   describe("reconciliation", () => {
-    it("says how many sessions the attribution table cannot place", async () => {
+    it("names the sessions the attribution table cannot trace, instead of losing them", async () => {
       mocked.mockResolvedValue(overview({
-        // 6 sessions in the tile; the table can place 4. The other 2 began
-        // before this period, so they landed somewhere outside it.
+        // All 6 sessions are in the table. Two of them have no source of their
+        // own — one visit began before this period, one is a confirmed sale with
+        // no browsing recorded — and each gets a named row rather than an
+        // absence, so the column still totals to the Sessions tile.
         sources: [
           { source: "google", sessions: 3, orders: 1, revenue: 100 },
           { source: "direct", sessions: 1, orders: 0, revenue: 0 },
-          { source: "(visit began before this period)", sessions: 0, orders: 1, revenue: 80 },
+          { source: "(visit began before this period)", sessions: 1, orders: 1, revenue: 80 },
+          { source: "(source not recorded)", sessions: 1, orders: 0, revenue: 0 },
         ],
       }));
       render(<AnalyticsPanel />);
 
-      expect(await screen.findByText(/Adds up to 4 of the 6 sessions/i)).toBeInTheDocument();
+      expect(await screen.findByText(/Adds up to all 6 sessions/i)).toBeInTheDocument();
+      expect(screen.getByText(/2 of them can't be traced to a source/i)).toBeInTheDocument();
       // The carried-over orders keep their own row in the table…
       expect(screen.getByRole("cell", { name: "(visit began before this period)" })).toBeInTheDocument();
       // …but it is not a source anyone can filter the dashboard by.
@@ -533,7 +522,7 @@ describe("AnalyticsPanel", () => {
         start: "2024-08-17", end: "2026-08-17", days: 731,
         sources: [
           { source: "google", sessions: 4, orders: 1, revenue: 100 },
-          { source: "(visit began before this period)", sessions: 0, orders: 1, revenue: 80 },
+          { source: "(visit began before this period)", sessions: 2, orders: 1, revenue: 80 },
         ],
       }));
       render(<AnalyticsPanel />);
@@ -545,7 +534,7 @@ describe("AnalyticsPanel", () => {
       expect(csv).toMatch(/longer than two years/i);
       // The tracking gap, the attribution shortfall, and the daily-uniques rule.
       expect(csv).toMatch(/have no tracked session/i);
-      expect(csv).toMatch(/Attribution covers 4 of 6 sessions/i);
+      expect(csv).toMatch(/Attribution adds up to all 6 sessions/i);
       expect(csv).toMatch(/add up to more than the period totals/i);
     });
 
@@ -645,6 +634,159 @@ describe("AnalyticsPanel", () => {
       await waitFor(() => expect(mocked).toHaveBeenLastCalledWith(
         expect.objectContaining({ start: "2026-01-01", end: iso(today) })
       ));
+    });
+  });
+
+  // ── Whose numbers are these ─────────────────────────────────────────────────
+  // The control the owner asked for after finding the dashboard reporting the
+  // test suite. Its job is not really filtering — it is making it impossible to
+  // read a figure without knowing whose it is.
+  describe("the hostname slicer", () => {
+    const withHosts = (hosts: Array<{ host: string; sessions: number }>, host = "production") =>
+      overview({ hosts, filters: { device: null, source: null, attr: "source", host } });
+
+    it("stays off screen while the shop is the only hostname", async () => {
+      // A dropdown with one option cannot change anything, and a control that
+      // does nothing is worse than no control.
+      vi.mocked(getAdminAnalytics).mockResolvedValue(withHosts([{ host: "production", sessions: 6 }]));
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+      expect(screen.queryByRole("option", { name: /The shop/ })).not.toBeInTheDocument();
+    });
+
+    it("appears, in the owner's words, once anything else has been recorded", async () => {
+      vi.mocked(getAdminAnalytics).mockResolvedValue(withHosts([
+        { host: "production", sessions: 6 }, { host: "localhost", sessions: 41 },
+      ]));
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+      // Named as a place the owner recognises, not as the database's label,
+      // and sized so it is obvious how much is being kept out.
+      expect(screen.getByRole("option", { name: "The shop (theolivegoose.ie)" })).toBeInTheDocument();
+      expect(screen.getByRole("option", { name: /My computer \(localhost\) — 41 visits/ })).toBeInTheDocument();
+    });
+
+    it("says loudly, in the page body, when the numbers are not the shop's", async () => {
+      // Not a footnote: a screenshot carries no dropdown with it, so a view that
+      // isn't the shop has to announce itself somewhere that can't be cropped.
+      vi.mocked(getAdminAnalytics).mockResolvedValue(withHosts([
+        { host: "production", sessions: 6 }, { host: "localhost", sessions: 41 },
+      ], "localhost"));
+      render(<AnalyticsPanel />);
+      expect(await screen.findByText(/These are not the shop's numbers/)).toBeInTheDocument();
+      // Scoped to the banner: the dropdown names the same hostname, and an
+      // assertion that matches either one would pass with the banner missing.
+      const banner = screen.getByText(/These are not the shop's numbers/).parentElement!;
+      expect(within(banner).getByText("My computer (localhost)")).toBeInTheDocument();
+      expect(within(banner).getByRole("button", { name: "Show the shop only" })).toBeInTheDocument();
+    });
+
+    it("names the automated visits it left out, and offers them back", async () => {
+      // Nine of these arrived on the live shop in three days, every one a single
+      // page view claiming five seconds to the millisecond. Left in, they made
+      // the shop look four times busier than it was. Left out silently, the
+      // figure just reads low and nobody can tell why — so it says so.
+      vi.mocked(getAdminAnalytics).mockResolvedValue(
+        overview({ machine_sessions: 9, machines_included: false }));
+      render(<AnalyticsPanel />);
+      expect(await screen.findByText(/9 automated visits were left out/)).toBeInTheDocument();
+      expect(screen.getByText(/Scrapers, not shoppers/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Count them anyway" })).toBeInTheDocument();
+    });
+
+    it("says so the other way round when they are being counted", async () => {
+      vi.mocked(getAdminAnalytics).mockResolvedValue(
+        overview({ machine_sessions: 9, machines_included: true }));
+      render(<AnalyticsPanel />);
+      expect(await screen.findByText(/9 of the visits above are automated/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Leave them out" })).toBeInTheDocument();
+    });
+
+    it("stays silent when no automated visit reached the window", async () => {
+      vi.mocked(getAdminAnalytics).mockResolvedValue(overview({ machine_sessions: 0 }));
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+      expect(screen.queryByText(/automated/)).not.toBeInTheDocument();
+    });
+
+    it("says how many visits the shop's view is leaving out", async () => {
+      // A page showing 6 visits where the table holds 47 invites the reader to
+      // assume it is broken, and an investor meeting is not the moment to be
+      // asked. The figure explains itself instead.
+      vi.mocked(getAdminAnalytics).mockResolvedValue(withHosts([
+        { host: "production", sessions: 6 },
+        { host: "localhost", sessions: 20 },
+        { host: "(not recorded)", sessions: 21 },
+      ]));
+      render(<AnalyticsPanel />);
+      expect(await screen.findByText(/41 more visits reached this window/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Show everything recorded" })).toBeInTheDocument();
+    });
+
+    it("stays quiet when there is nothing to leave out", async () => {
+      vi.mocked(getAdminAnalytics).mockResolvedValue(withHosts([{ host: "production", sessions: 6 }]));
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+      expect(screen.queryByText(/more visits reached this window/)).not.toBeInTheDocument();
+    });
+
+    it("says nothing at all when they are", async () => {
+      vi.mocked(getAdminAnalytics).mockResolvedValue(withHosts([
+        { host: "production", sessions: 6 }, { host: "localhost", sessions: 41 },
+      ]));
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+      expect(screen.queryByText(/These are not the shop's numbers/)).not.toBeInTheDocument();
+    });
+
+    it("asks the server for the shop by default, never for everything", async () => {
+      vi.mocked(getAdminAnalytics).mockResolvedValue(withHosts([{ host: "production", sessions: 6 }]));
+      render(<AnalyticsPanel />);
+      await screen.findByText("Session conversion");
+      // Omitted, not "all": the server's own default is production, and the two
+      // must not be able to drift apart.
+      const [call] = vi.mocked(getAdminAnalytics).mock.calls.at(-1)!;
+      expect(call.host).toBeUndefined();
+    });
+  });
+
+  // ── Why a visit was retired ─────────────────────────────────────────────────
+  // A retired row with no stated cause reads as "the dashboard has decided this
+  // doesn't count", and the owner's own €0.50 card payment sitting in the Retired
+  // tab looked exactly like a real sale being thrown away. It was in fact a test
+  // purchase made from the shop's own network — which is the feature working —
+  // but nothing on screen said so.
+  describe("recent visits say why a visit is out of the numbers", () => {
+    const visit = (o: Record<string, unknown> = {}) => ({
+      session_id: "s1", visitor_id: "v1",
+      started_at: "2026-08-27T00:32:00.000Z", last_at: "2026-08-27T00:35:00.000Z",
+      pageviews: 4, events: 12, signed_in: true, entry_path: "/", device: "desktop",
+      source: "direct", city: "Dublin", country: "IE", orders: 1, revenue: 0.5,
+      excluded: true, excluded_reason: "marked from recent visits", excluded_detail: "", automated: false,
+      ...o,
+    });
+
+    const showVisits = async (row: Record<string, unknown>) => {
+      vi.mocked(getAdminAnalytics).mockResolvedValue(overview());
+      vi.mocked(getAnalyticsSessions).mockResolvedValue({ days: 7, host: "production", sessions: [row] as never });
+      render(<AnalyticsPanel />);
+      // The visit itself, so the assertions below are reading the right table.
+      await screen.findByText("Dublin, IE");
+    };
+
+    it("says a hidden visit was hidden by hand, and stays reversible", async () => {
+      // The only reason a visit can be out of the numbers now. Nothing infers it
+      // from a network or an account any more, so a row that is hidden was hidden
+      // by somebody pressing a button, and the row should say so.
+      await showVisits(visit());
+      expect(await screen.findByText("you retired this")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Count it" })).toBeInTheDocument();
+    });
+
+    it("says nothing about visits that DO count", async () => {
+      await showVisits(visit({ excluded: false, excluded_reason: "", excluded_detail: "" }));
+      expect(await screen.findByRole("button", { name: "This was me" })).toBeInTheDocument();
+      expect(screen.queryByText("you retired this")).not.toBeInTheDocument();
     });
   });
 });

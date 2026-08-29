@@ -694,7 +694,13 @@ export interface AnalyticsOverview {
   /** True when the requested range was longer than the 2-year cap and was cut. */
   clamped?: boolean;
   timezone: string; // IANA zone every day boundary was resolved in
-  filters: { device: string | null; source: string | null; attr: 'source' | 'medium' | 'campaign' };
+  filters: {
+    device: string | null;
+    source: string | null;
+    attr: 'source' | 'medium' | 'campaign';
+    /** The hostname slice these numbers cover. 'all' means every hostname. */
+    host: string;
+  };
   // True when device/source filters are active — sales then cover only the
   // orders whose purchase could be tied back to a matching session.
   attributed: boolean;
@@ -783,6 +789,21 @@ export interface AnalyticsOverview {
   sources: Array<{ source: string; sessions: number; orders: number; revenue: number }>;
   devices: Array<{ device: string; sessions: number }>;
   /**
+   * Every hostname present in the window, largest first — the slicer's options.
+   * Never scoped by the current host filter, or the dropdown would collapse to
+   * whatever is already selected and there would be no way back.
+   */
+  hosts: Array<{ host: string; sessions: number }>;
+  /**
+   * Visits this window judged automated — a page fetched, one flush of the
+   * analytics queue, and then nothing: no Web Vitals, no interaction, no
+   * end-of-visit signal. Always reported, whether or not they are being
+   * filtered, so a figure can say what it left out.
+   */
+  machine_sessions: number;
+  /** True when ?machines=include put them back into every figure. */
+  machines_included: boolean;
+  /**
    * Roughly where visitors were, resolved once per session from its landing
    * event. `city` is "Unknown" when we never learned it; `country` is an ISO
    * two-letter code, or '' alongside an unknown city.
@@ -799,6 +820,13 @@ export interface AnalyticsQuery {
   device?: string;  // mobile | tablet | desktop
   source?: string;  // a traffic-source name as shown in the sources table
   attr?: 'source' | 'medium' | 'campaign';
+  /**
+   * Which hostname to report on. Omitted means PRODUCTION — the storefront on
+   * its own. 'all' includes a developer's localhost and anything else recorded.
+   */
+  host?: string;
+  /** 'include' counts automated visits in every figure. Omitted leaves them out. */
+  machines?: string;
 }
 
 // Fetch analytics for an explicit calendar window (both dates inclusive) — the
@@ -817,6 +845,8 @@ export const getAdminAnalytics = async (q: AnalyticsQuery): Promise<AnalyticsOve
   if (q.device) params.set('device', q.device);
   if (q.source) params.set('source', q.source);
   if (q.attr) params.set('attr', q.attr);
+  if (q.host) params.set('host', q.host);
+  if (q.machines) params.set('machines', q.machines);
   const res = await checkStatus(await fetchWithTimeout(
     `${API_URL}/api/admin/analytics?${params}`,
     { headers: authHeaders(true) },
@@ -881,6 +911,10 @@ export interface AnalyticsSession {
   source: string;
   city: string;
   country: string;
+  /** production | localhost | (not recorded) | any other origin seen. */
+  host: string;
+  /** Judged automated: one page view and nothing else at all. */
+  automated: boolean;
   orders: number;
   revenue: number;
   /** Already kept out of the numbers — shown anyway, so it can be undone. */
@@ -890,12 +924,13 @@ export interface AnalyticsSession {
 }
 
 export const getAnalyticsSessions = async (
-  opts: { days?: number; limit?: number; only?: 'all' | 'counted' | 'excluded' } = {}
-): Promise<{ days: number; sessions: AnalyticsSession[] }> => {
+  opts: { days?: number; limit?: number; only?: 'all' | 'counted' | 'excluded'; host?: string } = {}
+): Promise<{ days: number; host: string; sessions: AnalyticsSession[] }> => {
   const params = new URLSearchParams();
   if (opts.days)  params.set('days', String(opts.days));
   if (opts.limit) params.set('limit', String(opts.limit));
   if (opts.only)  params.set('only', opts.only);
+  if (opts.host)  params.set('host', opts.host);
   const res = await checkStatus(await fetchWithTimeout(
     `${API_URL}/api/admin/analytics/sessions?${params}`, { headers: authHeaders(true) }, 30_000));
   if (!res.ok) throw new Error('Failed to load recent visits');
