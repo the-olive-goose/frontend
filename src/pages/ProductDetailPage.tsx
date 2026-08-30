@@ -8,6 +8,7 @@ import {
   DEFAULT_CONTENT, DEFAULT_DEALS,
   type DealsContent, type PickupSettingsContent, type Product, type ProductPageContent,
   type ProductsContent, type ReturnPolicyContent, type SubscribePopupContent,
+  type TestimonialsContent,
 } from "@/lib/defaults";
 import { resolveOfferValues } from "@/lib/offerTokens";
 import {
@@ -23,6 +24,8 @@ import { applyMeta, SITE_URL, SITE_NAME, parsePriceValue, breadcrumbJsonLd } fro
 import FooterSection from "@/components/sections/FooterSection";
 import AddToCartButton from "@/components/ui/AddToCartButton";
 import BuyAssurances, { BuyAssurancesSkeleton } from "@/components/BuyAssurances";
+import ProductTestimonials from "@/components/ProductTestimonials";
+import { aggregateRating, clampRating, quotesForProduct } from "@/lib/productTestimonials";
 import { SkelBlock, SkelText } from "@/components/ui/ContentSkeleton";
 import RichText, { stripRichText } from "@/lib/richtext";
 import m1 from "@/assets/M1.png";
@@ -439,6 +442,10 @@ const ProductDetailPage = () => {
   const [deals, setDeals]           = useState<DealsContent>(DEFAULT_DEALS);
   const [categories, setCategories] = useState<ShopCategory[]>([]);
   const [loading, setLoading]       = useState(true);
+  // Curated quotes for this candle. Shares the homepage Testimonials section
+  // rather than having a section of its own, because it is the same editor and
+  // the same kind of content — see ProductTestimonials.
+  const [testimonials, setTestimonials] = useState<TestimonialsContent>(DEFAULT_CONTENT.testimonials);
   // The buy-box assurance lines quote the shipping rate, the free-shipping bar
   // and the returns window via tokens, so the page needs the three settings
   // sections that own those figures.
@@ -458,8 +465,9 @@ const ProductDetailPage = () => {
       getContent<PickupSettingsContent>("pickupSettings", DEFAULT_CONTENT.pickupSettings),
       getContent<SubscribePopupContent>("subscribePopup", DEFAULT_CONTENT.subscribePopup),
       getContent<ReturnPolicyContent>("returnPolicy", DEFAULT_CONTENT.returnPolicy),
+      getContent<TestimonialsContent>("testimonials", DEFAULT_CONTENT.testimonials),
       getShopCategories(),
-    ]).then(([productsData, productPage, dealsData, pickup, popup, returnPolicy, cats]) => {
+    ]).then(([productsData, productPage, dealsData, pickup, popup, returnPolicy, testimonialsData, cats]) => {
       setProducts(productsData?.items ?? []);
       // Merge over defaults so a partially-saved section can't blank the page.
       setPageCopy({
@@ -470,6 +478,10 @@ const ProductDetailPage = () => {
       });
       setDeals(dealsData ?? DEFAULT_DEALS);
       setOffer(resolveOfferValues(pickup, popup, returnPolicy));
+      // Same merge-over-defaults rule as productPage above: content saved before
+      // product_items existed has no such key, and reading it off a raw blob
+      // would be undefined rather than an empty list.
+      setTestimonials({ ...DEFAULT_CONTENT.testimonials, ...(testimonialsData ?? {}) });
       setCategories(cats);
     }).finally(() => setLoading(false));
   }, []);
@@ -519,6 +531,16 @@ const ProductDetailPage = () => {
     [product, products, categories, deals, pageCopy.recommendations_count],
   );
 
+  // The curated quotes pinned to this candle. A quote whose product_id no longer
+  // matches anything in the catalogue simply never selects here, so deleting a
+  // product cannot leave its testimonials stranded on someone else's page.
+  const productQuotes = useMemo(
+    () => (product ? quotesForProduct(testimonials.product_items, product.id) : []),
+    [testimonials.product_items, product],
+  );
+
+  const quoteAggregate = useMemo(() => aggregateRating(productQuotes), [productQuotes]);
+
   const paragraphs = useMemo(() => (product ? productParagraphs(product) : []), [product]);
 
   // Per-product <head> tags. SeoManager applies the route-level defaults first;
@@ -558,6 +580,32 @@ const ProductDetailPage = () => {
             image: productImages(product).map(url => (url.startsWith("http") ? url : `${SITE_URL}${url}`)),
           }),
           brand: { "@type": "Brand", name: SITE_NAME },
+          // Ratings are published ONLY from the quotes actually rendered on the
+          // page, through the same helpers that draw the stars. Google's
+          // review-snippet policy requires the structured data to match what a
+          // visitor can see — an aggregate covering reviews that are not on the
+          // page (or that do not exist) is what earns a manual action, so both
+          // halves read from one source rather than being kept in step by hand.
+          ...(quoteAggregate && {
+            aggregateRating: {
+              "@type": "AggregateRating",
+              ratingValue: quoteAggregate.ratingValue,
+              reviewCount: quoteAggregate.reviewCount,
+              bestRating: 5,
+              worstRating: 1,
+            },
+            // Only the rated quotes become Review nodes, so the list and the
+            // count above describe the same set.
+            review: productQuotes.flatMap(t => {
+              const rating = clampRating(t.rating);
+              return rating === null ? [] : [{
+                "@type": "Review",
+                reviewRating: { "@type": "Rating", ratingValue: rating, bestRating: 5, worstRating: 1 },
+                author: { "@type": "Person", name: t.author || "A customer" },
+                reviewBody: stripRichText(t.quote),
+              }];
+            }),
+          }),
           ...(parsePriceValue(product.price) && {
             offers: {
               "@type": "Offer",
@@ -771,6 +819,11 @@ const ProductDetailPage = () => {
             )}
           </div>
         </div>
+
+        {/* What people say about this one — curated in Admin → Home Page →
+            Testimonials → Product Page Testimonials. Renders nothing when this
+            candle has no quotes against it. */}
+        <ProductTestimonials items={productQuotes} headline={testimonials.product_headline} />
 
         {/* You may also like */}
         {recommendations.length > 0 && (

@@ -69,6 +69,9 @@ const PrivacyPolicyPage   = route(() => import("./pages/PrivacyPolicyPage.tsx"))
 const TermsOfServicePage  = route(() => import("./pages/TermsOfServicePage.tsx"));
 const ShippingPolicyPage  = route(() => import("./pages/ShippingPolicyPage.tsx"));
 const AuthCallback        = route(() => import("./pages/AuthCallback.tsx"));
+// Reached only from a link in a newsletter, so it is never prefetched and
+// never linked from the site itself.
+const UnsubscribePage     = route(() => import("./pages/UnsubscribePage.tsx"));
 const NotFound            = route(() => import("./pages/NotFound.tsx"));
 
 // Admin bundles (incl. recharts) are heavy and admin-only — keep them out of
@@ -169,6 +172,7 @@ const App = () => (
                   <Route path="/terms-of-service" element={<TermsOfServicePage />} />
                   <Route path="/shipping-policy" element={<ShippingPolicyPage />} />
                 </Route>
+                <Route path="/unsubscribe" element={<UnsubscribePage />} />
                 <Route path="/admin" element={<AdminDashboard />} />
                 <Route path="/admin/reset-password" element={<AdminResetPassword />} />
                 <Route path="/auth/callback" element={<AuthCallback />} />

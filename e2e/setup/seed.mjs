@@ -6,11 +6,19 @@
 // suite invocation (the admin cancellation/return tests consume orders one-way).
 import pg from "pg";
 import {
-  TEST_DATABASE_URL, SEED_SOURCE_DATABASE_URL, SHOPPER, SHOPPER2,
+  TEST_DATABASE_URL, SEED_SOURCE_DATABASE_URL, SHOPPER, SHOPPER2, CART_SHOPPER,
 } from "./config.mjs";
 
-// bcrypt("E2eShopper123", cost 10) — same password for both seeded shoppers.
+// bcrypt("E2eShopper123", cost 10) — same password for every seeded shopper.
 const SHOPPER_PW_HASH = "$2a$10$6bzn9/2asZz4WocYTYXP2uIdJ/L/K/DOCH3xGlktj/WRznHPeO.5u";
+
+// The abandoned-cart suite greets its shopper by first name ({first_name}), so
+// the names are fixtures too, not decoration.
+const NAMES = {
+  [SHOPPER.email]: "E2E Shopper",
+  [SHOPPER2.email]: "E2E Shopper Two",
+  [CART_SHOPPER.email]: "Aoife Cartwright",
+};
 
 const local = new pg.Pool({ connectionString: TEST_DATABASE_URL });
 
@@ -123,12 +131,12 @@ async function pinAdTagsToTest() {
 }
 
 async function seedUsers() {
-  for (const u of [SHOPPER, SHOPPER2]) {
+  for (const u of [SHOPPER, SHOPPER2, CART_SHOPPER]) {
     await local.query(
       `INSERT INTO users (email, password_hash, full_name, provider, email_verified)
        VALUES ($1, $2, $3, 'email', true)
        ON CONFLICT (email) DO UPDATE SET password_hash = $2, provider = 'email', email_verified = true`,
-      [u.email, SHOPPER_PW_HASH, u.email === SHOPPER.email ? "E2E Shopper" : "E2E Shopper Two"]
+      [u.email, SHOPPER_PW_HASH, NAMES[u.email] ?? "E2E Shopper"]
     );
   }
   console.log("[seed] shopper accounts ready");
@@ -177,6 +185,44 @@ async function seedFixtures() {
   await insert({ user_id: shopper.id, items: [item(p2)], subtotal: s2, shipping: 4.99, total: s2 + 4.99, tracking: "OGE2ESTUCK", address: delivery, fulfillment: "delivery", status: "Processing", payment: "paid", sess: "cs_e2e_fixture_5", intent: "pi_e2e_fixture_5", ageDays: 10 });
   await insert({ user_id: shopper2.id, items: [item(p2)], subtotal: s2, shipping: 4.99, total: s2 + 4.99, tracking: "OGE2EIDOR", address: delivery, fulfillment: "delivery", status: "Order Placed", payment: "paid", sess: "cs_e2e_fixture_6", intent: "pi_e2e_fixture_6" });
   console.log("[seed] fixture orders ready (OGE2E*)");
+
+  await seedAbandonedCart(p1, p2);
+}
+
+/**
+ * A basket left behind, old enough for the sweep to consider it abandoned.
+ *
+ * Time is the one thing a test cannot wait for: the shortest delay the settings
+ * allow is an hour, and a basket touched during the run is never idle. So the
+ * basket is written directly with `updated_at` backdated — the same trick the
+ * stuck-order fixture (OGE2ESTUCK, ten days old) uses, for the same reason.
+ *
+ * Its own shopper, not one of the two above: SHOPPER and SHOPPER2 are consumed
+ * one-way by the cancellation/return suites, and a basket that quietly picked up
+ * one of their orders would change what "have they ordered since?" answers.
+ *
+ * Everything the abandoned-cart suite writes is cleared here too, so the suite
+ * is repeatable — it is re-run by globalSetup before every playwright
+ * invocation.
+ */
+async function seedAbandonedCart(p1, p2) {
+  const { rows } = await local.query(`SELECT id FROM users WHERE email = $1`, [CART_SHOPPER.email]);
+  const cartShopper = rows[0];
+  if (!cartShopper) throw new Error("[seed] abandoned-cart shopper missing — run full seed first");
+
+  await local.query(`DELETE FROM abandoned_cart_sends WHERE user_id = $1`, [cartShopper.id]);
+  await local.query(`DELETE FROM cart_reminder_optouts WHERE email = $1`, [CART_SHOPPER.email]);
+  await local.query(`DELETE FROM site_settings WHERE key = 'abandoned_cart_settings'`);
+  await local.query(`DELETE FROM orders WHERE user_id = $1`, [cartShopper.id]);
+  await local.query(`DELETE FROM user_carts WHERE user_id = $1`, [cartShopper.id]);
+
+  await local.query(
+    `INSERT INTO user_carts (user_id, product_id, product_data, quantity, created_at, updated_at)
+     VALUES ($1, $2, $3, 2, NOW() - INTERVAL '31 hours', NOW() - INTERVAL '30 hours'),
+            ($1, $4, $5, 1, NOW() - INTERVAL '31 hours', NOW() - INTERVAL '30 hours')`,
+    [cartShopper.id, String(p1.id), JSON.stringify(p1), String(p2.id), JSON.stringify(p2)]
+  );
+  console.log(`[seed] abandoned basket ready (${CART_SHOPPER.email}, idle 30h)`);
 }
 
 const mode = process.argv[2] || "full";

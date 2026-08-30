@@ -5,6 +5,7 @@
 // ever scales to multiple server instances.
 
 import { sendRefundReminderEmail } from './email.js';
+import { sweepAbandonedCarts } from './abandonedCart.js';
 
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly
 const FIRST_RUN_DELAY_MS = 30 * 1000;
@@ -63,4 +64,41 @@ export function startRefundReminderScheduler(pool) {
 
   setTimeout(sweep, FIRST_RUN_DELAY_MS);
   setInterval(sweep, SWEEP_INTERVAL_MS);
+}
+
+// ── Abandoned-cart sweep ────────────────────────────────────────────────────────
+// Same in-process arrangement as the refund reminders above, and the same known
+// limitation: one Node process on Railway, so this is not safe to run on two
+// instances at once. Every guard that matters lives in the queries themselves
+// (backend/abandonedCart.js writes a row per send and reads the cadence back out
+// of it), so the worst a restart mid-sweep costs is a delayed reminder, never a
+// duplicate one.
+//
+// Quarter-hourly rather than hourly: `delay_hours` is what decides when a
+// reminder goes out, and checking four times an hour keeps the actual send close
+// to the hour the admin configured instead of up to 60 minutes past it.
+
+// Overridable only so the e2e stack can watch the automatic path actually fire —
+// the same escape hatch the rate limiters take (AUTH_RATE_LIMIT_MAX and friends).
+// A suite that can only test the Send now button is a suite that never checks the
+// half of this feature which runs while nobody is looking.
+const CART_SWEEP_INTERVAL_MS = Number(process.env.ABANDONED_CART_SWEEP_MS) || 15 * 60 * 1000;
+const CART_FIRST_RUN_DELAY_MS = Number(process.env.ABANDONED_CART_FIRST_RUN_MS) || 60 * 1000;
+
+export function startAbandonedCartScheduler(pool, frontendUrl) {
+  const sweep = async () => {
+    try {
+      const result = await sweepAbandonedCarts(pool, { frontendUrl });
+      // Logged only when something happened. A quiet sweep every 15 minutes
+      // would bury the interesting lines in the deploy logs.
+      if (result.sent || result.failed) {
+        console.log(`[abandoned cart sweep] sent=${result.sent} failed=${result.failed} due=${result.due}`);
+      }
+    } catch (err) {
+      console.error('[abandoned cart sweep]', err);
+    }
+  };
+
+  setTimeout(sweep, CART_FIRST_RUN_DELAY_MS);
+  setInterval(sweep, CART_SWEEP_INTERVAL_MS);
 }

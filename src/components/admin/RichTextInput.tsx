@@ -18,6 +18,15 @@ interface RichProps {
   rows?: number;
   placeholder?: string;
   className?: string;
+  /**
+   * Extra toolbar controls, rendered after B/I/U.
+   *
+   * Handed an `insert` that drops text at the cursor (replacing any selection),
+   * because the caret lives inside this component and a caller has no other way
+   * to reach it. Used by the newsletter composer to insert an image, which is
+   * the one thing the storefront's copy fields never need.
+   */
+  extraTools?: (insert: (text: string) => void) => React.ReactNode;
 }
 
 const MARKERS = { bold: "**", italic: "*", underline: "__" } as const;
@@ -62,6 +71,26 @@ const useRichEditing = (value: string, onChange: (e: RichChangeEvent) => void) =
     });
   };
 
+  /**
+   * Drop `text` at the caret, replacing the selection.
+   *
+   * Falls back to appending when the textarea has never been focused — a caller
+   * pressing "Insert image" before clicking into the box should still get their
+   * image, at the end, rather than silently nothing.
+   */
+  const insert = (text: string) => {
+    const ta = ref.current;
+    const start = ta ? ta.selectionStart : value.length;
+    const end = ta ? ta.selectionEnd : value.length;
+    const next = value.slice(0, start) + text + value.slice(end);
+    onChange({ target: { value: next } });
+    const caret = start + text.length;
+    requestAnimationFrame(() => {
+      ta?.focus();
+      ta?.setSelectionRange(caret, caret);
+    });
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!(e.metaKey || e.ctrlKey)) return;
     const style = ({ b: "bold", i: "italic", u: "underline" } as const)[e.key.toLowerCase() as "b" | "i" | "u"];
@@ -70,7 +99,7 @@ const useRichEditing = (value: string, onChange: (e: RichChangeEvent) => void) =
     apply(style);
   };
 
-  return { ref, apply, onKeyDown };
+  return { ref, apply, insert, onKeyDown };
 };
 
 const ToolbarButton = ({ label, hint, onClick, children }: {
@@ -89,8 +118,8 @@ const ToolbarButton = ({ label, hint, onClick, children }: {
   </button>
 );
 
-const Toolbar = ({ apply }: { apply: (s: Style) => void }) => (
-  <div className="flex items-center gap-1">
+const Toolbar = ({ apply, extra }: { apply: (s: Style) => void; extra?: React.ReactNode }) => (
+  <div className="flex items-center gap-1 flex-wrap">
     <ToolbarButton label="Bold" hint="Bold (⌘B) — **text**" onClick={() => apply("bold")}>
       <span className="font-bold">B</span>
     </ToolbarButton>
@@ -100,6 +129,7 @@ const Toolbar = ({ apply }: { apply: (s: Style) => void }) => (
     <ToolbarButton label="Underline" hint="Underline (⌘U) — __text__" onClick={() => apply("underline")}>
       <span className="underline">U</span>
     </ToolbarButton>
+    {extra}
   </div>
 );
 
@@ -107,11 +137,11 @@ const baseClass =
   "w-full px-4 py-2.5 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 resize-none";
 
 /** Multi-line rich text field (drop-in for the dashboard's <Textarea>). */
-export const RichTextarea = ({ value, onChange, rows = 3, placeholder, className }: RichProps) => {
-  const { ref, apply, onKeyDown } = useRichEditing(value, onChange);
+export const RichTextarea = ({ value, onChange, rows = 3, placeholder, className, extraTools }: RichProps) => {
+  const { ref, apply, insert, onKeyDown } = useRichEditing(value, onChange);
   return (
     <div className="space-y-1">
-      <Toolbar apply={apply} />
+      <Toolbar apply={apply} extra={extraTools?.(insert)} />
       <textarea
         ref={ref}
         rows={rows}

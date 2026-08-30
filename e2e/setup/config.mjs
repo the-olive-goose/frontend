@@ -27,6 +27,10 @@ export const ADMIN_PASSWORD_HASH =
   "$2a$10$r.uiYaq6WeUsL5yheEzQ1Oup06Vq8wafTH/mlYWV88UPAEahfCpZi";
 export const SHOPPER = { email: "e2e-shopper@test.local", password: "E2eShopper123" };
 export const SHOPPER2 = { email: "e2e-shopper2@test.local", password: "E2eShopper123" };
+// The abandoned-cart suite's own shopper. Separate from the two above because
+// they are consumed one-way by the cancellation/return lifecycles, and this one
+// needs a basket nobody else has ordered against — see seedAbandonedCart.
+export const CART_SHOPPER = { email: "e2e-cart@test.local", password: "E2eShopper123" };
 
 // Where to copy storefront content (site_settings, shop tables) from. Optional:
 // when unset, the backend boots with only its built-in default content, which is

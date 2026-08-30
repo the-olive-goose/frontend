@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, Fragment } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef, Fragment } from "react";
 import { getVisitorId, isAdminBrowser } from "@/lib/analytics";
 import {
   isLoggedIn,
@@ -18,6 +18,11 @@ import {
   deleteAdminFeedback,
   changeAdminPassword,
   setFeedbackPublished,
+  getNewsletterOverview,
+  sendNewsletterTest,
+  sendNewsletter,
+  type NewsletterAudience,
+  type NewsletterSendRecord,
   resolveUploadUrl,
   getShopCategories,
   saveShopCategory,
@@ -97,6 +102,7 @@ import {
   type CandleCareCard,
   type VideoItem,
   type Testimonial,
+  type ProductTestimonial,
   type NavLink,
   type SocialLink,
 } from "@/lib/defaults";
@@ -110,7 +116,7 @@ import {
   isSameVideoAsset,
   type VideoQuality,
 } from "@/lib/cloudinaryVideo";
-import { DEFAULT_IMAGE_SIZE, type ImageSize } from "@/lib/cloudinaryImage";
+import { DEFAULT_IMAGE_SIZE, buildEmailImageUrl, type ImageSize } from "@/lib/cloudinaryImage";
 import { durableAvatarUrl, plainAvatarUrl, publicAvatarSource } from "@/lib/reviewAvatar";
 import ImageOptimiser from "@/components/admin/ImageOptimiser";
 import HeroVideoOptimiser from "@/components/admin/HeroVideoOptimiser";
@@ -120,9 +126,14 @@ import { META_SOURCES, previewMeta } from "@/lib/seoContent";
 import { useToast } from "@/hooks/use-toast";
 import AdminLogin from "@/components/AdminLogin";
 import { RichInput, RichTextarea } from "@/components/admin/RichTextInput";
+import NewsletterPreview from "@/components/admin/NewsletterPreview";
+import { imageMarkup, isEmailableImageUrl } from "@/lib/newsletterMarkup";
+import { imageLoads } from "@/lib/imageProbe";
 import AnalyticsPanel from "@/components/admin/AnalyticsPanel";
 import GoogleAnalyticsPanel from "@/components/admin/GoogleAnalyticsPanel";
 import MetaPixelPanel from "@/components/admin/MetaPixelPanel";
+import ProductFeedPanel from "@/components/admin/ProductFeedPanel";
+import AbandonedCartPanel from "@/components/admin/AbandonedCartPanel";
 import logo from "@/assets/logo.jpg";
 import { DEFAULT_SCRAPBOOK_SETTINGS, type ScrapbookSettings } from "@/components/sections/ScrapbookSection";
 
@@ -1994,25 +2005,15 @@ const VideosEditor = ({
   );
 };
 
-// How long to wait for Cloudinary to pull a review photo before giving up and
-// storing the plain path. Cloudinary downloads the original — a 2 MB phone photo
-// off a cold backend is not instant — so this is generous, but it is bounded:
-// an admin who pressed a button must never be left with a spinner forever.
-const AVATAR_FETCH_TIMEOUT_MS = 12_000;
-
-/** Whether an image URL actually paints. Cloudinary answers a source it could not
- *  download with a 1x1 placeholder rather than an error, so the size of what came
- *  back is the real answer — the same check ImageOptimiser makes before writing a
- *  URL into a field. */
-const imageLoads = (url: string): Promise<boolean> =>
-  new Promise((resolve) => {
-    const img = new Image();
-    const settle = (ok: boolean) => { img.onload = null; img.onerror = null; resolve(ok); };
-    const timer = setTimeout(() => settle(false), AVATAR_FETCH_TIMEOUT_MS);
-    img.onload = () => { clearTimeout(timer); settle(img.naturalWidth > 1); };
-    img.onerror = () => { clearTimeout(timer); settle(false); };
-    img.src = url;
-  });
+// Whether an image URL actually paints, from src/lib/imageProbe.ts — the same
+// probe the product feed's image check uses. It was written here first, for the
+// review-photo promote below; it moved out when the feed needed the identical
+// question answered, because two copies of "did this image load" would be two
+// places to get the Cloudinary 1x1-placeholder case wrong.
+//
+// The wait is generous (12s) because Cloudinary downloads the original — a 2 MB
+// phone photo off a cold backend is not instant — but bounded, so an admin who
+// pressed a button is never left with a spinner forever.
 
 /**
  * The avatar to store for a promoted review: a Cloudinary delivery of the photo
@@ -2143,19 +2144,154 @@ const TestimonialSubmissions = ({
   );
 };
 
+// ── Product Page Testimonials ─────────────────────────────────────────────────
+// The same quote cards as the homepage carousel, each pinned to one candle and
+// shown on that candle's product page. It lives inside the Testimonials editor
+// rather than in a section of its own so there is one place on the site where
+// customer quotes are managed, whichever page they end up on.
+//
+// A quote with no product selected is kept but never rendered anywhere — the
+// product page filters on a matching id — so an unfinished row is harmless.
+const ProductTestimonialsEditor = ({
+  data,
+  onChange,
+  allProducts,
+}: {
+  data: TestimonialsContent;
+  onChange: (d: TestimonialsContent) => void;
+  allProducts: Product[];
+}) => {
+  const items = data.product_items ?? [];
+  const update = (next: ProductTestimonial[]) => onChange({ ...data, product_items: next });
+  const patch = (i: number, fields: Partial<ProductTestimonial>) =>
+    update(items.map((item, j) => (j === i ? { ...item, ...fields } : item)));
+
+  // How many quotes each candle has, so the shop can see at a glance which
+  // product pages are still bare — that is the number that matters here, and
+  // counting the cards by eye stops working after about six.
+  const perProduct = allProducts.map(p => ({
+    product: p,
+    count: items.filter(t => String(t.product_id) === String(p.id)).length,
+  }));
+
+  return (
+    <div className="space-y-4 rounded-xl border border-border bg-muted/30 p-5">
+      <div>
+        <h3 className="font-sans text-sm font-semibold text-foreground">Product Page Testimonials</h3>
+        <p className="font-sans text-xs text-muted-foreground">
+          Quotes shown on an individual candle's product page. Pick the candle each one belongs to.
+          A product with no quotes simply doesn't show the section.
+        </p>
+      </div>
+
+      {perProduct.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {perProduct.map(({ product, count }) => (
+            <span key={product.id}
+              className={`font-sans text-[11px] rounded-full px-2.5 py-1 border ${
+                count > 0
+                  ? "border-primary/30 bg-primary/10 text-primary"
+                  : "border-border bg-card text-muted-foreground"
+              }`}>
+              {product.name} · {count}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {items.length === 0 && (
+        <p className="font-sans text-sm text-muted-foreground">
+          None yet. Add one below, or promote a customer submission above and then set its product.
+        </p>
+      )}
+
+      {items.map((item, i) => (
+        <Card key={item.id}>
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm font-medium text-foreground">
+              Product quote {i + 1}
+            </span>
+            <RemoveButton onClick={() => update(items.filter((_, j) => j !== i))} />
+          </div>
+          <Field label="Product" hint="Which candle's page this quote appears on">
+            <select
+              value={item.product_id}
+              onChange={(e) => patch(i, { product_id: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+            >
+              <option value="">— pick a product —</option>
+              {allProducts.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            {/* A quote whose product was deleted keeps its old id, which no
+                longer matches anything in the dropdown. Say so rather than
+                showing a silently blank select. */}
+            {item.product_id && !allProducts.some(p => String(p.id) === String(item.product_id)) && (
+              <p className="font-sans text-xs text-destructive mt-1">
+                This quote points at a product that no longer exists, so it isn't shown anywhere. Pick another.
+              </p>
+            )}
+          </Field>
+          <Field label="Quote">
+            <RichTextarea rows={3} value={item.quote}
+              onChange={(e) => patch(i, { quote: e.target.value })} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Author Name">
+              <Input value={item.author} onChange={(e) => patch(i, { author: e.target.value })} />
+            </Field>
+            <Field label="Location">
+              <Input value={item.location} onChange={(e) => patch(i, { location: e.target.value })} />
+            </Field>
+          </div>
+          <Field label={`Star Rating: ${item.rating} / 5`}
+            hint="Shown as stars, and published to Google as this product's rating">
+            <input type="range" min={1} max={5} value={item.rating}
+              onChange={(e) => patch(i, { rating: Number(e.target.value) })}
+              className="w-full accent-primary" />
+          </Field>
+          <Field label="Avatar Image URL" hint="Optional — a small photo beside the name">
+            <Input value={item.avatarUrl ?? ""} placeholder="https://…"
+              onChange={(e) => patch(i, { avatarUrl: e.target.value })} />
+            <ImageOptimiser url={publicAvatarSource(item.avatarUrl ?? "")} defaultSize="card"
+              onOptimise={(avatarUrl) => patch(i, { avatarUrl })} />
+          </Field>
+        </Card>
+      ))}
+
+      <AddButton
+        label="Add product quote"
+        onClick={() =>
+          update([...items, {
+            id: `pt-${Date.now()}`,
+            product_id: "",
+            quote: "",
+            author: "",
+            location: "",
+            rating: 5,
+          }])
+        }
+      />
+    </div>
+  );
+};
+
 const TestimonialsEditor = ({
   data,
   onChange,
   onSave,
   saving,
+  allProducts,
 }: {
   data: TestimonialsContent;
   onChange: (d: TestimonialsContent) => void;
   onSave: () => void;
   saving: boolean;
+  allProducts: Product[];
 }) => (
   <div className="space-y-6">
-    <SectionHeading title="Testimonials" desc="Customer review cards." />
+    <SectionHeading title="Testimonials" desc="Customer review cards — for the homepage carousel and for individual product pages." />
     <Field label="Section Label">
       <RichInput value={data.label} onChange={(e) => onChange({ ...data, label: e.target.value })} />
     </Field>
@@ -2258,6 +2394,15 @@ const TestimonialsEditor = ({
         }}
       />
     </div>
+
+    <Field label="Product Page Heading" hint="The heading above the quotes on a product page">
+      <RichInput
+        value={data.product_headline}
+        onChange={(e) => onChange({ ...data, product_headline: e.target.value })}
+      />
+    </Field>
+
+    <ProductTestimonialsEditor data={data} onChange={onChange} allProducts={allProducts} />
 
     <SaveButton onClick={onSave} saving={saving} />
   </div>
@@ -4563,6 +4708,364 @@ const DealsEditor = ({
   );
 };
 
+// ── Newsletter ────────────────────────────────────────────────────────────────
+// The one screen on this dashboard that reaches people who did not ask for
+// anything just now, and it is built around that: the audience number is shown
+// before the compose box rather than after it, a test send is offered ahead of
+// the real one, and the real one asks a confirmation naming the exact count.
+//
+// Composed as plain text on purpose. The server escapes the body and turns blank
+// lines into paragraphs, so there is no path from this box to arbitrary markup
+// in somebody's inbox — and no way for the shop to accidentally send a broken
+// half-styled email either.
+// The "Add image" control in the newsletter composer's toolbar.
+//
+// Everything here exists to stop one specific outcome: an email that arrives in
+// hundreds of inboxes with a broken image in it. That is unrecoverable — the
+// message cannot be edited once sent — so the URL is resolved and PROVED to load
+// before any markup is inserted.
+//
+// Two traps it closes:
+//   - a `/uploads/…` path works in this dashboard and works nowhere else. It is
+//     relative, so a mail client has no origin to resolve it against, and on
+//     this deployment the file behind it is deleted on the next redeploy anyway.
+//   - a huge original. A 3MB phone photo sent to 300 people is 900MB of traffic
+//     and a slow, clipped image in the inbox.
+//
+// Both are handled by routing every image through a Cloudinary delivery URL
+// sized and encoded for email (see buildEmailImageUrl), then loading it once to
+// confirm it is real before it goes anywhere near the body.
+const NewsletterImageButton = ({ onInsert }: { onInsert: (markup: string) => void }) => {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [alt, setAlt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // The original address, held only when the optimised delivery failed but the
+  // source itself loads — see insertUnoptimised.
+  const [fallback, setFallback] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const reset = () => { setUrl(""); setAlt(""); setError(""); setFallback(""); setOpen(false); };
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (fileRef.current) fileRef.current.value = "";
+    if (!file) return;
+    setBusy(true); setError("");
+    try {
+      // Lands as a bare /uploads/… path; resolving it against the live site is
+      // what gives Cloudinary something it can actually fetch.
+      const path = await uploadImage(file);
+      setUrl(path.startsWith("/") ? `${SITE_URL}${path}` : path);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed.");
+    } finally { setBusy(false); }
+  };
+
+  const handleInsert = async () => {
+    const raw = url.trim();
+    if (!raw) { setError("Paste an image address, or upload a photo."); return; }
+    setBusy(true); setError("");
+    try {
+      // A path typed by hand gets the same treatment as an uploaded one.
+      const absolute = raw.startsWith("/") ? `${SITE_URL}${raw}` : raw;
+      const delivered = buildEmailImageUrl(absolute);
+      if (!isEmailableImageUrl(delivered)) {
+        setError("That needs to be a full https:// address — an email can't load a local file.");
+        return;
+      }
+      // Proved, not assumed. This is the check that keeps a dead image out of
+      // every subscriber's inbox.
+      //
+      // Both URLs are probed, not just the one being inserted, because the two
+      // failures need different answers from the person reading this. If the
+      // original loads and the Cloudinary delivery does not, the address is fine
+      // and the image service is the problem — most likely its monthly free
+      // allowance, which this account has run out of before. Reporting that as
+      // "check the address" would send the owner off checking a correct address.
+      if (!(await imageLoads(delivered))) {
+        // The source is checked too, because the two failures need different
+        // answers. A source that loads while the delivery does not means the
+        // address is correct and the image service is the problem — most often
+        // its monthly free allowance, which this account has exhausted before.
+        // Telling the owner to "check the address" then would send them off
+        // checking an address that is already right.
+        if (delivered !== absolute && (await imageLoads(absolute))) {
+          setFallback(absolute);
+          setError("Our image service wouldn't deliver that (usually its monthly free allowance running out). The image itself is fine — you can use it as-is, but it won't be shrunk for email.");
+          return;
+        }
+        setFallback("");
+        setError("That address didn't load. Open it in a browser to check it works, then try again.");
+        return;
+      }
+      onInsert(`\n\n${imageMarkup(delivered, alt.trim())}\n\n`);
+      reset();
+    } finally { setBusy(false); }
+  };
+
+  /**
+   * Insert the original address, skipping the resize-and-convert step.
+   *
+   * Offered only after the source has been PROVED to load, and only as an
+   * explicit second press — never as a silent fallback. The trade being accepted
+   * is real and worth being deliberate about: a full-size original may be
+   * several megabytes multiplied by every subscriber, and a PNG or WebP may not
+   * render in Outlook. Both are better than a feature that cannot be used at all
+   * while the image service is out of credit.
+   */
+  const insertUnoptimised = () => {
+    onInsert(`\n\n${imageMarkup(fallback, alt.trim())}\n\n`);
+    reset();
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        tabIndex={-1}
+        title="Insert an image between paragraphs"
+        onMouseDown={(e) => { e.preventDefault(); setOpen(true); }}
+        className="h-6 px-2 flex items-center gap-1 rounded border border-border bg-card text-foreground/70 hover:text-foreground hover:border-primary/50 transition-colors text-xs leading-none"
+      >
+        🖼 Image
+      </button>
+    );
+  }
+
+  return (
+    <div className="w-full mt-1 rounded-lg border border-border bg-card p-3 space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://… (or upload)"
+          className="flex-1 min-w-[200px] px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+        />
+        <button type="button" onClick={() => fileRef.current?.click()} disabled={busy}
+          className="px-3 py-2 rounded-lg border border-border bg-card font-sans text-xs text-foreground disabled:opacity-50">
+          {busy ? "Working…" : "Upload"}
+        </button>
+        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
+      </div>
+      <input
+        value={alt}
+        onChange={(e) => setAlt(e.target.value)}
+        placeholder="Describe the photo (shown if images are blocked)"
+        className="w-full px-3 py-2 rounded-lg border border-border bg-card text-foreground font-sans text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+      />
+      {error && <p className="font-sans text-xs text-destructive">{error}</p>}
+      {fallback && (
+        <button type="button" onClick={insertUnoptimised}
+          className="px-3 py-1.5 rounded-lg font-sans text-xs border border-border bg-card text-foreground">
+          Use it as-is anyway
+        </button>
+      )}
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={handleInsert} disabled={busy}
+          className="px-3 py-1.5 rounded-lg font-sans text-xs font-semibold bg-primary text-primary-foreground disabled:opacity-50">
+          {busy ? "Checking…" : "Insert"}
+        </button>
+        <button type="button" onClick={reset}
+          className="px-3 py-1.5 rounded-lg font-sans text-xs border border-border bg-card text-foreground">
+          Cancel
+        </button>
+        <span className="font-sans text-[11px] text-muted-foreground">
+          Resized and converted for email automatically.
+        </span>
+      </div>
+    </div>
+  );
+};
+
+const NewsletterPanel = () => {
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [testTo, setTestTo] = useState("");
+  const [audience, setAudience] = useState<NewsletterAudience | null>(null);
+  const [history, setHistory] = useState<NewsletterSendRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [sending, setSending] = useState(false);
+  const { toast } = useToast();
+
+  const load = useCallback(() => {
+    setLoading(true);
+    getNewsletterOverview()
+      .then(d => { setAudience(d.audience); setHistory(d.history); })
+      .catch(() => { /* non-fatal — the compose box still works */ })
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const ready = subject.trim() !== "" && body.trim() !== "";
+  const activeCount = audience?.active ?? 0;
+
+  const handleTest = async () => {
+    setTesting(true);
+    try {
+      const { delivered, real_unsubscribe_link } = await sendNewsletterTest(
+        subject.trim(), body.trim(), testTo.trim(),
+      );
+      toast({
+        title: delivered ? "Test sent — go and look at it" : "Not sent: email sending isn't configured",
+        description: delivered
+          ? (real_unsubscribe_link
+              ? "That address is on the list, so its unsubscribe link is the real one and safe to click through."
+              : "That address isn't on the list, so its unsubscribe link is a placeholder.")
+          : "RESEND_API_KEY is missing on the server, so nothing left the building.",
+        variant: delivered ? undefined : "destructive",
+      });
+    } catch (err) {
+      toast({
+        title: "Test failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally { setTesting(false); }
+  };
+
+  const handleSend = async () => {
+    // Naming the number is the point of this prompt. "Are you sure?" is a
+    // reflex to click through; "send to 214 people" is a thing you read.
+    const ok = confirm(
+      `Send "${subject.trim()}" to ${activeCount} ${activeCount === 1 ? "subscriber" : "subscribers"}?\n\n` +
+      `This cannot be undone or recalled.`
+    );
+    if (!ok) return;
+    setSending(true);
+    try {
+      const { sent, failed, capped } = await sendNewsletter(subject.trim(), body.trim());
+      toast({
+        title: `Sent to ${sent} ${sent === 1 ? "subscriber" : "subscribers"}`,
+        description: [
+          failed > 0 ? `${failed} could not be delivered — check the server logs.` : "",
+          capped ? "The list has outgrown a single send; some were not included." : "",
+        ].filter(Boolean).join(" ") || undefined,
+        variant: failed > 0 ? "destructive" : undefined,
+      });
+      if (failed === 0) { setSubject(""); setBody(""); }
+      load();
+    } catch (err) {
+      toast({
+        title: "Couldn't send",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally { setSending(false); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <SectionHeading
+        title="Newsletter"
+        desc="Write once, send to everyone on the list. Every email carries an unsubscribe link automatically."
+      />
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <StatTile label="On the list" value={loading ? "…" : activeCount} />
+        <StatTile label="Unsubscribed" value={loading ? "…" : (audience?.unsubscribed ?? 0)} />
+        <StatTile label="Sent so far" value={loading ? "…" : history.length} />
+      </div>
+
+      <Field label="Subject" hint="What shows in the inbox list. Short and specific beats clever.">
+        <Input value={subject} maxLength={200} placeholder="A new scent just landed 🫒"
+          onChange={e => setSubject(e.target.value)} />
+      </Field>
+
+      <Field label="Message"
+        hint="Select text and use B / I / U (or ⌘B, ⌘I, ⌘U). Leave a blank line between paragraphs. Images go on a line of their own.">
+        <RichTextarea rows={12} value={body}
+          placeholder={"Hi,\n\nWe just poured something new…"}
+          onChange={e => setBody(e.target.value)}
+          extraTools={(insert) => <NewsletterImageButton onInsert={insert} />} />
+      </Field>
+
+      {/* Live, and deliberately so: this is the only look at the email anyone
+          gets before it becomes unrecallable. Rendered from the same block tree
+          the server builds the real message from — see newsletterMarkup.ts. */}
+      <NewsletterPreview subject={subject} body={body} />
+
+      <div className="rounded-xl border border-border bg-muted/30 p-5 space-y-4">
+        <div>
+          <h3 className="font-sans text-sm font-semibold text-foreground">1. Send yourself a test first</h3>
+          <p className="font-sans text-xs text-muted-foreground">
+            A broadcast can't be recalled. One test to a real mailbox catches a bad subject line,
+            a mangled paragraph, or a sending problem while it still costs nothing.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 items-end">
+          <div className="flex-1 min-w-[220px]">
+            <Input type="email" value={testTo} placeholder="you@example.com"
+              onChange={e => setTestTo(e.target.value)} />
+          </div>
+          <button type="button" onClick={handleTest}
+            disabled={!ready || testing || !testTo.trim()}
+            className="px-4 py-2.5 rounded-lg border border-border bg-card font-sans text-sm text-foreground disabled:opacity-50">
+            {testing ? "Sending…" : "Send test"}
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-muted/30 p-5 space-y-4">
+        <div>
+          <h3 className="font-sans text-sm font-semibold text-foreground">2. Send it for real</h3>
+          <p className="font-sans text-xs text-muted-foreground">
+            Goes to everyone currently subscribed. People who have unsubscribed are never included.
+          </p>
+        </div>
+        <button type="button" onClick={handleSend}
+          disabled={!ready || sending || activeCount === 0}
+          className="px-5 py-2.5 rounded-lg font-sans text-sm font-semibold bg-primary text-primary-foreground disabled:opacity-50">
+          {sending
+            ? "Sending…"
+            : `Send to ${activeCount} ${activeCount === 1 ? "subscriber" : "subscribers"}`}
+        </button>
+        {activeCount === 0 && !loading && (
+          <p className="font-sans text-xs text-muted-foreground">
+            Nobody is subscribed yet, so there's nobody to send to.
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <h3 className="font-sans text-sm font-semibold text-foreground">What you've sent</h3>
+        {loading && <p className="font-sans text-sm text-muted-foreground">Loading…</p>}
+        {!loading && history.length === 0 && (
+          <p className="font-sans text-sm text-muted-foreground">Nothing sent yet.</p>
+        )}
+        {history.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left font-sans text-sm">
+              <thead>
+                <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+                  <th className="py-2 pr-4">Subject</th>
+                  <th className="py-2 pr-4">Sent to</th>
+                  <th className="py-2 pr-4">Failed</th>
+                  <th className="py-2">When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map(h => (
+                  <tr key={h.id} className="border-t border-border">
+                    <td className="py-2 pr-4 text-foreground">{h.subject}</td>
+                    <td className="py-2 pr-4 text-foreground">{h.recipients}</td>
+                    <td className={`py-2 pr-4 ${h.failed > 0 ? "text-destructive" : "text-muted-foreground"}`}>
+                      {h.failed}
+                    </td>
+                    <td className="py-2 text-muted-foreground">{new Date(h.sent_at).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const SubscribersPanel = ({
   subscribers,
   onDelete,
@@ -5526,6 +6029,8 @@ type TabId =
   | "termsOfService"
   | "shippingPolicy"
   | "subscribers"
+  | "newsletterSend"
+  | "abandonedCarts"
   | "users"
   | "feedback"
   | "orders"
@@ -5535,6 +6040,7 @@ type TabId =
   | "analytics"
   | "googleAnalytics"
   | "metaPixel"
+  | "productFeed"
   | "seo";
 
 type NavItem = { id: TabId; label: string; icon: string };
@@ -5634,7 +6140,10 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "ops", label: "Ops Overview", icon: "📊" },
       { id: "discountCodes", label: "Discount Codes", icon: "🏷️" },
       { id: "seo", label: "SEO", icon: "🔍" },
+      { id: "productFeed", label: "Product Feed", icon: "🛒" },
       { id: "subscribers", label: "Subscribers & Signup Popup", icon: "◉" },
+      { id: "newsletterSend", label: "Send Newsletter", icon: "📣" },
+      { id: "abandonedCarts", label: "Abandoned Carts", icon: "🛒" },
       { id: "pickupSettings",  label: "Pickup & Delivery", icon: "🏬" },
       { id: "account", label: "Admin Account", icon: "🔑" },
     ],
@@ -5647,7 +6156,7 @@ const groupIdForTab = (tab: TabId): string =>
 // Tabs that render dense tables/dashboards rather than a settings form — these
 // get the full working width so nothing is clipped.
 const WIDE_TABS = new Set<TabId>([
-  "shopCategories", "deals", "subscribers", "users", "feedback", "orders", "returns", "ops", "discountCodes", "analytics",
+  "shopCategories", "deals", "subscribers", "newsletterSend", "abandonedCarts", "users", "feedback", "orders", "returns", "ops", "discountCodes", "analytics",
 ]);
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
@@ -5688,7 +6197,7 @@ const AdminDashboard = () => {
   const loadData = useCallback(async () => {
     // ── Content sections (getContentFresh bypasses the storefront cache: the
     //    editor must always load what is actually stored) ──
-    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, googleAnalytics, metaPixel, seo] =
+    const [announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, googleAnalytics, metaPixel, productFeed, seo] =
       await Promise.all([
         getContentFresh("announcementBar", DEFAULT_CONTENT.announcementBar),
         getContentFresh("navbar",          DEFAULT_CONTENT.navbar),
@@ -5717,9 +6226,10 @@ const AdminDashboard = () => {
         getContentFresh("shippingPolicy",  DEFAULT_CONTENT.shippingPolicy),
         getContentFresh("googleAnalytics", DEFAULT_CONTENT.googleAnalytics),
         getContentFresh("metaPixel",       DEFAULT_CONTENT.metaPixel),
+        getContentFresh("productFeed",     DEFAULT_CONTENT.productFeed),
         getContentFresh("seo",             DEFAULT_CONTENT.seo),
       ]);
-    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, googleAnalytics, metaPixel, seo });
+    setContent({ announcementBar, navbar, hero, momentPill, welcomeClub, brandStory, aboutPage, aboutFounder, ourStoryPage, products, productPage, shopPage, candleCare, videos, testimonials, newsletter, footer, returnPolicy, giftCards, customerService, pickupSettings, subscribePopup, privacyPolicy, termsOfService, shippingPolicy, googleAnalytics, metaPixel, productFeed, seo });
 
     // ── Shop categories ───────────────────────────────────────────────────────
     try {
@@ -5895,7 +6405,7 @@ const AdminDashboard = () => {
             {activeTab === "shopPage"     && <ShopPageEditor     data={content.shopPage}     onChange={update("shopPage")}     onSave={() => handleSave("shopPage")}     saving={saving} />}
             {activeTab === "candleCare"   && <CandleCareEditor   data={content.candleCare}   onChange={update("candleCare")}   onSave={() => handleSave("candleCare")}   saving={saving} />}
             {activeTab === "videos"       && <VideosEditor       data={content.videos}       onChange={update("videos")}       onSave={() => handleSave("videos")}       saving={saving} />}
-            {activeTab === "testimonials" && <TestimonialsEditor data={content.testimonials} onChange={update("testimonials")} onSave={() => handleSave("testimonials")} saving={saving} />}
+            {activeTab === "testimonials" && <TestimonialsEditor data={content.testimonials} onChange={update("testimonials")} onSave={() => handleSave("testimonials")} saving={saving} allProducts={content.products.items} />}
             {activeTab === "newsletter"   && <NewsletterEditor   data={content.newsletter}   onChange={update("newsletter")}   onSave={() => handleSave("newsletter")}   saving={saving} />}
             {activeTab === "footer"       && <FooterEditor       data={content.footer}       onChange={update("footer")}       onSave={() => handleSave("footer")}       saving={saving} />}
             {activeTab === "returnPolicy"    && <ReturnPolicyEditor    data={content.returnPolicy}    onChange={update("returnPolicy")}    onSave={() => handleSave("returnPolicy")}    saving={saving} />}
@@ -5906,6 +6416,8 @@ const AdminDashboard = () => {
             {activeTab === "privacyPolicy"   && <LegalPageEditor title="Privacy Policy"   desc="Content shown on the Privacy Policy page."   data={content.privacyPolicy}  onChange={update("privacyPolicy")}  onSave={() => handleSave("privacyPolicy")}  saving={saving} />}
             {activeTab === "termsOfService"  && <LegalPageEditor title="Terms of Service" desc="Content shown on the Terms of Service page." data={content.termsOfService} onChange={update("termsOfService")} onSave={() => handleSave("termsOfService")} saving={saving} />}
             {activeTab === "shippingPolicy"  && <LegalPageEditor title="Shipping Policy"  desc="Content shown on the Shipping Policy page."  data={content.shippingPolicy} onChange={update("shippingPolicy")} onSave={() => handleSave("shippingPolicy")} saving={saving} />}
+            {activeTab === "newsletterSend" && <NewsletterPanel />}
+            {activeTab === "abandonedCarts" && <AbandonedCartPanel />}
             {activeTab === "subscribers"  && <SubscribersPanel   subscribers={subscribers}   onDelete={handleDeleteSubscriber} popup={content.subscribePopup} onPopupChange={update("subscribePopup")} onPopupSave={() => handleSave("subscribePopup")} saving={saving} />}
             {activeTab === "users"        && <UsersPanel />}
             {activeTab === "feedback"     && <FeedbackPanel />}
@@ -5916,6 +6428,7 @@ const AdminDashboard = () => {
             {activeTab === "analytics"    && <AnalyticsPanel />}
             {activeTab === "googleAnalytics" && <GoogleAnalyticsPanel data={content.googleAnalytics} onChange={update("googleAnalytics")} onSave={() => handleSave("googleAnalytics")} saving={saving} />}
             {activeTab === "metaPixel"    && <MetaPixelPanel data={content.metaPixel} onChange={update("metaPixel")} onSave={() => handleSave("metaPixel")} saving={saving} />}
+            {activeTab === "productFeed"  && <ProductFeedPanel data={content.productFeed} products={content.products.items} pickup={content.pickupSettings} siteName={content.seo.site_name || SITE_NAME} onChange={update("productFeed")} onSave={() => handleSave("productFeed")} saving={saving} />}
             {activeTab === "seo"          && <SeoEditor data={content.seo} site={content} onChange={update("seo")} onSave={() => handleSave("seo")} saving={saving} onError={(m) => toast({ title: "Error", description: m, variant: "destructive" })} />}
           </div>
         </main>

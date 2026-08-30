@@ -17,8 +17,18 @@ import Stripe from 'stripe';
 import { sendOtpEmail, sendPasswordResetEmail, sendOrderConfirmationEmail, sendOrderStatusUpdateEmail,
   sendCancellationRequestedEmail, sendCancellationRequestAdminAlert, sendCancellationDecisionEmail,
   sendReturnRequestedEmail, sendReturnDecisionEmail, sendRefundCompletedEmail, sendCustomerMessageEmail,
-  sendBackInStockEmail, sendAdminPasswordResetEmail, sendDiscountCodeEmail } from './email.js';
-import { startRefundReminderScheduler } from './scheduler.js';
+  sendBackInStockEmail, sendAdminPasswordResetEmail, sendDiscountCodeEmail,
+  sendNewsletterEmail, sendAbandonedCartEmail, isEmailConfigured } from './email.js';
+import { startRefundReminderScheduler, startAbandonedCartScheduler } from './scheduler.js';
+// Abandoned-cart reminders: who is due one, sending it, and crediting the sale
+// it brought back. Own file because the cadence guards are the whole feature —
+// see the header there.
+import {
+  getAbandonedCartSettings, saveAbandonedCartSettings, normalizeAbandonedCartSettings,
+  findAbandonedCarts,
+  sendAbandonedCartReminder, markCartRecovered, abandonedCartStats,
+  abandonedCartHistory, describeDiscount, buildContext, recoveryUrl as cartRecoveryUrl,
+} from './abandonedCart.js';
 import {
   validateAddress, normalizeAddress, toE164, phoneError as validatePhone,
   nameError as validateName, tidy, ACCOUNT_NAME_COPY,
@@ -27,6 +37,7 @@ import {
 // destructive when wrong, so they live on their own where the unit suite can
 // reach them. See backend/metaCapi.js.
 import { metaPixelId, metaBrowserId, metaTestCode, metaUserData, hashExternalId } from './metaCapi.js';
+import { buildProductFeed } from './productFeed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1637,6 +1648,14 @@ const finalizeCheckoutSession = async (sessionId) => {
     // cannot report the sale twice, and silent unless the shopper consented.
     reportPurchaseToMeta(order, p).catch(err => console.error('[meta purchase]', err));
 
+    // If a basket reminder went out to this shopper recently, this is the sale it
+    // brought back — credit it, so "recovered revenue" in Ops is a real number
+    // rather than an open count of emails sent. Best effort, like every other
+    // measurement call here: nothing stands between a paying customer and their
+    // order.
+    markCartRecovered(pool, { userId: order.user_id, orderId: order.id, total: Number(order.total) })
+      .catch(err => console.error('[markCartRecovered]', err));
+
     getAutomationSettings().then(settings => evaluateFraudReviewDecision(order, settings)).catch(err => console.error('[evaluateFraudReviewDecision]', err));
     const { rows: userForEmail } = await pool.query('SELECT email FROM users WHERE id = $1', [order.user_id]);
     if (userForEmail[0]?.email) {
@@ -1845,6 +1864,41 @@ app.get('/api/sitemap.xml', async (_req, res) => {
       `        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n` +
       urls.join('\n') + `\n</urlset>\n`
     );
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── Product feed (Google Merchant Center / Meta Commerce) ──────────────────────
+// Served to the ad platforms as /feed.xml via the same Netlify proxy rule the
+// sitemap uses. Off until an admin turns it on in Admin → Ops → Product Feed:
+// a feed published before the catalogue is ready is worse than no feed, because
+// the platforms cache the first thing they fetch and re-review slowly.
+
+app.get('/api/feed.xml', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT key, value FROM site_settings WHERE key IN ('content_products', 'content_productFeed', 'content_pickupSettings', 'content_seo')"
+    );
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value || {}]));
+    const settings = byKey.content_productFeed || {};
+
+    if (!settings.enabled) {
+      return res.status(404).type('text/plain').send('Product feed is turned off.');
+    }
+
+    const { xml } = buildProductFeed({
+      products: byKey.content_products?.items || [],
+      settings,
+      pickup: byKey.content_pickupSettings || {},
+      siteUrl: SITEMAP_SITE_URL,
+      siteName: byKey.content_seo?.site_name || 'The Olive Goose',
+      currency: 'EUR',
+    });
+
+    res.set('Content-Type', 'application/xml; charset=utf-8');
+    // An hour is short enough that a price fix reaches the platforms on their
+    // next crawl and long enough that their crawlers cannot become traffic.
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.send(xml);
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -2936,10 +2990,13 @@ app.post('/api/cart/items', requireUserAuth, async (req, res) => {
     return res.status(400).json({ error: `Quantity must be a whole number between 1 and ${MAX_CART_QTY}.` });
   try {
     const { rows } = await pool.query(
-      `INSERT INTO user_carts (user_id, product_id, product_data, quantity)
-       VALUES ($1, $2, $3, $4)
+      // updated_at is touched on every write, not just the insert: it is the
+      // clock the abandoned-cart sweep reads, and a basket someone edited an
+      // hour ago must not look like the week-old one it grew out of.
+      `INSERT INTO user_carts (user_id, product_id, product_data, quantity, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
        ON CONFLICT (user_id, product_id) DO UPDATE
-         SET quantity = LEAST(user_carts.quantity + $4, $5)
+         SET quantity = LEAST(user_carts.quantity + $4, $5), updated_at = NOW()
        RETURNING *`,
       [req.user.userId, product_id, JSON.stringify(product_data), quantity, MAX_CART_QTY]
     );
@@ -2962,9 +3019,13 @@ app.put('/api/cart/items/:productId', requireUserAuth, async (req, res) => {
         'DELETE FROM user_carts WHERE user_id = $1 AND product_id = $2',
         [req.user.userId, req.params.productId]
       );
+      // Removing an item is activity on the basket too, so the rows that remain
+      // are re-stamped. Without this a shopper who prunes a week-old basket is
+      // instantly "abandoned" and gets a reminder about the pruning.
+      await pool.query('UPDATE user_carts SET updated_at = NOW() WHERE user_id = $1', [req.user.userId]);
     } else {
       await pool.query(
-        'UPDATE user_carts SET quantity = $1 WHERE user_id = $2 AND product_id = $3',
+        'UPDATE user_carts SET quantity = $1, updated_at = NOW() WHERE user_id = $2 AND product_id = $3',
         [quantity, req.user.userId, req.params.productId]
       );
     }
@@ -2980,6 +3041,8 @@ app.delete('/api/cart/items/:productId', requireUserAuth, async (req, res) => {
       'DELETE FROM user_carts WHERE user_id = $1 AND product_id = $2',
       [req.user.userId, req.params.productId]
     );
+    // See the note in PUT: what's left of the basket was just touched.
+    await pool.query('UPDATE user_carts SET updated_at = NOW() WHERE user_id = $1', [req.user.userId]);
     res.json({ success: true });
   } catch (err) {
     sendServerError(res, err);
@@ -7434,12 +7497,26 @@ app.post('/api/subscribers', publicWriteLimiter, async (req, res) => {
     // person who never received (or lost) their unused welcome code should still
     // be able to get it, not be stonewalled. This also backfills everyone who
     // subscribed before the discount feature existed.
+    //
+    // A previously unsubscribed address is REACTIVATED here, and that is the
+    // correct reading of the act: someone typing their address into the signup
+    // card is giving consent again, and refusing it would leave them unable to
+    // rejoin a list they chose to rejoin. The tombstone exists to stop a silent
+    // resurrection (a CSV re-import, a row being deleted and re-created), not to
+    // override somebody's own decision.
     const insert = await pool.query(
       `INSERT INTO subscribers (email) VALUES ($1)
        ON CONFLICT (email) DO NOTHING RETURNING id`,
       [email]
     );
     const isNew = insert.rows.length > 0;
+    if (!isNew) {
+      await pool.query(
+        `UPDATE subscribers SET unsubscribed_at = NULL
+          WHERE email = $1 AND unsubscribed_at IS NOT NULL`,
+        [email]
+      );
+    }
 
     // Resolve the welcome discount for this email, driven by the admin's signup-
     // popup settings. Best-effort throughout: a mail hiccup must never 500.
@@ -7751,7 +7828,14 @@ app.delete('/api/admin/feedback/:id', requireAuth, async (req, res) => {
 
 app.get('/api/subscribers', requireAuth, async (_req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM subscribers ORDER BY subscribed_at DESC');
+    // Columns named rather than SELECT * — unsubscribe_token is a bearer
+    // credential for "remove this person from the list", and the admin UI has no
+    // use for it. Nothing that never leaves the server can be leaked by a screen
+    // share or a copied CSV.
+    const { rows } = await pool.query(
+      `SELECT id, email, subscribed_at, unsubscribed_at
+         FROM subscribers ORDER BY subscribed_at DESC`
+    );
     res.json(rows);
   } catch (err) { sendServerError(res, err); }
 });
@@ -7760,6 +7844,435 @@ app.delete('/api/subscribers/:id', requireAuth, async (req, res) => {
   try {
     await pool.query('DELETE FROM subscribers WHERE id = $1', [req.params.id]);
     res.json({ success: true });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NEWSLETTER
+// ══════════════════════════════════════════════════════════════════════════════
+// The shop's only broadcast channel. Everything else this server emails is
+// transactional — a reply to something one person just did — and the difference
+// changes the rules: a broadcast needs consent to have existed, a working
+// unsubscribe, and a hard guarantee it cannot go out twice.
+//
+// Deliberately synchronous and capped rather than a queue. The list is in the
+// hundreds; a background job with retries and dead-letter handling would be more
+// machinery than the problem has, and it would make "did it send?" a question
+// the admin cannot answer by looking at the screen.
+
+/** Nobody is emailed above this in one send — see the endpoint's note. */
+const NEWSLETTER_MAX_RECIPIENTS = 1000;
+/** How many Resend calls are in flight at once. */
+const NEWSLETTER_CONCURRENCY = 5;
+
+const unsubscribeUrlFor = (token) =>
+  `${FRONTEND_URL}/unsubscribe?token=${encodeURIComponent(token)}`;
+
+/** Everyone currently opted in, with the token their unsubscribe link needs. */
+const activeSubscribers = async (limit = NEWSLETTER_MAX_RECIPIENTS) => {
+  const { rows } = await pool.query(
+    `SELECT email, unsubscribe_token FROM subscribers
+      WHERE unsubscribed_at IS NULL AND unsubscribe_token IS NOT NULL
+      ORDER BY subscribed_at ASC
+      LIMIT $1`,
+    [limit]
+  );
+  return rows;
+};
+
+// ── GET /api/admin/newsletter (admin) — audience size + what has been sent ────
+app.get('/api/admin/newsletter', requireAuth, async (_req, res) => {
+  try {
+    const [{ rows: counts }, { rows: history }] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE unsubscribed_at IS NULL)::int AS active,
+                COUNT(*) FILTER (WHERE unsubscribed_at IS NOT NULL)::int AS unsubscribed
+           FROM subscribers`
+      ),
+      pool.query(
+        `SELECT id, subject, recipients, failed, sent_at
+           FROM newsletter_sends ORDER BY sent_at DESC LIMIT 20`
+      ),
+    ]);
+    res.json({ audience: counts[0], history });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── POST /api/admin/newsletter/test (admin) — one copy, to one address ───────
+// The rehearsal. A broadcast cannot be recalled, and the things that go wrong
+// (a mangled line break, a subject that reads badly in a phone's inbox list, a
+// sending domain that has quietly fallen out of verification) are all visible
+// in one real delivery to a real mailbox.
+app.post('/api/admin/newsletter/test', requireAuth, async (req, res) => {
+  const subject = safeText(req.body.subject, 200);
+  const body    = safeText(req.body.body, 20000);
+  const to      = safeText(req.body.to, 254).toLowerCase();
+  if (!subject || !body) return res.status(400).json({ error: 'Subject and body are required.' });
+  if (!EMAIL_RE.test(to)) return res.status(400).json({ error: 'Please enter a valid email address.' });
+  try {
+    // If the tester is on the list, use their real token so the unsubscribe link
+    // in the test is the genuine article and can be clicked through end to end.
+    // Otherwise a sentinel the unsubscribe page explains rather than errors on.
+    const { rows } = await pool.query(
+      `SELECT unsubscribe_token FROM subscribers WHERE email = $1`, [to]
+    );
+    const token = rows[0]?.unsubscribe_token || 'preview';
+    const { delivered } = await sendNewsletterEmail(to, {
+      subject: `[TEST] ${subject}`,
+      body,
+      unsubscribeUrl: unsubscribeUrlFor(token),
+    });
+    res.json({ delivered, real_unsubscribe_link: token !== 'preview' });
+  } catch (err) {
+    // Surface the actual Resend failure. "Nothing arrived" with a 200 is the
+    // single most confusing outcome here, and the reason is almost always
+    // something the admin can act on (unverified domain, restricted key).
+    console.error('[newsletter test]', err?.message || err);
+    res.status(502).json({ error: `Could not send: ${err?.message || 'unknown error'}` });
+  }
+});
+
+// ── POST /api/admin/newsletter/send (admin) — the real thing ─────────────────
+app.post('/api/admin/newsletter/send', requireAuth, async (req, res) => {
+  const subject = safeText(req.body.subject, 200);
+  const body    = safeText(req.body.body, 20000);
+  if (!subject || !body) return res.status(400).json({ error: 'Subject and body are required.' });
+  // An explicit acknowledgement from the caller, not a default. This endpoint
+  // has no undo, so it must not be reachable by a stray fetch or a form that
+  // submitted on Enter.
+  if (req.body.confirm !== true)
+    return res.status(400).json({ error: 'This send was not confirmed.' });
+
+  // Refuse before anything is attempted when the server cannot send mail at all.
+  // Without this the loop below "succeeds" against a dev-mode stub: every call
+  // returns delivered:false without throwing, the admin is told the newsletter
+  // reached the whole list, and a newsletter_sends row is written that makes the
+  // duplicate guard refuse the retry. Two lies and a locked door, from one
+  // missing environment variable.
+  if (!isEmailConfigured())
+    return res.status(503).json({
+      error: 'Email sending is not configured on the server (RESEND_API_KEY is missing), so nothing can go out.',
+    });
+
+  try {
+    // A double-clicked Send, a retried request after a timeout, a second tab —
+    // all arrive as an identical body moments apart. Refuse rather than mail
+    // everyone twice.
+    const { rowCount: recent } = await pool.query(
+      `SELECT 1 FROM newsletter_sends
+        WHERE subject = $1 AND body = $2 AND sent_at > NOW() - INTERVAL '10 minutes'
+        LIMIT 1`,
+      [subject, body]
+    );
+    if (recent)
+      return res.status(409).json({ error: 'This exact newsletter went out in the last 10 minutes. Not sending it again.' });
+
+    const recipients = await activeSubscribers();
+    if (recipients.length === 0)
+      return res.status(400).json({ error: 'Nobody is subscribed yet, so there is nobody to send to.' });
+
+    // One failed address must not stop the other 400. Each result is recorded so
+    // the admin is told the true number delivered rather than an optimistic one.
+    let sent = 0;
+    let failed = 0;
+    const queue = [...recipients];
+    const worker = async () => {
+      for (let next = queue.shift(); next; next = queue.shift()) {
+        try {
+          const { delivered } = await sendNewsletterEmail(next.email, {
+            subject, body, unsubscribeUrl: unsubscribeUrlFor(next.unsubscribe_token),
+          });
+          // Counted only when the sending service actually took it. `delivered`
+          // is the same flag every transactional caller reads, and treating a
+          // false as success is how "sent to everyone" stops meaning anything.
+          if (delivered) sent++; else failed++;
+        } catch (err) {
+          failed++;
+          console.error('[newsletter send]', next.email, err?.message || err);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(NEWSLETTER_CONCURRENCY, recipients.length) }, worker)
+    );
+
+    await pool.query(
+      `INSERT INTO newsletter_sends (subject, body, recipients, failed) VALUES ($1, $2, $3, $4)`,
+      [subject, body, sent, failed]
+    );
+
+    res.json({
+      sent,
+      failed,
+      // True when the list has outgrown one synchronous send. Nobody is silently
+      // skipped without the admin being told.
+      capped: recipients.length >= NEWSLETTER_MAX_RECIPIENTS,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ABANDONED CARTS
+// ══════════════════════════════════════════════════════════════════════════════
+// One stored template, one email per shopper, filled in from their actual
+// basket. Two ways it goes out and they share every line of code below the
+// button: the sweep in scheduler.js when `enabled` is on, and an admin pressing
+// Send now. The difference is only which guards apply — see
+// sendAbandonedCartReminder in backend/abandonedCart.js.
+//
+// The settings live under the NON-`content_` key `abandoned_cart_settings`, so
+// unlike every other Ops setting they are not served by the public /api/content
+// route. That is deliberate: this template can carry a promo code, and a promo
+// code one URL from the open internet is a promo code everybody has.
+
+/** A basket that has to exist for the admin's own test send to look like anything. */
+const SAMPLE_CART_ITEMS = (catalog) => {
+  const picks = catalog.slice(0, 2);
+  return (picks.length ? picks : [{ id: 'sample', name: 'Café Noir Candle', price: '25', image_url: '' }])
+    .map((p, i) => {
+      const unit = parsePrice(p.price) || 25;
+      const quantity = i === 0 ? 1 : 2;
+      return {
+        product_id: String(p.id),
+        name: p.name || 'Candle',
+        quantity,
+        unit_price: unit,
+        line_total: unit * quantity,
+        image_url: /^https:\/\//i.test(String(p.image_url || '')) ? p.image_url : '',
+      };
+    });
+};
+
+// ── GET /api/admin/abandoned-carts (admin) — the whole panel in one call ──────
+app.get('/api/admin/abandoned-carts', requireAuth, async (_req, res) => {
+  try {
+    const settings = await getAbandonedCartSettings(pool);
+    const [carts, stats, history, discount] = await Promise.all([
+      findAbandonedCarts(pool, settings),
+      abandonedCartStats(pool),
+      abandonedCartHistory(pool),
+      describeDiscount(pool, settings.discount_code),
+    ]);
+
+    // The context the dashboard's live preview resolves tokens against. Built
+    // HERE, by the same function the real send uses, so the figures in the
+    // preview (subtotal, the free-shipping clause, what the discount code is
+    // actually worth) cannot drift from the ones in the email. Drawn from a real
+    // waiting basket when there is one — a preview of invented data is a preview
+    // of nothing.
+    const { rows: catalogRows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'content_products'`);
+    const sampleItems = SAMPLE_CART_ITEMS(catalogRows[0]?.value?.items || []);
+    // NOT carts[0]: findAbandonedCarts sorts most-recently-active first, so the
+    // head of the list is the shopper *least* likely to have abandoned anything
+    // — usually someone still filling a basket this minute. Previewing that one
+    // makes the panel's "a basket that is actually waiting right now" a lie, and
+    // on a busy shop the preview would never once show an abandoned basket.
+    // Prefer one tonight's sweep would actually send, then any that is merely
+    // abandoned (blocked, or inside quiet hours), and only then the stand-in.
+    const realCandidate = carts.find(c => c.due) || carts.find(c => c.is_abandoned) || null;
+    const previewCandidate = realCandidate || {
+      full_name: 'Sam Sample',
+      items: sampleItems,
+      cart_total: sampleItems.reduce((sum, i) => sum + i.line_total, 0),
+    };
+    const sample_context = await buildContext(pool, {
+      candidate: previewCandidate, settings, frontendUrl: FRONTEND_URL,
+    });
+
+    res.json({
+      settings,
+      sample_context,
+      /** True when the preview is showing a real WAITING basket, not just any basket. */
+      sample_is_real: !!realCandidate,
+      // Named so the dashboard can say "that code doesn't exist" beside the
+      // field rather than after the email has gone out.
+      discount_problem: discount.problem || null,
+      discount_value: discount.value || '',
+      email_configured: isEmailConfigured(),
+      carts,
+      stats,
+      history,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── PUT /api/admin/abandoned-carts/settings (admin) ───────────────────────────
+// Normalisation happens server-side as well as in the form: the clamps are what
+// stand between a mistyped "0" and everyone with a basket being emailed every
+// sweep, and a value that only the browser checks is a value nothing checks.
+app.put('/api/admin/abandoned-carts/settings', requireAuth, async (req, res) => {
+  try {
+    const settings = await saveAbandonedCartSettings(pool, req.body);
+    const discount = await describeDiscount(pool, settings.discount_code);
+    res.json({ settings, discount_problem: discount.problem || null, discount_value: discount.value || '' });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── POST /api/admin/abandoned-carts/test (admin) — one copy, to one address ───
+// The rehearsal, on the newsletter's model. A sample basket rather than a real
+// shopper's: the admin needs to see the layout, not a customer's shopping.
+app.post('/api/admin/abandoned-carts/test', requireAuth, async (req, res) => {
+  const to = safeText(req.body.to, 254).toLowerCase();
+  if (!EMAIL_RE.test(to)) return res.status(400).json({ error: 'Please enter a valid email address.' });
+  try {
+    // Preview the UNSAVED draft when one is sent, so the admin can test a change
+    // before committing it — falling back to the stored settings otherwise.
+    const stored = await getAbandonedCartSettings(pool);
+    const settings = req.body.draft ? normalizeAbandonedCartSettings({ ...stored, ...req.body.draft }) : stored;
+
+    const { rows: catalogRows } = await pool.query(`SELECT value FROM site_settings WHERE key = 'content_products'`);
+    const items = SAMPLE_CART_ITEMS(catalogRows[0]?.value?.items || []);
+    const candidate = {
+      full_name: 'Sam Sample',
+      items,
+      cart_total: items.reduce((sum, i) => sum + i.line_total, 0),
+    };
+    const ctx = await buildContext(pool, { candidate, settings, frontendUrl: FRONTEND_URL });
+
+    const { delivered } = await sendAbandonedCartEmail(to, {
+      subject: `[TEST] ${settings.subject}`,
+      preheader: settings.preheader,
+      body: settings.body,
+      ctx,
+      // The same sentinel the newsletter's test uses — the opt-out page explains
+      // it rather than erroring on it.
+      unsubscribeUrl: unsubscribeUrlFor('preview'),
+    });
+    res.json({ delivered, cart_url: ctx.cart_url });
+  } catch (err) {
+    console.error('[abandoned cart test]', err?.message || err);
+    res.status(502).json({ error: `Could not send: ${err?.message || 'unknown error'}` });
+  }
+});
+
+// ── POST /api/admin/abandoned-carts/send (admin) — send now ───────────────────
+// The manual path. `user_id` sends to one shopper; omitting it sends to everyone
+// the settings say is due right now. Either way `confirm` must be explicit — this
+// puts real email in real inboxes and has no undo.
+//
+// A manual send deliberately ignores the cadence guards (that timing is the
+// admin's call) but never the opt-out, which no button in a dashboard may
+// override. Quiet hours are ignored too: an admin pressing Send at 11pm has
+// decided to send at 11pm.
+app.post('/api/admin/abandoned-carts/send', requireAuth, async (req, res) => {
+  if (req.body.confirm !== true)
+    return res.status(400).json({ error: 'This send was not confirmed.' });
+  if (!isEmailConfigured())
+    return res.status(503).json({
+      error: 'Email sending is not configured on the server (RESEND_API_KEY is missing), so nothing can go out.',
+    });
+
+  const userId = safeText(req.body.user_id, 64);
+  try {
+    const settings = await getAbandonedCartSettings(pool);
+    const carts = await findAbandonedCarts(pool, settings);
+
+    // One shopper, or everyone the sweep would have taken. `due` already carries
+    // the cadence, quiet-hours and opt-out decisions — see findAbandonedCarts.
+    const targets = userId
+      ? carts.filter(c => c.user_id === userId)
+      : carts.filter(c => c.due);
+
+    if (userId && !targets.length)
+      return res.status(404).json({ error: 'That basket is no longer there — it was bought, emptied, or cleared.' });
+    if (!targets.length)
+      return res.status(400).json({ error: 'Nothing is due right now, so there is nobody to send to.' });
+
+    let sent = 0;
+    let skipped = 0;
+    let failed = 0;
+    for (const candidate of targets) {
+      try {
+        const result = await sendAbandonedCartReminder(pool, {
+          candidate, settings, frontendUrl: FRONTEND_URL, trigger: 'manual',
+        });
+        if (result.sent) sent++;
+        else if (result.reason === 'opted_out') skipped++;
+        else failed++;
+      } catch (err) {
+        failed++;
+        console.error('[abandoned cart manual send]', candidate.email, err?.message || err);
+      }
+    }
+    res.json({ sent, skipped, failed });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// ── Unsubscribe (public) ──────────────────────────────────────────────────────
+// Token-only, never email-in-a-query-string: an address in the URL turns the
+// endpoint into a way to unsubscribe anyone whose address you can guess, and
+// leaks it into every referrer header and server log along the way.
+//
+// GET only *describes* the link; POST is what performs it. That split is not
+// ceremony — mail clients and security scanners routinely prefetch every URL in
+// an email, and a GET that unsubscribed on sight would remove people who never
+// clicked anything.
+app.get('/api/unsubscribe/:token', publicWriteLimiter, async (req, res) => {
+  const token = safeText(req.params.token, 128);
+  if (!token) return res.status(404).json({ error: 'not_found' });
+  if (token === 'preview')
+    return res.json({ preview: true, email: '', already_unsubscribed: false });
+  try {
+    const { rows } = await pool.query(
+      `SELECT email, unsubscribed_at FROM subscribers WHERE unsubscribe_token = $1`, [token]
+    );
+    if (rows.length) {
+      // The address is shown back deliberately: someone with several mailboxes
+      // needs to know which one they are removing. Only the holder of a 64-char
+      // random token can see it, which is the same person who received the email.
+      return res.json({
+        preview: false,
+        kind: 'newsletter',
+        email: rows[0].email,
+        already_unsubscribed: rows[0].unsubscribed_at !== null,
+      });
+    }
+
+    // The same link, from the other list. Basket reminders are opted out of
+    // separately from the newsletter on purpose: "stop nagging me about my
+    // basket" and "stop emailing me entirely" are different requests, and
+    // treating them as one costs the shop a subscriber it did not have to lose.
+    const { rows: cartRows } = await pool.query(
+      `SELECT email, opted_out_at FROM cart_reminder_optouts WHERE token = $1`, [token]
+    );
+    if (!cartRows.length) return res.status(404).json({ error: 'not_found' });
+    res.json({
+      preview: false,
+      kind: 'cart_reminders',
+      email: cartRows[0].email,
+      already_unsubscribed: cartRows[0].opted_out_at !== null,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+app.post('/api/unsubscribe', publicWriteLimiter, async (req, res) => {
+  const token = safeText(req.body?.token, 128);
+  if (!token || token === 'preview') return res.status(404).json({ error: 'not_found' });
+  try {
+    // A tombstone, not a delete: the row has to stay, or the next time this
+    // address is typed into the signup box it is treated as brand new and
+    // starts receiving mail again. Idempotent — clicking twice is not an error,
+    // and COALESCE keeps the original opt-out date.
+    const { rows } = await pool.query(
+      `UPDATE subscribers
+          SET unsubscribed_at = COALESCE(unsubscribed_at, NOW())
+        WHERE unsubscribe_token = $1
+      RETURNING email`,
+      [token]
+    );
+    if (rows.length) return res.json({ success: true, kind: 'newsletter', email: rows[0].email });
+
+    // Same idempotent tombstone, for the basket-reminder list.
+    const { rows: cartRows } = await pool.query(
+      `UPDATE cart_reminder_optouts
+          SET opted_out_at = COALESCE(opted_out_at, NOW())
+        WHERE token = $1
+      RETURNING email`,
+      [token]
+    );
+    if (!cartRows.length) return res.status(404).json({ error: 'not_found' });
+    res.json({ success: true, kind: 'cart_reminders', email: cartRows[0].email });
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -8101,6 +8614,48 @@ async function initDb() {
       subscribed_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- ── Unsubscribe ───────────────────────────────────────────────────────────
+    -- Required before a single broadcast may be sent: a marketing email with no
+    -- working opt-out is not a design shortcoming, it is unlawful under GDPR and
+    -- the ePrivacy rules, and it is the fastest route to a sending domain being
+    -- blocked. The token is what makes the link work without asking someone to
+    -- log in to leave — it is per-subscriber, random, and the only thing the
+    -- unsubscribe endpoint accepts, so the link can never be walked to enumerate
+    -- the list the way an email address in a query string can.
+    --
+    -- unsubscribed_at is a tombstone, not a delete: the row has to survive the
+    -- opt-out, or the address is simply absent and the next CSV import or
+    -- re-created row silently puts it back on the list. Someone deliberately
+    -- signing up again through the popup IS reactivated — that is their own
+    -- fresh consent, and the POST /api/subscribers handler says so.
+    --
+    -- The token is two concatenated uuids rather than pgcrypto's
+    -- gen_random_bytes: this database has never enabled the pgcrypto extension
+    -- (gen_random_uuid is core in PG13+, gen_random_bytes is not), and a
+    -- migration that throws here takes the whole server down on boot.
+    ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS unsubscribe_token TEXT;
+    ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at   TIMESTAMPTZ;
+    ALTER TABLE subscribers ALTER COLUMN unsubscribe_token
+      SET DEFAULT replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
+    UPDATE subscribers
+       SET unsubscribe_token = replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')
+     WHERE unsubscribe_token IS NULL OR unsubscribe_token = '';
+    CREATE UNIQUE INDEX IF NOT EXISTS subscribers_unsub_token_idx
+      ON subscribers (unsubscribe_token);
+
+    -- One row per broadcast actually sent, so "what did we send, to how many,
+    -- and when" survives the admin closing the tab. Also what stops a
+    -- double-clicked Send going out twice — see the send endpoint.
+    CREATE TABLE IF NOT EXISTS newsletter_sends (
+      id           UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      subject      TEXT        NOT NULL,
+      body         TEXT        NOT NULL,
+      recipients   INT         NOT NULL DEFAULT 0,
+      failed       INT         NOT NULL DEFAULT 0,
+      sent_at      TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS newsletter_sends_sent_at_idx ON newsletter_sends (sent_at DESC);
+
     CREATE TABLE IF NOT EXISTS shop_categories (
       id               UUID  DEFAULT gen_random_uuid() PRIMARY KEY,
       name             TEXT  NOT NULL,
@@ -8429,6 +8984,55 @@ async function initDb() {
       status           TEXT        NOT NULL DEFAULT 'pending',
       created_at       TIMESTAMPTZ DEFAULT NOW(),
       resolved_at      TIMESTAMPTZ
+    );
+
+    -- ── Abandoned-cart reminders ────────────────────────────────────────────
+    -- "When was this basket last touched" is the whole trigger, and user_carts
+    -- only ever recorded when a row was FIRST created — a shopper who added a
+    -- candle a week ago and changed the quantity an hour ago looked, to any
+    -- query, like a week-old abandonment. Backfilled from created_at so no
+    -- existing basket reads as touched the moment this deploys.
+    ALTER TABLE user_carts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+    UPDATE user_carts SET updated_at = created_at WHERE updated_at IS NULL;
+    ALTER TABLE user_carts ALTER COLUMN updated_at SET DEFAULT NOW();
+
+    -- One row per reminder actually attempted, delivered or not. This is what
+    -- makes the feature safe to run unattended: the cadence guards in
+    -- backend/abandonedCart.js are all queries against this table, so a crashed
+    -- sweep resumes where it stopped instead of emailing everybody again.
+    CREATE TABLE IF NOT EXISTS abandoned_cart_sends (
+      id                 UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+      user_id            UUID        REFERENCES users(id) ON DELETE CASCADE,
+      email              TEXT        NOT NULL,
+      -- Product ids + quantities, hashed. Editing the basket makes a new
+      -- fingerprint (and so a new reminder series); not editing it cannot.
+      cart_fingerprint   TEXT        NOT NULL,
+      reminder_number    INT         NOT NULL DEFAULT 1,
+      -- 'automatic' (the sweep) or 'manual' (an admin pressed Send now).
+      trigger_source     TEXT        NOT NULL DEFAULT 'automatic',
+      items              JSONB       NOT NULL DEFAULT '[]',
+      cart_total         NUMERIC     NOT NULL DEFAULT 0,
+      delivered          BOOLEAN     NOT NULL DEFAULT false,
+      sent_at            TIMESTAMPTZ DEFAULT NOW(),
+      -- Set by markCartRecovered when that shopper orders within the attribution
+      -- window, which is what turns this from "emails sent" into "money back".
+      recovered_at       TIMESTAMPTZ,
+      recovered_order_id UUID        REFERENCES orders(id) ON DELETE SET NULL,
+      recovered_total    NUMERIC
+    );
+    CREATE INDEX IF NOT EXISTS abandoned_cart_sends_user_idx ON abandoned_cart_sends (user_id, sent_at DESC);
+    CREATE INDEX IF NOT EXISTS abandoned_cart_sends_sent_at_idx ON abandoned_cart_sends (sent_at DESC);
+
+    -- Opting out of basket reminders, separately from the newsletter: someone who
+    -- wants the monthly email but not a nudge about their basket must be able to
+    -- have exactly that. The token is what the link in the email carries, for the
+    -- same reason the newsletter's does — an address in the URL would turn the
+    -- opt-out page into a way to silence anyone whose email you can guess.
+    CREATE TABLE IF NOT EXISTS cart_reminder_optouts (
+      email        TEXT        PRIMARY KEY,
+      token        TEXT        UNIQUE NOT NULL,
+      opted_out_at TIMESTAMPTZ,
+      created_at   TIMESTAMPTZ DEFAULT NOW()
     );
 
     INSERT INTO site_settings (key, value)
@@ -8797,6 +9401,7 @@ initDb()
   .then(() => {
     app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
     startRefundReminderScheduler(pool);
+    startAbandonedCartScheduler(pool, FRONTEND_URL);
     setTimeout(runDecisionSweep, 45 * 1000);
     setInterval(runDecisionSweep, 60 * 60 * 1000);
     setTimeout(pruneAnalyticsEvents, 90 * 1000);

@@ -163,6 +163,30 @@ export const buildOptimizedImageUrl = (url: string, size: ImageSize = DEFAULT_IM
   return deliver(original, chainFor(size));
 };
 
+/**
+ * The same idea, sized and encoded for an EMAIL rather than a browser.
+ *
+ * Two deliberate differences from {@link buildOptimizedImageUrl}:
+ *
+ *   - `f_jpg`, not `f_auto`. Format negotiation is a browser feature: Outlook on
+ *     Windows renders mail through Word's engine and cannot display WebP or
+ *     AVIF, so `f_auto` is a coin-flip on whether a subscriber sees the photo at
+ *     all. JPEG is the format every mail client since 1995 can read. The cost is
+ *     transparency — a PNG logo with a see-through background gains a white one
+ *     — which is the right trade for photographs and worth knowing about for
+ *     anything else.
+ *   - 944px, twice the 472px column the newsletter renders at, so it stays sharp
+ *     on a phone without shipping a 3MB original to every subscriber.
+ *
+ * Returns the URL unchanged when there is nothing safe to do with it, exactly
+ * like its sibling.
+ */
+export const buildEmailImageUrl = (url: string): string => {
+  const original = originalImageUrl(url);
+  if (!canOptimizeImage(original)) return (url ?? "").trim();
+  return deliver(original, "f_jpg,q_auto,w_944,c_limit");
+};
+
 /** Puts `chain` in front of an original, by whichever delivery type suits it. */
 const deliver = (original: string, chain: string): string => {
   const upload = original.match(UPLOAD_RE);

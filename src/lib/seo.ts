@@ -123,6 +123,10 @@ export const ROUTE_META: Record<string, RouteMeta> = {
   "/account/addresses": { title: "My Addresses | The Olive Goose", description: "Manage your delivery addresses.", noindex: true },
   "/orders": { title: "My Orders | The Olive Goose", description: "View your order history.", noindex: true },
   "/orders/*": { title: "Order Details | The Olive Goose", description: "Track this order.", noindex: true },
+  // Reached only from a link inside a newsletter. noindex keeps unsubscribe
+  // URLs out of search results, where they would be a way for a stranger to
+  // remove someone else from the list.
+  "/unsubscribe": { title: "Unsubscribe | The Olive Goose", description: "Manage your newsletter preferences.", noindex: true },
   "/admin": { title: "Admin | The Olive Goose", description: "Store administration.", noindex: true },
   "/admin/*": { title: "Admin | The Olive Goose", description: "Store administration.", noindex: true },
   "/auth/*": { title: "Signing you in… | The Olive Goose", description: "Completing sign-in.", noindex: true },

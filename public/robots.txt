@@ -11,6 +11,7 @@ Disallow: /checkout
 Disallow: /account
 Disallow: /orders
 Disallow: /auth/
+Disallow: /unsubscribe
 # Internal search & category filter parameters (canonical is the clean /shop URL)
 Disallow: /*?search=
 Disallow: /*?category=

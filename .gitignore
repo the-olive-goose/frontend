@@ -62,6 +62,8 @@ backend/uploads/
 .e2e-pgdata/
 # Every Conversions API call the e2e run's Meta sink recorded — see e2e/setup/meta-sink.mjs
 .e2e-meta-sink.jsonl
+# Every email the e2e run's sender sink recorded — see e2e/setup/email-sink.mjs
+.e2e-email-sink.jsonl
 .analytics-pgdata/
 playwright-report/
 

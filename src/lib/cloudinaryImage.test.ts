@@ -4,6 +4,7 @@ import {
   DEFAULT_IMAGE_SIZE,
   IMAGE_SIZES,
   buildOptimizedImageUrl,
+  buildEmailImageUrl,
   canOptimizeImage,
   isCloudinaryImage,
   isOptimizedImageUrl,
@@ -145,5 +146,47 @@ describe("isCloudinaryImage", () => {
     expect(isCloudinaryImage(IBB)).toBe(false);
     // A video on the same account is the other helper's job.
     expect(isCloudinaryImage(`https://res.cloudinary.com/${CLOUDINARY_CLOUD}/video/upload/v1/r.mp4`)).toBe(false);
+  });
+});
+
+describe("buildEmailImageUrl", () => {
+  // Email clients are not browsers. Outlook on Windows renders through Word and
+  // cannot show WebP or AVIF, so format negotiation — fine everywhere on the
+  // site — is a coin flip on whether a subscriber sees the photo at all.
+  it("forces JPEG rather than negotiating a format", () => {
+    const url = buildEmailImageUrl(IBB);
+    expect(url).toContain("f_jpg");
+    expect(url).not.toContain("f_auto");
+  });
+
+  it("sizes for twice the newsletter's 472px column", () => {
+    expect(buildEmailImageUrl(IBB)).toContain("w_944");
+  });
+
+  it("uses c_limit, so a small image is never blown up", () => {
+    expect(buildEmailImageUrl(IBB)).toContain("c_limit");
+  });
+
+  it("delivers a non-Cloudinary source through fetch", () => {
+    expect(buildEmailImageUrl(IBB)).toBe(`${FETCH}/f_jpg,q_auto,w_944,c_limit/${IBB}`);
+  });
+
+  it("re-delivers an image already on Cloudinary through upload", () => {
+    expect(buildEmailImageUrl(`${UPLOAD}/v1/a.jpg`))
+      .toBe(`${UPLOAD}/f_jpg,q_auto,w_944,c_limit/v1/a.jpg`);
+  });
+
+  // Same idempotency rule as its sibling: Cloudinary answers a doubly-wrapped
+  // fetch URL with a 400, so an already-optimised URL must have its chain
+  // replaced rather than wrapped again.
+  it("replaces an existing chain instead of stacking one", () => {
+    const once = buildEmailImageUrl(IBB);
+    expect(buildEmailImageUrl(once)).toBe(once);
+    expect(buildEmailImageUrl(buildOptimizedImageUrl(IBB, "card"))).toBe(once);
+  });
+
+  it("leaves alone anything Cloudinary could not fetch", () => {
+    expect(buildEmailImageUrl("/uploads/a.jpg")).toBe("/uploads/a.jpg");
+    expect(buildEmailImageUrl("")).toBe("");
   });
 });

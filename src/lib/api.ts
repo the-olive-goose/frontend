@@ -1,6 +1,7 @@
 import { fetchWithTimeout, RequestTimeoutError } from './fetchTimeout';
 import { API_URL } from './apiBase';
 import { readContent, readContentFresh, writeContent } from './contentStore';
+import type { AbandonedCartContext, AbandonedCartSettings } from './abandonedCart';
 
 // ── Token helpers ──────────────────────────────────────────────────────────────
 const getToken = () => localStorage.getItem('admin_token');
@@ -36,6 +37,8 @@ export interface Subscriber {
   id: string;
   email: string;
   subscribed_at: string;
+  /** Set once this address opted out. The row stays; it just stops being mailed. */
+  unsubscribed_at: string | null;
 }
 
 // ── Auth ───────────────────────────────────────────────────────────────────────
@@ -241,6 +244,228 @@ export const subscribe = async (email: string): Promise<SubscribeResult> => {
   }
   const body = await res.json().catch(() => ({})) as { discount?: SubscribeDiscount; already_subscribed?: boolean };
   return { discount: body.discount ?? null, alreadySubscribed: !!body.already_subscribed };
+};
+
+// ── Newsletter ────────────────────────────────────────────────────────────────
+
+export interface NewsletterAudience {
+  total: number;
+  active: number;
+  unsubscribed: number;
+}
+
+export interface NewsletterSendRecord {
+  id: string;
+  subject: string;
+  recipients: number;
+  failed: number;
+  sent_at: string;
+}
+
+export const getNewsletterOverview = async (): Promise<{
+  audience: NewsletterAudience;
+  history: NewsletterSendRecord[];
+}> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/newsletter`, {
+    headers: authHeaders(true),
+  }));
+  return res.json();
+};
+
+export const sendNewsletterTest = async (
+  subject: string, body: string, to: string,
+): Promise<{ delivered: boolean; real_unsubscribe_link: boolean }> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/admin/newsletter/test`, {
+    method: 'POST', headers: authHeaders(true), body: JSON.stringify({ subject, body, to }),
+  }, 30_000);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Could not send the test email.');
+  }
+  return res.json();
+};
+
+/**
+ * Send the broadcast for real. `confirm` is sent explicitly rather than implied
+ * by calling this — the server refuses without it, so a stray call cannot mail
+ * the whole list.
+ *
+ * The timeout is generous because this is synchronous on the server: it returns
+ * once every message has been handed to the sending service, and the caller
+ * needs the true delivered/failed counts rather than an optimistic "started".
+ */
+export const sendNewsletter = async (
+  subject: string, body: string,
+): Promise<{ sent: number; failed: number; capped: boolean }> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/admin/newsletter/send`, {
+    method: 'POST', headers: authHeaders(true),
+    body: JSON.stringify({ subject, body, confirm: true }),
+  }, 120_000);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Could not send the newsletter.');
+  }
+  return res.json();
+};
+
+// ── Abandoned carts (admin) ───────────────────────────────────────────────────
+// The settings are NOT a content section: they can carry a promo code, and
+// /api/content is public. Hence dedicated admin-only endpoints rather than the
+// getContent/saveContent pair every other Ops setting uses.
+
+export interface AbandonedCartLineItem {
+  product_id: string;
+  name: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+  image_url: string;
+}
+
+/** One shopper's basket, with the server's verdict on whether to email them. */
+export interface AbandonedCartCandidate {
+  user_id: string;
+  email: string;
+  full_name: string;
+  items: AbandonedCartLineItem[];
+  /** Items in the basket that no longer exist in the catalogue — left out of the email. */
+  missing_products: number;
+  cart_total: number;
+  cart_fingerprint: string;
+  last_activity: string;
+  idle_hours: number;
+  reminders_sent: number;
+  last_reminder_at: string | null;
+  is_abandoned: boolean;
+  /** Why the sweep would skip them, in words the admin can act on. */
+  blocked_reason: string | null;
+  quiet_hours: boolean;
+  due: boolean;
+}
+
+export interface AbandonedCartStats {
+  sent_total: number;
+  sent_30d: number;
+  recovered_total: number;
+  recovered_30d: number;
+  recovered_revenue: number;
+  recovered_revenue_30d: number;
+}
+
+export interface AbandonedCartSendRecord {
+  id: string;
+  email: string;
+  reminder_number: number;
+  trigger_source: 'automatic' | 'manual';
+  cart_total: string;
+  delivered: boolean;
+  sent_at: string;
+  recovered_at: string | null;
+  recovered_total: string | null;
+  recovered_order_number: string | null;
+  items: AbandonedCartLineItem[];
+}
+
+export interface AbandonedCartOverview {
+  settings: AbandonedCartSettings;
+  /**
+   * What the live preview resolves its tokens against — built by the server with
+   * the same function the real send uses, from a real waiting basket when there
+   * is one. Keeps the money in the preview equal to the money in the email.
+   */
+  sample_context: AbandonedCartContext;
+  /** True when sample_context is a real shopper's basket rather than a stand-in. */
+  sample_is_real: boolean;
+  /** Set when the configured discount code is missing, off, or used up. */
+  discount_problem: string | null;
+  discount_value: string;
+  email_configured: boolean;
+  carts: AbandonedCartCandidate[];
+  stats: AbandonedCartStats;
+  history: AbandonedCartSendRecord[];
+}
+
+export const getAbandonedCarts = async (): Promise<AbandonedCartOverview> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/abandoned-carts`, {
+    headers: authHeaders(true),
+  }));
+  if (!res.ok) throw new Error('Failed to load abandoned carts');
+  return res.json();
+};
+
+/** Saves and returns what the server actually stored — the clamps are its call. */
+export const saveAbandonedCartSettings = async (
+  settings: AbandonedCartSettings,
+): Promise<{ settings: AbandonedCartSettings; discount_problem: string | null; discount_value: string }> => {
+  const res = await checkStatus(await fetchWithTimeout(`${API_URL}/api/admin/abandoned-carts/settings`, {
+    method: 'PUT', headers: authHeaders(true), body: JSON.stringify(settings),
+  }));
+  if (!res.ok) throw new Error('Could not save the abandoned-cart settings.');
+  return res.json();
+};
+
+/**
+ * One test copy, built from the DRAFT in the form rather than what is stored —
+ * so a subject line can be tried before it is committed to everyone.
+ */
+export const sendAbandonedCartTest = async (
+  to: string, draft: AbandonedCartSettings,
+): Promise<{ delivered: boolean; cart_url: string }> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/admin/abandoned-carts/test`, {
+    method: 'POST', headers: authHeaders(true), body: JSON.stringify({ to, draft }),
+  }, 30_000);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Could not send the test email.');
+  }
+  return res.json();
+};
+
+/**
+ * Send for real, now. `user_id` targets one shopper; omitting it sends to
+ * everyone currently due. `confirm` is explicit for the same reason the
+ * newsletter's is — this reaches real inboxes and cannot be recalled.
+ */
+export const sendAbandonedCartReminders = async (
+  userId?: string,
+): Promise<{ sent: number; skipped: number; failed: number }> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/admin/abandoned-carts/send`, {
+    method: 'POST', headers: authHeaders(true),
+    body: JSON.stringify({ confirm: true, ...(userId ? { user_id: userId } : {}) }),
+  }, 120_000);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Could not send the reminder.');
+  }
+  return res.json();
+};
+
+// ── Unsubscribe (public — no auth, token from the email link) ─────────────────
+
+export interface UnsubscribeInfo {
+  preview: boolean;
+  /** Which list the token belongs to — the page words itself accordingly. */
+  kind?: 'newsletter' | 'cart_reminders';
+  email: string;
+  already_unsubscribed: boolean;
+}
+
+/** Describes the link without acting on it. See the server note on GET vs POST. */
+export const getUnsubscribeInfo = async (token: string): Promise<UnsubscribeInfo | null> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/unsubscribe/${encodeURIComponent(token)}`);
+  if (!res.ok) return null;
+  return res.json();
+};
+
+export const confirmUnsubscribe = async (token: string): Promise<{ email: string }> => {
+  const res = await fetchWithTimeout(`${API_URL}/api/unsubscribe`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || 'Could not unsubscribe.');
+  }
+  return res.json();
 };
 
 export interface DiscountCodeRecord {

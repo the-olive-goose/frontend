@@ -84,6 +84,41 @@ function startMetaSink() {
   return child;
 }
 
+// ── Resend, intercepted ───────────────────────────────────────────────────────
+// The abandoned-cart suite has to read the email that was actually built: its
+// recipient, its subject, its List-Unsubscribe headers, the basket rows inside
+// it and the tagged link out of it. With RESEND_API_KEY empty the sender only
+// logs, and with a real key it mails a real person — so neither setting can be
+// tested against. The backend takes RESEND_ORIGIN for this, and phase 1c points
+// it here. A separate process for the same reason the Meta sink is one.
+const EMAIL_SINK_PORT = Number(process.env.E2E_EMAIL_SINK_PORT) || 3058;
+const EMAIL_SINK_FILE = path.join(REPO_ROOT, ".e2e-email-sink.jsonl");
+
+/**
+ * What the abandoned-cart suite needs from its backend: a sender it can read
+ * (the sink), and a sweep fast enough to watch. Hoisted out of phase 1c because
+ * a scoped run — `npm run test:e2e -- e2e/abandoned-cart.spec.ts` — has to boot
+ * with the same environment or the suite tests a backend that cannot send.
+ */
+const abandonedCartEnv = () => ({
+  RESEND_API_KEY: "e2e-sink-key",
+  RESEND_ORIGIN: `http://127.0.0.1:${EMAIL_SINK_PORT}`,
+  // Fast enough to watch, slow enough that one sweep finishes before the next.
+  ABANDONED_CART_FIRST_RUN_MS: "2000",
+  ABANDONED_CART_SWEEP_MS: "4000",
+});
+
+function startEmailSink() {
+  killPort(EMAIL_SINK_PORT);
+  const child = spawn(
+    process.execPath,
+    [path.join(REPO_ROOT, "e2e", "setup", "email-sink.mjs"), String(EMAIL_SINK_PORT), EMAIL_SINK_FILE],
+    { cwd: REPO_ROOT, stdio: "inherit" }
+  );
+  children.push(child);
+  return child;
+}
+
 function startBackend(extraEnv) {
   killPort(BACKEND_PORT);
   const child = spawn(process.execPath, [BACKEND_ENTRY], {
@@ -154,6 +189,8 @@ function runPlaywright(specs, extraEnv) {
         // Where __meta-purchase.spec.ts reads back what the server actually sent
         // to Meta, to reconcile the revenue against what Stripe actually charged.
         META_SINK_FILE,
+        // Where abandoned-cart.spec.ts reads back the emails the server built.
+        EMAIL_SINK_FILE,
         ...extraEnv,
       },
     }
@@ -186,7 +223,15 @@ async function main() {
   startMetaSink();
   await waitForPort(META_SINK_PORT);
 
+  log("starting email sink…");
+  startEmailSink();
+  await waitForPort(EMAIL_SINK_PORT);
+
   log("starting backend (schema init) + frontend…");
+  // A scoped run of the abandoned-cart suite needs the email sink and the fast
+  // sweep on THIS boot — it never reaches phase 1c, which is where they normally
+  // come from.
+  const scopedCart = only.some((f) => f.includes("abandoned-cart"));
   // First boot creates the schema and seeds the admin; then seed content/users.
   const boot = startBackend({
     AUTH_RATE_LIMIT_MAX: "100000", API_RATE_LIMIT_MAX: "100000",
@@ -198,6 +243,7 @@ async function main() {
     // The discount suite tries far more codes from one IP than the 20/15min
     // anti-enumeration budget a real shopper ever would.
     DISCOUNT_VALIDATE_RATE_LIMIT_MAX: "100000",
+    ...(scopedCart ? abandonedCartEnv() : {}),
   });
   await waitForPort(BACKEND_PORT);
   startFrontend();
@@ -237,10 +283,31 @@ async function main() {
   log("PHASE 1b: admin-api on re-seeded fixtures");
   ok = runPlaywright(["e2e/admin-api.spec.ts"], {}) && ok;
 
+  // Phase 1c — abandoned carts, on a backend that can actually "send" email.
+  //
+  // Its own phase, and its own backend, for two reasons. RESEND_API_KEY has to be
+  // non-empty here or every send returns delivered:false and the suite asserts
+  // nothing — but the discount suite two phases up asserts the opposite
+  // (email_delivered === false in dev mode), so the two cannot share one boot.
+  // And the sweep is slowed to a quarter of an hour in production, which no test
+  // can wait for, so this backend runs it every few seconds instead.
+  log("PHASE 1c: abandoned carts (email sink + fast sweep)");
+  boot.kill("SIGTERM");
+  killPort(BACKEND_PORT);
+  const cartBoot = startBackend({
+    AUTH_RATE_LIMIT_MAX: "100000", API_RATE_LIMIT_MAX: "100000",
+    PUBLIC_WRITE_RATE_LIMIT_MAX: "100000", OTP_RATE_LIMIT_MAX: "100000",
+    CHECKOUT_RATE_LIMIT_MAX: "100000", ANALYTICS_RATE_LIMIT_MAX: "100000",
+    DISCOUNT_VALIDATE_RATE_LIMIT_MAX: "100000",
+    ...abandonedCartEnv(),
+  });
+  await waitForPort(BACKEND_PORT);
+  ok = runPlaywright(["e2e/abandoned-cart.spec.ts"], { E2E_EMAIL_SINK_PORT: String(EMAIL_SINK_PORT) }) && ok;
+  cartBoot.kill("SIGTERM");
+
   // Phase 2 — payment-security on the DEFAULT auth limit so its throttling
   // assertion holds. Restart the backend without AUTH_RATE_LIMIT_MAX.
   log("PHASE 2: payment-security (default auth limit)");
-  boot.kill("SIGTERM");
   killPort(BACKEND_PORT);
   startBackend({ API_RATE_LIMIT_MAX: "100000", DISCOUNT_VALIDATE_RATE_LIMIT_MAX: "100000" }); // auth limit left at its 20/15min default
   await waitForPort(BACKEND_PORT);
