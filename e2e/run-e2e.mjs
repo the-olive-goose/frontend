@@ -19,6 +19,10 @@ import {
 import { startPg } from "./setup/pg.mjs";
 
 const BACKEND_ENTRY = path.join(REPO_ROOT, "backend", "index.js");
+// Fixed rather than random so a spec can send it: the suites assert both halves
+// of the rule — a signed address gets its own rate-limit budget, an unsigned one
+// does not.
+const EDGE_SECRET = "e2e-edge-shared-secret";
 const children = [];
 let pg;
 
@@ -140,6 +144,11 @@ function startBackend(extraEnv) {
       // pointed at the production database — and the suite would assert a
       // one-click link aimed at the wrong server entirely.
       BACKEND_URL: API_URL,
+      // The secret the edge signs a visitor's address with. In this stack there
+      // is no Netlify in front, so nothing sets the header for real — the suites
+      // that care send it themselves, which is exactly how they can prove that a
+      // request WITHOUT it gets no bucket of its own.
+      EDGE_SHARED_SECRET: EDGE_SECRET,
       // In this stack the frontend under test IS the shop, so it is the origin
       // analytics counts as the storefront. Without this the backend falls back
       // to the real theolivegoose.ie, every visit the suite makes classifies as
@@ -318,7 +327,7 @@ async function main() {
   killPort(BACKEND_PORT);
   startBackend({ API_RATE_LIMIT_MAX: "100000", DISCOUNT_VALIDATE_RATE_LIMIT_MAX: "100000" }); // auth limit left at its 20/15min default
   await waitForPort(BACKEND_PORT);
-  ok = runPlaywright(["e2e/payment-security.spec.ts"], { E2E_SKIP_SEED: "1" }) && ok;
+  ok = runPlaywright(["e2e/payment-security.spec.ts"], { E2E_SKIP_SEED: "1", E2E_EDGE_SECRET: EDGE_SECRET }) && ok;
 
   return ok;
 }

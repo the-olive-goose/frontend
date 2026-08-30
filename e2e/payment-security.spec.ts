@@ -183,6 +183,78 @@ test.describe("Rate limiting", () => {
     expect(sawLimit, "auth endpoint should rate-limit brute force").toBeTruthy();
   });
 
+  // ══ Whose attempts a limit is counting ═════════════════════════════════════
+  //
+  // The test above proves the shop throttles a brute force. These two prove it
+  // throttles the RIGHT PERSON, which for most of this shop's life it did not.
+  //
+  // Requests arrive through two proxies, so the address the backend sees for
+  // itself is the edge's — identical for every shopper alive. Twenty sign-in
+  // attempts per 15 minutes was therefore twenty for the WHOLE SHOP, and a
+  // customer who had never typed a wrong password could be refused on their
+  // first try because a stranger spent the allowance. It failed hardest on the
+  // busiest day and never on a quiet one, which is why it survived so long.
+  //
+  // The edge now states the visitor's real address and SIGNS that statement.
+  // Both halves are asserted below, because each is useless alone: a signature
+  // nobody checks is a bypass, and a per-visitor budget nobody grants is the
+  // shared bucket again.
+  const signed = (ip: string) => ({
+    "X-Og-Client-Ip": ip,
+    "X-Og-Edge-Key": process.env.E2E_EDGE_SECRET ?? "e2e-edge-shared-secret",
+  });
+
+  test("one customer's wrong passwords cannot lock out another", async () => {
+    const bare = await pwRequest.newContext();
+    const attempt = (headers: Record<string, string>) =>
+      bare.post(`${API}/api/auth/login`, {
+        headers,
+        data: { email: "e2e-ratelimit-probe@test.local", password: "wrong" },
+      });
+
+    // One visitor burns their own budget. Still throttled — per-visitor counting
+    // must not mean "no counting".
+    let busyBlocked = false;
+    for (let i = 0; i < 30; i++) {
+      if ((await attempt(signed("198.51.100.21"))).status() === 429) { busyBlocked = true; break; }
+    }
+    expect(busyBlocked, "a single visitor is still capped").toBeTruthy();
+
+    // And the next customer through the door is completely unaffected. This is
+    // the assertion that would have failed on every deploy before this one.
+    const other = await attempt(signed("198.51.100.22"));
+    expect(other.status(), "a different customer starts with a full budget").not.toBe(429);
+
+    await bare.dispose();
+  });
+
+  test("an unsigned or wrongly-signed address buys no budget at all", async () => {
+    const bare = await pwRequest.newContext();
+    // The Railway URL is public, so this is a request anyone can make: skip the
+    // edge, claim a new address every time. If the backend believed it, a brute
+    // force would get a fresh twenty attempts per invented address — forever,
+    // and rate limiting would be decorative.
+    const forge = (headers: Record<string, string>) =>
+      bare.post(`${API}/api/auth/login`, {
+        headers,
+        data: { email: "e2e-ratelimit-probe@test.local", password: "wrong" },
+      });
+
+    for (const label of ["no signature", "wrong signature"] as const) {
+      let blocked = false;
+      for (let i = 0; i < 30; i++) {
+        const headers =
+          label === "no signature"
+            ? { "X-Og-Client-Ip": `203.0.113.${i}` }
+            : { "X-Og-Client-Ip": `203.0.113.${i}`, "X-Og-Edge-Key": "not-the-secret" };
+        if ((await forge(headers)).status() === 429) { blocked = true; break; }
+      }
+      expect(blocked, `rotating an address with ${label} must not escape the limit`).toBeTruthy();
+    }
+
+    await bare.dispose();
+  });
+
   // ── An opt-out must not be throttled like a signup ────────────────────────
   //
   // This suite is the one phase that runs at PRODUCTION default limits, which is

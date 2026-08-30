@@ -337,6 +337,13 @@ const warnOnMisconfiguration = () => {
   else if (frontIsPublic && registrableDomain(BACKEND_URL) !== registrableDomain(FRONTEND_URL))
     warn(`BACKEND_URL (${BACKEND_URL}) is a different site than FRONTEND_URL (${FRONTEND_URL}). ` +
          `The OAuth callback would set the session cookie on ${registrableDomain(BACKEND_URL)}, where the storefront can't use it — social sign-in will appear to succeed and then log the user straight back out. Set BACKEND_URL to ${FRONTEND_URL}.`);
+
+  // Not fatal, and deliberately not: without it the shop runs exactly as it did
+  // before, on shared budgets. But it degrades INVISIBLY — quiet days look
+  // perfect and the busiest day starts refusing real customers — so it must not
+  // be possible to lose the secret on one side and never hear about it.
+  if (frontIsPublic && !EDGE_SHARED_SECRET)
+    warn(`EDGE_SHARED_SECRET is not set, so every rate limit is counting the EDGE's address instead of the visitor's — one shared budget for the whole shop (20 sign-ins, 400 API calls per window, site-wide). Nothing is unsafe, but a busy day will turn real customers away. Set the same value here and in the Netlify dashboard, which is what netlify/edge-functions/client-identity.ts signs with.`);
 };
 
 // These services are core to the customer journey, rather than optional
@@ -591,9 +598,59 @@ const consumeOauthState = (req, res) => {
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got));
 };
 
+// ── Who a limit is counting ─────────────────────────────────────────────────────
+//
+// Every limiter below used req.ip, and req.ip is not a visitor. This app sits
+// behind TWO proxies (Netlify, then Railway) with `trust proxy` set to 1, so
+// req.ip is the edge's own address — THE SAME VALUE FOR EVERY SHOPPER. Each
+// budget was therefore one shared bucket for the entire shop: twenty sign-in
+// attempts, four hundred API calls, ten newsletter signups. Verified the hard
+// way — a second shopper on a different network was refused on their FIRST
+// request, because someone they have never met had spent the allowance.
+//
+// That fails hardest exactly when it costs most. Quiet days look perfect; the
+// day an ad lands, the shop starts turning away real customers and tells them
+// they have been trying too often.
+//
+// So the address comes from the edge, which is the only party that sees it
+// before any proxy hop — and it is BELIEVED ONLY WHEN SIGNED. The Railway URL is
+// public (public/_redirects), so anyone can bypass Netlify and send headers of
+// their choosing; trusting an unsigned `x-og-client-ip` would convert a
+// shared-but-real brute-force limit into no limit at all, since an attacker
+// could mint a fresh twenty sign-in attempts per invented address. The shared
+// secret is what separates "the edge says who this is" from "the caller says who
+// they are".
+//
+// Falls back to req.ip — the old shared bucket — whenever the edge did not
+// speak: secret unset on either side, local development, or a request that never
+// passed through Netlify. Degraded, never unsafe, and never worse than what this
+// replaced. See netlify/edge-functions/client-identity.ts.
+const EDGE_SHARED_SECRET = process.env.EDGE_SHARED_SECRET || '';
+
+// Same shape check the geo headers get: this becomes a key in an in-memory
+// store, so a caller must not be able to make it long or numerous. Compared with
+// timingSafeEqual for the same reason the OAuth state is — a byte-at-a-time
+// comparison of a secret is measurable over enough requests.
+const edgeVouchedIp = (req) => {
+  if (!EDGE_SHARED_SECRET) return '';
+  const key = String(req.headers['x-og-edge-key'] || '');
+  if (key.length !== EDGE_SHARED_SECRET.length) return '';
+  if (!crypto.timingSafeEqual(Buffer.from(key), Buffer.from(EDGE_SHARED_SECRET))) return '';
+  const ip = String(req.headers['x-og-client-ip'] || '').trim().toLowerCase();
+  return ip && ip.length <= 45 && /^[0-9a-f:.]+$/.test(ip) ? ip : '';
+};
+
+// The bucket name. Prefixed so a vouched address can never collide with a raw
+// one — `edge:` and `ip:` are different keys even for the same string.
+const limiterKey = (req) => {
+  const vouched = edgeVouchedIp(req);
+  return vouched ? `edge:${vouched}` : `ip:${req.ip}`;
+};
+
 // ── Rate limiters ───────────────────────────────────────────────────────────────
 // General limiter for auth endpoints; a tighter one for code-sending endpoints.
 const authLimiter = rateLimit({
+  keyGenerator: limiterKey,
   windowMs: 15 * 60 * 1000,
   // 20/15min in production. Overridable via env so an automated e2e run (which
   // logs in many times from one IP) isn't throttled mid-suite — never lowered
@@ -607,6 +664,7 @@ const authLimiter = rateLimit({
 // several throwaway accounts — doesn't starve later suites of their codes.
 // Left at 5/15min everywhere else.
 const otpSendLimiter = rateLimit({
+  keyGenerator: limiterKey,
   windowMs: 15 * 60 * 1000,
   max: Number(process.env.OTP_RATE_LIMIT_MAX) || 5,
   standardHeaders: true,
@@ -618,6 +676,7 @@ const otpSendLimiter = rateLimit({
 // single IP. Registered here (after the Stripe webhook route above) so
 // Stripe's own retries are never rate-limited.
 const apiLimiter = rateLimit({
+  keyGenerator: limiterKey,
   windowMs: 5 * 60 * 1000,
   // 400/5min in production — a real shopper never approaches it. Overridable via
   // env so an automated e2e run (hundreds of content fetches from one IP) isn't
@@ -643,6 +702,7 @@ const checkoutLimiter = rateLimit({
 // Unauthenticated write endpoints (newsletter signup, feedback) get a much
 // tighter budget — nothing legitimate submits these dozens of times.
 const publicWriteLimiter = rateLimit({
+  keyGenerator: limiterKey,
   windowMs: 15 * 60 * 1000,
   // Overridable (like the API/auth limiters) so the e2e suite — which subscribes
   // and submits feedback many times from one IP — can raise it; 10 in production.
@@ -674,6 +734,7 @@ const publicWriteLimiter = rateLimit({
 // (basket reminders), so guessing one is not something a rate limit is holding
 // back, and a wrong guess costs a 404. This caps flooding, nothing else.
 const unsubscribeLimiter = rateLimit({
+  keyGenerator: limiterKey,
   windowMs: 15 * 60 * 1000,
   max: Number(process.env.UNSUBSCRIBE_RATE_LIMIT_MAX) || 300,
   standardHeaders: true,
@@ -685,6 +746,7 @@ const unsubscribeLimiter = rateLimit({
 // should not silently eat the signup allowance. Deliberately tighter than the
 // shared public-write budget — nobody legitimately writes five reviews an hour.
 const feedbackLimiter = rateLimit({
+  keyGenerator: limiterKey,
   windowMs: 15 * 60 * 1000,
   max: Number(process.env.FEEDBACK_RATE_LIMIT_MAX) || 5,
   standardHeaders: true,
@@ -694,6 +756,7 @@ const feedbackLimiter = rateLimit({
 // Photo uploads are the most expensive public write (disk + bandwidth), so they
 // get the tightest budget of all — one review carries at most one photo.
 const feedbackPhotoLimiter = rateLimit({
+  keyGenerator: limiterKey,
   windowMs: 15 * 60 * 1000,
   max: Number(process.env.FEEDBACK_PHOTO_RATE_LIMIT_MAX) || 5,
   standardHeaders: true,
@@ -705,6 +768,7 @@ const feedbackPhotoLimiter = rateLimit({
 // ("SPRING20"), and the global 400/5min budget is plenty of room to enumerate
 // those. A real shopper types one or two codes, so this stays well clear of them.
 const discountValidateLimiter = rateLimit({
+  keyGenerator: limiterKey,
   windowMs: 15 * 60 * 1000,
   // Overridable like the other limiters so an e2e run (dozens of validate calls
   // from one IP) isn't throttled; only ever raised on a trusted test host.
@@ -744,6 +808,12 @@ const discountValidateLimiter = rateLimit({
 // of headroom while still blunting a scripted flood.
 const analyticsLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
+  // DELIBERATELY NOT limiterKey, and the difference is the point. This one
+  // accepts the edge's address UNSIGNED, because what it is protecting is worth
+  // less than what it would cost to get wrong: the downside of a forged header
+  // here is junk rows in a stats table, while the downside of ignoring an
+  // unsigned one is the shop silently under-reporting itself again. Every
+  // limiter that guards money, accounts or mail requires the signature.
   keyGenerator: (req) => {
     const edge = String(req.headers['x-og-client-ip'] || '').trim().toLowerCase();
     // Bounded and shape-checked: this becomes a key in an in-memory store, so a
