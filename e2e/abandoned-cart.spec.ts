@@ -432,7 +432,18 @@ test.describe("sending for real", () => {
     // is quietly filtered — which looks like "nobody opens our emails".
     const token = optOutToken(email);
     expect(token).not.toBe("preview");
-    expect(email.headers?.["List-Unsubscribe"]).toBe(`<${BASE}/unsubscribe?token=${token}>`);
+
+    // The visible link and the header are DIFFERENT addresses, and the
+    // difference is the whole point. A person opens the storefront page, which
+    // shows them which mailbox is being removed. Gmail POSTs the header's URL —
+    // so that one has to be the API route, because a POST to the storefront page
+    // is answered by Netlify with a 404 and reaches no server at all. Sending
+    // the page URL here is how a shop ends up with a one-click button that
+    // reports success and unsubscribes nobody.
+    expect(email.text).toContain(`${BASE}/unsubscribe?token=${token}`);
+    expect(email.headers?.["List-Unsubscribe"]).toBe(
+      `<${API}/api/unsubscribe/one-click/${token}>`
+    );
     expect(email.headers?.["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
 
     // The preheader — the grey line beside the subject — is hidden in the body.
@@ -656,6 +667,75 @@ test.describe("opting out", () => {
       sentEmails().slice(before).filter((e) => e.to === SHOPPER.email),
       "no reminder may reach an opted-out shopper by any route",
     ).toHaveLength(0);
+  });
+
+  // ── One-click, the way Gmail actually does it ───────────────────────────────
+  //
+  // `List-Unsubscribe-Post: List-Unsubscribe=One-Click` is a promise to the mail
+  // provider: POST the List-Unsubscribe URL and the person is removed, with no
+  // page ever shown to them. Gmail and Yahoo have required a working one for
+  // bulk senders since 2024, and they do not report a broken one — the button
+  // simply says "unsubscribed", the shop keeps mailing, and the complaints that
+  // follow are what damages the sending reputation.
+  //
+  // So this does exactly what Gmail's servers do, and nothing a browser does: a
+  // POST to the header's own URL, form-encoded, with no Origin and no cookie.
+  // The shopper is still on the newsletter list at this point — the test above
+  // proved the basket opt-out deliberately left them there — so the newsletter
+  // is what this removes.
+  test("Gmail's one-click POST really unsubscribes, with no page in between", async () => {
+    const before = sentEmails().length;
+    const testSend = await admin.post(`${API}/api/admin/newsletter/test`, {
+      headers: auth(TOKEN),
+      data: { to: SHOPPER.email, subject: "One-click check", body: "Hello." },
+    });
+    expect(testSend.ok(), "the newsletter test send goes out").toBeTruthy();
+    expect((await testSend.json()).real_unsubscribe_link, "and carries their real token").toBe(true);
+
+    const email = await nextEmailTo(SHOPPER.email, before);
+    const header = email.headers?.["List-Unsubscribe"] ?? "";
+    expect(email.headers?.["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+
+    // The header must be an address that can be POSTed. The storefront page can
+    // not be: on Netlify a POST to an SPA route is a 404.
+    const url = header.replace(/^<|>$/g, "");
+    expect(url, "the header points at the API, not the storefront page")
+      .toMatch(new RegExp(`^${API.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/api/unsubscribe/one-click/`));
+
+    // Exactly what a mail provider sends: no Origin, no Referer, no cookie.
+    const bare = await pwRequest.newContext();
+    const res = await bare.post(url, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      data: "List-Unsubscribe=One-Click",
+    });
+    expect(res.status(), "a 2xx is the only thing Gmail reads as success").toBe(200);
+
+    // And the row actually moved. This is the assertion the old header could
+    // never have passed: the button reported success and changed nothing.
+    const subscribers = await (await admin.get(`${API}/api/subscribers`, { headers: auth(TOKEN) })).json();
+    const row = (subscribers as Array<{ email: string; unsubscribed_at: string | null }>)
+      .find((s) => s.email === SHOPPER.email);
+    expect(row!.unsubscribed_at, "they are off the newsletter list").not.toBeNull();
+
+    // Idempotent: providers retry, and a retry must not be an error.
+    const again = await bare.post(url, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      data: "List-Unsubscribe=One-Click",
+    });
+    expect(again.status(), "a retried one-click is not an error").toBe(200);
+    await bare.dispose();
+  });
+
+  test("a one-click link nobody was issued removes nobody", async () => {
+    const bare = await pwRequest.newContext();
+    for (const token of ["preview", "0".repeat(48)]) {
+      const res = await bare.post(`${API}/api/unsubscribe/one-click/${token}`, {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        data: "List-Unsubscribe=One-Click",
+      });
+      expect(res.status(), `${token} is not a real opt-out link`).toBe(404);
+    }
+    await bare.dispose();
   });
 });
 

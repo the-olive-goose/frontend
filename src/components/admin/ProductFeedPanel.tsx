@@ -11,7 +11,7 @@ import {
 // The feed document itself is built by the API (backend/productFeed.js) and
 // served at /feed.xml; this panel is only the settings and a preview of what
 // that document will contain. The preview's inclusion rules live in
-// src/lib/productFeed.ts, which productFeedParity.test.ts pins to the backend's
+// src/lib/productFeed.ts, which productFeed.test.ts pins to the backend's
 // copy — a preview that disagrees with the feed is worse than no preview,
 // because the disagreement surfaces days later as a disapproved product with an
 // unhelpful reason.

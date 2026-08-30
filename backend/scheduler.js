@@ -85,10 +85,14 @@ export function startRefundReminderScheduler(pool) {
 const CART_SWEEP_INTERVAL_MS = Number(process.env.ABANDONED_CART_SWEEP_MS) || 15 * 60 * 1000;
 const CART_FIRST_RUN_DELAY_MS = Number(process.env.ABANDONED_CART_FIRST_RUN_MS) || 60 * 1000;
 
-export function startAbandonedCartScheduler(pool, frontendUrl) {
+export function startAbandonedCartScheduler(pool, frontendUrl, apiUrl) {
   const sweep = async () => {
     try {
-      const result = await sweepAbandonedCarts(pool, { frontendUrl });
+      // apiUrl is the public origin the List-Unsubscribe header points at — the
+      // one address in these emails that a mail client POSTs rather than a
+      // person opens. Passed in rather than read from the environment here so
+      // this module keeps taking every URL it builds from its caller.
+      const result = await sweepAbandonedCarts(pool, { frontendUrl, apiUrl });
       // Logged only when something happened. A quiet sweep every 15 minutes
       // would bury the interesting lines in the deploy logs.
       if (result.sent || result.failed) {

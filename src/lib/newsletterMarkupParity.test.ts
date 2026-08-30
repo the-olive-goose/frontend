@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as backend from "../../backend/email.js";
 import { parseNewsletterBody } from "./newsletterMarkup";
 
@@ -201,7 +201,63 @@ describe("the email HTML the API actually builds", () => {
 describe("sendNewsletterEmail", () => {
   it("refuses to send without an unsubscribe url — there is no such call path", async () => {
     await expect(
-      backend.sendNewsletterEmail("a@b.com", { subject: "S", body: "B", unsubscribeUrl: "" }),
+      backend.sendNewsletterEmail("a@b.com", { subject: "S", body: "B", unsubscribeUrl: "", oneClickUrl: "x" }),
     ).rejects.toThrow(/unsubscribeUrl/);
+  });
+
+  // The second address, and the one that is easy to forget because nothing on
+  // screen shows it. List-Unsubscribe-Post promises the mail provider it may
+  // POST the List-Unsubscribe URL and consider the person removed — so that URL
+  // has to be a route that answers a POST, not the storefront page, where a POST
+  // is a 404 and the one-click button reports a success that never happened.
+  it("refuses to send without a one-click url, which the header depends on", async () => {
+    await expect(
+      backend.sendNewsletterEmail("a@b.com", { subject: "S", body: "B", unsubscribeUrl: "https://x/y", oneClickUrl: "" }),
+    ).rejects.toThrow(/oneClickUrl/);
+  });
+
+  // Read off the wire rather than off the function's arguments: the header is
+  // built inside the sender, and the whole bug this pins was a correct-looking
+  // call site handing the wrong URL to a header nobody had ever read back.
+  //
+  // The module caches RESEND_API_KEY at import, so the key has to be in the
+  // environment BEFORE a fresh copy is imported — setting it afterwards leaves
+  // the sender in its dev-mode path, which logs and never calls fetch.
+  it("puts the one-click url in the header and the page url in the body", async () => {
+    const sent: Array<{ headers?: Record<string, string>; html: string; text: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
+      sent.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ id: "x" }), { status: 200 });
+    }));
+    const prevKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "test-key";
+    vi.resetModules();
+    try {
+      const fresh = await import("../../backend/email.js?one-click");
+      await fresh.sendNewsletterEmail("a@b.com", {
+        subject: "S", body: "B",
+        unsubscribeUrl: "https://shop.example/unsubscribe?token=abc",
+        oneClickUrl: "https://shop.example/api/unsubscribe/one-click/abc",
+      });
+    } finally {
+      if (prevKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prevKey;
+      // Put the SAFETY stub back, rather than unstubbing to the real fetch.
+      // src/test/setup.ts installs that stub so no test can reach a server —
+      // the guard added after `npm test` wrote 6,950 fixture rows into the
+      // production analytics table. A bare vi.unstubAllGlobals() here restores
+      // Node's real fetch for the rest of the file, quietly removing that guard
+      // for whatever test is added below this one.
+      vi.unstubAllGlobals();
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
+    }
+    expect(sent).toHaveLength(1);
+    expect(sent[0].headers?.["List-Unsubscribe"]).toBe(
+      "<https://shop.example/api/unsubscribe/one-click/abc>",
+    );
+    expect(sent[0].headers?.["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+    // The visible link stays the page a person can read and change their mind on.
+    expect(sent[0].html).toContain("https://shop.example/unsubscribe?token=abc");
+    expect(sent[0].text).toContain("https://shop.example/unsubscribe?token=abc");
   });
 });

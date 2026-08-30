@@ -263,6 +263,14 @@ app.use('/api', (req, res, next) => {
   // Stripe posts webhooks server-to-server with a signed body (verified in the
   // route itself) and never sends a browser Origin — exempt it explicitly.
   if (req.path.startsWith('/webhooks/')) return next();
+  // One-click unsubscribe (RFC 8058) is posted by Gmail's and Yahoo's servers,
+  // not by a browser. Exempted for the same reason as the webhook above, and
+  // safely: the route carries no cookie authority at all — the only thing that
+  // authorises it is the secret token in its own path, so there is no ambient
+  // credential for a cross-site request to borrow and nothing CSRF could add.
+  // Left to the check below, a provider that happens to send a Referer would be
+  // answered with a 403, which Gmail reads as a broken unsubscribe.
+  if (req.path.startsWith('/unsubscribe/one-click/')) return next();
 
   const originOk = originAllowed(req.headers.origin);
   if (originOk === false) return res.status(403).json({ error: 'Cross-site request blocked.' });
@@ -642,6 +650,35 @@ const publicWriteLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many submissions. Please try again later.' },
+});
+
+// ── Leaving a list must not be budgeted like joining one ─────────────────────
+//
+// Unsubscribing shares nothing with the writes above except the word "public".
+// Joining a list is a spam vector worth a tight budget. LEAVING one is something
+// the shop actively wants to succeed, and every refusal is an opt-out that did
+// not happen — the exact failure the one-click route exists to fix, arriving one
+// layer further down.
+//
+// The shared budget cannot carry it. `trust proxy` is 1 behind two proxies
+// (Netlify, then Railway), so req.ip is Netlify's egress address — the same
+// value for every visitor — which makes publicWriteLimiter's 10 per 15 minutes
+// ten SHOP-WIDE, shared with newsletter signups. Unsubscribes are bursty by
+// nature: they follow a send, from the whole list at once. Measured against a
+// stack at production defaults, the ELEVENTH one-click POST in the window is
+// answered 429 — and a non-2xx is precisely what Gmail reads as a broken
+// unsubscribe, which is the thing its bulk-sender rules penalise.
+//
+// The ceiling is deliberately generous, because nothing here is protected BY the
+// ceiling: the tokens are a pair of UUIDv4s (newsletter) and 24 random bytes
+// (basket reminders), so guessing one is not something a rate limit is holding
+// back, and a wrong guess costs a 404. This caps flooding, nothing else.
+const unsubscribeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.UNSUBSCRIBE_RATE_LIMIT_MAX) || 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again shortly.' },
 });
 // Feedback gets its own budget rather than sharing the newsletter's: a shopper
 // who just subscribed should still be able to leave a review, and a review flood
@@ -7865,8 +7902,26 @@ const NEWSLETTER_MAX_RECIPIENTS = 1000;
 /** How many Resend calls are in flight at once. */
 const NEWSLETTER_CONCURRENCY = 5;
 
+// The two addresses every marketing email needs, and they are NOT the same one.
+//
+//   unsubscribeUrlFor      — the page a person opens. It shows which address is
+//                            about to be removed and asks them to confirm, which
+//                            is why it is a storefront route and not an API call.
+//   oneClickUnsubscribeUrlFor — what the List-Unsubscribe header points at. It
+//                            must accept a POST and perform the opt-out with no
+//                            page in between (RFC 8058), so it has to be a route
+//                            on this server. BACKEND_URL is the public origin
+//                            that reaches it — in production the storefront's own
+//                            domain, via the /api proxy in public/_redirects.
+//
+// Pointing the header at the page instead is a silent failure: Netlify answers a
+// POST to an SPA route with 404, so Gmail's one-click button reports success and
+// removes nobody. See the one-click route for the full reasoning.
 const unsubscribeUrlFor = (token) =>
   `${FRONTEND_URL}/unsubscribe?token=${encodeURIComponent(token)}`;
+
+const oneClickUnsubscribeUrlFor = (token) =>
+  `${BACKEND_URL.replace(/\/+$/, '')}/api/unsubscribe/one-click/${encodeURIComponent(token)}`;
 
 /** Everyone currently opted in, with the token their unsubscribe link needs. */
 const activeSubscribers = async (limit = NEWSLETTER_MAX_RECIPIENTS) => {
@@ -7922,6 +7977,7 @@ app.post('/api/admin/newsletter/test', requireAuth, async (req, res) => {
       subject: `[TEST] ${subject}`,
       body,
       unsubscribeUrl: unsubscribeUrlFor(token),
+      oneClickUrl: oneClickUnsubscribeUrlFor(token),
     });
     res.json({ delivered, real_unsubscribe_link: token !== 'preview' });
   } catch (err) {
@@ -7981,7 +8037,9 @@ app.post('/api/admin/newsletter/send', requireAuth, async (req, res) => {
       for (let next = queue.shift(); next; next = queue.shift()) {
         try {
           const { delivered } = await sendNewsletterEmail(next.email, {
-            subject, body, unsubscribeUrl: unsubscribeUrlFor(next.unsubscribe_token),
+            subject, body,
+            unsubscribeUrl: unsubscribeUrlFor(next.unsubscribe_token),
+            oneClickUrl: oneClickUnsubscribeUrlFor(next.unsubscribe_token),
           });
           // Counted only when the sending service actually took it. `delivered`
           // is the same flag every transactional caller reads, and treating a
@@ -8138,6 +8196,7 @@ app.post('/api/admin/abandoned-carts/test', requireAuth, async (req, res) => {
       // The same sentinel the newsletter's test uses — the opt-out page explains
       // it rather than erroring on it.
       unsubscribeUrl: unsubscribeUrlFor('preview'),
+      oneClickUrl: oneClickUnsubscribeUrlFor('preview'),
     });
     res.json({ delivered, cart_url: ctx.cart_url });
   } catch (err) {
@@ -8185,7 +8244,7 @@ app.post('/api/admin/abandoned-carts/send', requireAuth, async (req, res) => {
     for (const candidate of targets) {
       try {
         const result = await sendAbandonedCartReminder(pool, {
-          candidate, settings, frontendUrl: FRONTEND_URL, trigger: 'manual',
+          candidate, settings, frontendUrl: FRONTEND_URL, apiUrl: BACKEND_URL, trigger: 'manual',
         });
         if (result.sent) sent++;
         else if (result.reason === 'opted_out') skipped++;
@@ -8208,7 +8267,7 @@ app.post('/api/admin/abandoned-carts/send', requireAuth, async (req, res) => {
 // ceremony — mail clients and security scanners routinely prefetch every URL in
 // an email, and a GET that unsubscribed on sight would remove people who never
 // clicked anything.
-app.get('/api/unsubscribe/:token', publicWriteLimiter, async (req, res) => {
+app.get('/api/unsubscribe/:token', unsubscribeLimiter, async (req, res) => {
   const token = safeText(req.params.token, 128);
   if (!token) return res.status(404).json({ error: 'not_found' });
   if (token === 'preview')
@@ -8246,34 +8305,89 @@ app.get('/api/unsubscribe/:token', publicWriteLimiter, async (req, res) => {
   } catch (err) { sendServerError(res, err); }
 });
 
-app.post('/api/unsubscribe', publicWriteLimiter, async (req, res) => {
+// The opt-out itself, shared by the page a person clicks through and the
+// one-click POST a mail client makes on their behalf. One implementation
+// because the two must never disagree about what "unsubscribed" means: a
+// header that reports success while the row is untouched is worse than no
+// header at all.
+//
+// Returns the list the token belonged to, or null when it belonged to none.
+const applyUnsubscribe = async (token) => {
+  // A tombstone, not a delete: the row has to stay, or the next time this
+  // address is typed into the signup box it is treated as brand new and
+  // starts receiving mail again. Idempotent — clicking twice is not an error,
+  // and COALESCE keeps the original opt-out date.
+  const { rows } = await pool.query(
+    `UPDATE subscribers
+        SET unsubscribed_at = COALESCE(unsubscribed_at, NOW())
+      WHERE unsubscribe_token = $1
+    RETURNING email`,
+    [token]
+  );
+  if (rows.length) return { kind: 'newsletter', email: rows[0].email };
+
+  // Same idempotent tombstone, for the basket-reminder list.
+  const { rows: cartRows } = await pool.query(
+    `UPDATE cart_reminder_optouts
+        SET opted_out_at = COALESCE(opted_out_at, NOW())
+      WHERE token = $1
+    RETURNING email`,
+    [token]
+  );
+  if (cartRows.length) return { kind: 'cart_reminders', email: cartRows[0].email };
+  return null;
+};
+
+app.post('/api/unsubscribe', unsubscribeLimiter, async (req, res) => {
   const token = safeText(req.body?.token, 128);
   if (!token || token === 'preview') return res.status(404).json({ error: 'not_found' });
   try {
-    // A tombstone, not a delete: the row has to stay, or the next time this
-    // address is typed into the signup box it is treated as brand new and
-    // starts receiving mail again. Idempotent — clicking twice is not an error,
-    // and COALESCE keeps the original opt-out date.
-    const { rows } = await pool.query(
-      `UPDATE subscribers
-          SET unsubscribed_at = COALESCE(unsubscribed_at, NOW())
-        WHERE unsubscribe_token = $1
-      RETURNING email`,
-      [token]
-    );
-    if (rows.length) return res.json({ success: true, kind: 'newsletter', email: rows[0].email });
-
-    // Same idempotent tombstone, for the basket-reminder list.
-    const { rows: cartRows } = await pool.query(
-      `UPDATE cart_reminder_optouts
-          SET opted_out_at = COALESCE(opted_out_at, NOW())
-        WHERE token = $1
-      RETURNING email`,
-      [token]
-    );
-    if (!cartRows.length) return res.status(404).json({ error: 'not_found' });
-    res.json({ success: true, kind: 'cart_reminders', email: cartRows[0].email });
+    const result = await applyUnsubscribe(token);
+    if (!result) return res.status(404).json({ error: 'not_found' });
+    res.json({ success: true, kind: result.kind, email: result.email });
   } catch (err) { sendServerError(res, err); }
+});
+
+// ── POST /api/unsubscribe/one-click/:token — RFC 8058 ─────────────────────────
+//
+// What the List-Unsubscribe header actually points at, and the reason this route
+// exists at all.
+//
+// Sending `List-Unsubscribe-Post: List-Unsubscribe=One-Click` is a promise: it
+// tells Gmail and Yahoo they may POST the List-Unsubscribe URL and consider the
+// person removed, with no page ever shown to them. That promise was previously
+// made against the storefront's own /unsubscribe page — which is a static SPA
+// route on Netlify, where a POST is answered with a 404 and reaches no server
+// that could act on it. The header rendered Gmail's one-click Unsubscribe
+// button, the shopper pressed it, Gmail reported success, and nothing was
+// unsubscribed. Both of the things that costs are serious: an opt-out that is
+// not honoured, and — since Gmail and Yahoo's bulk sender rules made a working
+// one-click mandatory — a sending reputation that quietly decays into the spam
+// folder.
+//
+// So the header points here instead, on the /api path the storefront's own proxy
+// already forwards to this server, while the human-readable link in the body
+// still goes to the page, where somebody can see which address they are removing
+// and change their mind.
+//
+// POST only, and no GET counterpart, for the same reason the route above splits
+// them: mail clients and security scanners routinely prefetch every URL in an
+// email, and a GET that unsubscribed on sight would remove people who never
+// clicked anything.
+app.post('/api/unsubscribe/one-click/:token', unsubscribeLimiter, async (req, res) => {
+  const token = safeText(req.params.token, 128);
+  if (!token || token === 'preview') return res.status(404).type('text/plain').send('Unknown unsubscribe link.');
+  try {
+    const result = await applyUnsubscribe(token);
+    if (!result) return res.status(404).type('text/plain').send('Unknown unsubscribe link.');
+    // Plain text, not JSON: nothing reads this body. What the mail provider
+    // checks is the 2xx, and it is the only thing that decides whether the
+    // one-click button reports success to the person who pressed it.
+    res.type('text/plain').send('You have been unsubscribed.');
+  } catch (err) {
+    console.error('[unsubscribe one-click]', err?.message || err);
+    res.status(500).type('text/plain').send('Could not unsubscribe.');
+  }
 });
 
 app.get('/api/shop/categories', async (_req, res) => {
@@ -9401,7 +9515,7 @@ initDb()
   .then(() => {
     app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
     startRefundReminderScheduler(pool);
-    startAbandonedCartScheduler(pool, FRONTEND_URL);
+    startAbandonedCartScheduler(pool, FRONTEND_URL, BACKEND_URL);
     setTimeout(runDecisionSweep, 45 * 1000);
     setInterval(runDecisionSweep, 60 * 60 * 1000);
     setTimeout(pruneAnalyticsEvents, 90 * 1000);

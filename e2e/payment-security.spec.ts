@@ -182,6 +182,44 @@ test.describe("Rate limiting", () => {
     }
     expect(sawLimit, "auth endpoint should rate-limit brute force").toBeTruthy();
   });
+
+  // ── An opt-out must not be throttled like a signup ────────────────────────
+  //
+  // This suite is the one phase that runs at PRODUCTION default limits, which is
+  // the only place this can be asserted: everywhere else the budgets are raised
+  // to 100000 and every unsubscribe route looks fine.
+  //
+  // The two directions are not symmetric. Joining a list is a spam vector and
+  // deserves the tight shared budget. Leaving one is something the shop wants to
+  // succeed — and because `trust proxy` is 1 behind two proxies, req.ip is the
+  // edge's address, identical for every visitor, so a shared budget of 10 per 15
+  // minutes is ten for the WHOLE SHOP. Unsubscribes arrive in a burst by their
+  // nature: they follow a send, from the entire list at once.
+  //
+  // On the shared budget the eleventh one-click POST was answered 429, and a
+  // non-2xx is exactly what Gmail reads as a broken unsubscribe — the same
+  // silent failure the one-click route was written to end, one layer further
+  // down. So: well past ten, every one of these still gets a real answer.
+  test("unsubscribing is not on the tight public-write budget", async () => {
+    const bare = await pwRequest.newContext();
+    const statuses: number[] = [];
+    for (let i = 0; i < 25; i++) {
+      const token = String(i).padStart(48, "0");
+      const res = await bare.post(`${API}/api/unsubscribe/one-click/${token}`, {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        data: "List-Unsubscribe=One-Click",
+      });
+      statuses.push(res.status());
+    }
+    // 404 because these tokens were never issued — the point is that the server
+    // ANSWERED all twenty-five rather than refusing the last fifteen.
+    expect(
+      statuses.filter((s) => s === 429),
+      "no unsubscribe may be refused for being the eleventh that quarter-hour",
+    ).toHaveLength(0);
+    expect(new Set(statuses)).toEqual(new Set([404]));
+    await bare.dispose();
+  });
 });
 
 // ─── 6. Security headers & error hygiene ─────────────────────────────────────
@@ -227,5 +265,31 @@ test.describe("Public input validation", () => {
       data: { message: "[E2E] xss test", rating: 5, photo_url: "javascript:alert(1)" },
     });
     expect(xss.status()).toBe(400);
+  });
+});
+
+// ─── 8. The shared public-write budget, spent on purpose ─────────────────────
+//
+// LAST IN THE FILE, and it has to stay last. It deliberately exhausts the
+// shared public-write budget — 10 per 15 minutes at production defaults — so
+// every /api/subscribers or /api/feedback test placed after it would be answered
+// 429 instead of the 400 it asserts.
+//
+// It is the other half of the unsubscribe claim in section 5. Widening the
+// opt-out budget must not have widened the signup one: joining a list is a spam
+// vector and keeps the tight budget, leaving one does not. If the two ever share
+// a limiter again, one of these two tests fails whichever way it was merged.
+test.describe("Public write budget", () => {
+  test("joining the list is still throttled", async () => {
+    const bare = await pwRequest.newContext();
+    let sawLimit = false;
+    for (let i = 0; i < 25; i++) {
+      const res = await bare.post(`${API}/api/subscribers`, {
+        data: { email: `e2e-limit-${Date.now()}-${i}@test.local` },
+      });
+      if (res.status() === 429) { sawLimit = true; break; }
+    }
+    expect(sawLimit, "newsletter signup keeps its tight public-write budget").toBeTruthy();
+    await bare.dispose();
   });
 });

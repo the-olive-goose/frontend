@@ -422,9 +422,16 @@ const newsletterBodyText = (body) =>
  * `unsubscribeUrl` is per-recipient and required — there is no call path that
  * sends this without one, because an unsubscribe link that is missing or shared
  * between recipients is the failure this whole feature has to avoid.
+ *
+ * `oneClickUrl` is the OTHER address, and it is equally required: it is what the
+ * List-Unsubscribe header carries, and — unlike the visible link — it must be a
+ * URL that performs the opt-out on a POST, with no page in between. See
+ * oneClickUnsubscribeUrlFor in backend/index.js for why the two cannot be the
+ * same string.
  */
-export async function sendNewsletterEmail(to, { subject, body, unsubscribeUrl }) {
+export async function sendNewsletterEmail(to, { subject, body, unsubscribeUrl, oneClickUrl }) {
   if (!unsubscribeUrl) throw new Error('sendNewsletterEmail requires an unsubscribeUrl');
+  if (!oneClickUrl) throw new Error('sendNewsletterEmail requires a oneClickUrl');
 
   // The plain-text alternative carries the same words without the markers, so a
   // client that refuses HTML shows prose rather than a screenful of asterisks.
@@ -446,9 +453,11 @@ export async function sendNewsletterEmail(to, { subject, body, unsubscribeUrl })
   return sendEmail({
     to, subject, html, text,
     headers: {
-      'List-Unsubscribe': `<${unsubscribeUrl}>`,
+      'List-Unsubscribe': `<${oneClickUrl}>`,
       // Tells the mail client the link can be POSTed to without a confirmation
-      // page, which is what makes Gmail show its own one-click Unsubscribe.
+      // page, which is what makes Gmail show its own one-click Unsubscribe. It
+      // is a promise about the URL above, which is why that URL is the API route
+      // and not the storefront page — a POST to the page is a 404.
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
     },
   });
@@ -591,8 +600,9 @@ const abandonedCartBodyHtml = (body, ctx) =>
  * would be "Hi there," — a wasted line in the only place a shopper decides
  * whether to open.
  */
-export async function sendAbandonedCartEmail(to, { subject, preheader, body, ctx, unsubscribeUrl }) {
+export async function sendAbandonedCartEmail(to, { subject, preheader, body, ctx, unsubscribeUrl, oneClickUrl }) {
   if (!unsubscribeUrl) throw new Error('sendAbandonedCartEmail requires an unsubscribeUrl');
+  if (!oneClickUrl) throw new Error('sendAbandonedCartEmail requires a oneClickUrl');
 
   // The subject and the preheader take the SAME tokens the body does, and for the
   // same reason: they are the two lines a shopper reads before deciding whether
@@ -622,7 +632,8 @@ export async function sendAbandonedCartEmail(to, { subject, preheader, body, ctx
   return sendEmail({
     to, subject: renderedSubject, html, text,
     headers: {
-      'List-Unsubscribe': `<${unsubscribeUrl}>`,
+      // The API route, not the visible link — same reason as the newsletter's.
+      'List-Unsubscribe': `<${oneClickUrl}>`,
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
     },
   });

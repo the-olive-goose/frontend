@@ -133,6 +133,13 @@ function startBackend(extraEnv) {
       RESEND_API_KEY: "",
       STRIPE_SECRET_KEY: backendEnvValue("STRIPE_SECRET_KEY") || "",
       FRONTEND_URL: BASE_URL,
+      // The public origin the List-Unsubscribe header points at. Production
+      // serves it on the storefront's own domain via the /api proxy; here the
+      // API answers directly, so this is the API's address. Left unset it would
+      // default to localhost:3001 — the DEV backend, which in this repo is
+      // pointed at the production database — and the suite would assert a
+      // one-click link aimed at the wrong server entirely.
+      BACKEND_URL: API_URL,
       // In this stack the frontend under test IS the shop, so it is the origin
       // analytics counts as the storefront. Without this the backend falls back
       // to the real theolivegoose.ie, every visit the suite makes classifies as

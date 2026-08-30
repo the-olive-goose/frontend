@@ -341,8 +341,11 @@ export const optOutTokenFor = async (pool, email) => {
  * the shop buys on stays honest. No gclid/fbclid is invented — that is against
  * both platforms' terms and would corrupt the same numbers.
  */
+/** An origin with any trailing slashes removed, so `${base}/path` never doubles up. */
+const trimSlash = (url) => String(url || '').replace(/\/+$/, '');
+
 export const recoveryUrl = (frontendUrl, settings, extraParams = {}) => {
-  const base = String(frontendUrl || '').replace(/\/+$/, '');
+  const base = trimSlash(frontendUrl);
   const params = new URLSearchParams();
   if (settings.utm_source) params.set('utm_source', settings.utm_source);
   if (settings.utm_medium) params.set('utm_medium', settings.utm_medium);
@@ -435,7 +438,7 @@ export const buildContext = async (pool, { candidate, settings, frontendUrl, sho
  * send is visible in the admin's history instead of looking like it never
  * happened, and so a crashed sweep cannot re-send what it already sent.
  */
-export const sendAbandonedCartReminder = async (pool, { candidate, settings, frontendUrl, trigger = 'automatic' }) => {
+export const sendAbandonedCartReminder = async (pool, { candidate, settings, frontendUrl, apiUrl, trigger = 'automatic' }) => {
   const { rows: optOut } = await pool.query(
     `SELECT opted_out_at FROM cart_reminder_optouts WHERE email = $1`, [candidate.email]
   );
@@ -452,7 +455,13 @@ export const sendAbandonedCartReminder = async (pool, { candidate, settings, fro
       preheader: settings.preheader,
       body: settings.body,
       ctx,
-      unsubscribeUrl: `${String(frontendUrl).replace(/\/+$/, '')}/unsubscribe?token=${encodeURIComponent(token)}`,
+      // Two different addresses on purpose — the visible link goes to the page
+      // that shows which mailbox is being removed, the header goes to the API
+      // route that a mail client can POST. See oneClickUnsubscribeUrlFor in
+      // backend/index.js for why sending the page URL in the header removes
+      // nobody.
+      unsubscribeUrl: `${trimSlash(frontendUrl)}/unsubscribe?token=${encodeURIComponent(token)}`,
+      oneClickUrl: `${trimSlash(apiUrl)}/api/unsubscribe/one-click/${encodeURIComponent(token)}`,
     }));
   } catch (err) {
     error = err?.message || String(err);
@@ -478,7 +487,7 @@ export const sendAbandonedCartReminder = async (pool, { candidate, settings, fro
  * Returns counts rather than throwing on a single bad address: one shopper whose
  * mailbox bounces must not stop the other nine.
  */
-export const sweepAbandonedCarts = async (pool, { frontendUrl, now = new Date() } = {}) => {
+export const sweepAbandonedCarts = async (pool, { frontendUrl, apiUrl, now = new Date() } = {}) => {
   const settings = await getAbandonedCartSettings(pool);
   if (!settings.enabled) return { skipped: 'disabled', sent: 0, failed: 0 };
 
@@ -488,7 +497,7 @@ export const sweepAbandonedCarts = async (pool, { frontendUrl, now = new Date() 
   let failed = 0;
   for (const candidate of due) {
     try {
-      const result = await sendAbandonedCartReminder(pool, { candidate, settings, frontendUrl, trigger: 'automatic' });
+      const result = await sendAbandonedCartReminder(pool, { candidate, settings, frontendUrl, apiUrl, trigger: 'automatic' });
       if (result.sent) sent++; else failed++;
     } catch (err) {
       failed++;

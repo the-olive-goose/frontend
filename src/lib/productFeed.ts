@@ -10,7 +10,7 @@
 // computeBundleSavings. Duplication like that drifts silently — here the cost of
 // drift is an admin who is told three candles are going out while the feed sends
 // two, and who then spends a week arguing with Merchant Center diagnostics.
-// src/lib/productFeedParity.test.ts pins the two together.
+// src/lib/productFeed.test.ts pins the two together.
 //
 // Keep in sync with backend/productFeed.js.
 
