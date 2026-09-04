@@ -150,9 +150,12 @@ const reseedBasket = async () => {
     env: process.env,
   });
   expect(res.status, `re-seeding the basket failed: ${res.stderr?.toString()}`).toBe(0);
-  // The seed clears the settings row, so the template goes back on. Automatic
-  // sending stays off — the tests that want it turn it on deliberately.
-  await putSettings({ ...TEMPLATE, enabled: false });
+  // The seed clears the settings row, so the template goes back on — and with it
+  // the no-quiet-window baseline, which the cleared row had just reset to the
+  // shipped 22:00–08:00. Without that, a basket re-seeded overnight comes back
+  // "not due" for the hour rather than for anything this suite is testing.
+  // Automatic sending stays off — the tests that want it turn it on deliberately.
+  await putSettings({ ...TEMPLATE, enabled: false, quiet_hours_start: 0, quiet_hours_end: 0 });
 };
 
 interface Candidate {
@@ -235,6 +238,16 @@ test.beforeAll(async () => {
   const res = await admin.post(`${API}/api/auth/login`, { data: ADMIN, headers: { Origin: BASE } });
   expect(res.ok(), "admin login should succeed — seed the isolated stack first").toBeTruthy();
   TOKEN = (await res.json()).token;
+
+  // Start from NO quiet window, so this suite reads the same at 3am as at 3pm.
+  // The shipped default is 22:00–08:00, and the panel below asserts the waiting
+  // basket is "Due now" — which it is not during those hours. Run overnight, that
+  // one assertion failed and took the other sixteen with it (serial mode), for a
+  // reason that had nothing to do with the code under test. The tests that are
+  // *about* quiet hours set their own window relative to the current hour, so
+  // they are unaffected by this baseline. Sending stays off: `enabled` is
+  // untouched here, and a later test asserts it is still false.
+  await putSettings({ quiet_hours_start: 0, quiet_hours_end: 0 });
 });
 
 test.describe.configure({ mode: "serial" });
