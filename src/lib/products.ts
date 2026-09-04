@@ -53,6 +53,66 @@ export const priceValue = (price: string | number | null | undefined): number =>
   return Number.isFinite(n) ? n : 0;
 };
 
+// ── Catalogue order ────────────────────────────────────────────────────────────
+
+/**
+ * A product's sort key. An unset Display Order (blank, null, or a value that
+ * isn't a number) sorts to the end rather than to position 0 — otherwise the
+ * moment the admin numbered one product, every product they hadn't got to yet
+ * would jump ahead of it.
+ */
+const displayRank = (product: Product): number => {
+  const raw = product.display_order;
+  if (raw === null || raw === undefined) return Infinity;
+  // Blank text counts as unset, not as zero. The admin box writes null when it is
+  // cleared, but content saved by hand or carried in from elsewhere can hold "" —
+  // and Number("") is 0, which would silently pin that candle to the front.
+  if (typeof raw === "string" && (raw as string).trim() === "") return Infinity;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : Infinity;
+};
+
+/**
+ * The catalogue in the order the admin arranged it: Display Order ascending,
+ * unnumbered products last. Ties (and unnumbered products) keep the order they
+ * sit in inside the admin list, since Array.prototype.sort is stable.
+ */
+export const sortByDisplayOrder = <T extends Product>(products: T[]): T[] =>
+  [...products].sort((a, b) => displayRank(a) - displayRank(b));
+
+/**
+ * The products of one shop category, in the order the Shop grid uses.
+ *
+ * Filtered out of the sorted catalogue rather than mapped from `product_ids`,
+ * because `product_ids` holds the order the admin happened to tick the boxes in
+ * — which is nobody's chosen order. Every surface that renders a category goes
+ * through here (the shop grid, the home strip, the flipbook), so the same
+ * category cannot read one way on the home page and another in the shop.
+ */
+export const productsInCategory = <T extends Product>(
+  productIds: string[] | undefined,
+  products: T[],
+): T[] => {
+  if (!productIds?.length) return [];
+  const inCategory = new Set(productIds);
+  return sortByDisplayOrder(products).filter(p => inCategory.has(p.id));
+};
+
+/**
+ * The number to pre-fill on a newly added product: one past the highest in use.
+ *
+ * Null when the catalogue isn't numbered at all — an admin who has never touched
+ * Display Order must keep the behaviour they have today, where a new candle joins
+ * the END of the shop grid. Numbering it 1 would put it in front of everything.
+ */
+export const nextDisplayOrder = (products: Product[]): number | null => {
+  const highest = products.reduce((max, p) => {
+    const rank = displayRank(p);
+    return Number.isFinite(rank) ? Math.max(max, rank) : max;
+  }, -Infinity);
+  return Number.isFinite(highest) ? highest + 1 : null;
+};
+
 /** Explicit 0 stock blocks purchase; undefined/null means "not tracked". */
 export const isOutOfStock = (product: Product): boolean =>
   product.stock !== undefined && product.stock !== null && Number(product.stock) <= 0;

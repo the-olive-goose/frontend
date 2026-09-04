@@ -7,6 +7,7 @@ import { DEFAULT_CONTENT } from "@/lib/defaults";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCart } from "@/contexts/CartContext";
 import { formatPrice } from "@/lib/cart";
+import { sortByDisplayOrder } from "@/lib/products";
 import { track } from "@/lib/analytics";
 import CartDrawer from "@/components/CartDrawer";
 import useBodyScrollLock from "@/hooks/useBodyScrollLock";
@@ -171,7 +172,11 @@ const NavbarSection = ({ data, announcement, offer, ready = true }: Props) => {
   useEffect(() => {
     getShopCategories().then(cats => setCategories(cats)).catch(() => {});
     getContent<{ items: Product[] }>("products", DEFAULT_CONTENT.products)
-      .then(d => setAllProducts(d?.items ?? []));
+      // Sorted on arrival, so the six suggestions below are the first six of the
+      // shop's own order rather than the first six the catalogue happens to hold.
+      // Without this, an admin who puts a candle first in the shop could still
+      // find it missing from a search that only shows six.
+      .then(d => setAllProducts(sortByDisplayOrder(d?.items ?? [])));
   }, []);
 
   // Publish the real navbar height as a CSS var so every page can offset its

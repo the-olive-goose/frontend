@@ -9,7 +9,7 @@ import {
   type Product,
   type ProductCardTheme,
 } from "@/lib/defaults";
-import { productPath } from "@/lib/products";
+import { productPath, sortByDisplayOrder, productsInCategory } from "@/lib/products";
 import { track } from "@/lib/analytics";
 import { ProductListScope } from "@/components/ProductListScope";
 import { useJsonLd } from "@/hooks/useJsonLd";
@@ -45,7 +45,10 @@ const ShopPage = () => {
       getShopCategories(),
       getContent<ProductCardTheme>("productCardTheme", DEFAULT_PRODUCT_CARD_THEME),
     ]).then(([products, cats, theme]) => {
-      setAllProducts(products.items ?? []);
+      // Sorted once, here: every list on this page (the full grid, a category, a
+      // search) is derived from this array, so they all inherit the Display Order
+      // the admin set — as does the ItemList structured data below.
+      setAllProducts(sortByDisplayOrder(products.items ?? []));
       setCategories(cats);
       if (theme) setCardTheme(theme);
     }).finally(() => setLoading(false));
@@ -56,8 +59,8 @@ const ShopPage = () => {
     let base = allProducts;
     if (activeSlug !== "all") {
       const cat = categories.find(c => c.slug === activeSlug);
-      if (!cat || !cat.product_ids?.length) return [];
-      base = cat.product_ids.map(id => allProducts.find(p => p.id === id)).filter((p): p is Product => !!p);
+      if (!cat) return [];
+      base = productsInCategory(cat.product_ids, allProducts);
     }
     if (searchTerm) {
       const q = searchTerm.toLowerCase();

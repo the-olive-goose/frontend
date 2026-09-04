@@ -120,7 +120,7 @@ import { DEFAULT_IMAGE_SIZE, buildEmailImageUrl, type ImageSize } from "@/lib/cl
 import { durableAvatarUrl, plainAvatarUrl, publicAvatarSource } from "@/lib/reviewAvatar";
 import ImageOptimiser from "@/components/admin/ImageOptimiser";
 import HeroVideoOptimiser from "@/components/admin/HeroVideoOptimiser";
-import { productSlug } from "@/lib/products";
+import { productSlug, sortByDisplayOrder, nextDisplayOrder } from "@/lib/products";
 import { SITE_NAME, SITE_URL } from "@/lib/seo";
 import { META_SOURCES, previewMeta } from "@/lib/seoContent";
 import { useToast } from "@/hooks/use-toast";
@@ -1322,7 +1322,7 @@ const ProductPageFields = ({
   );
 };
 
-const ProductsEditor = ({
+export const ProductsEditor = ({
   data,
   onChange,
   onSave,
@@ -1346,12 +1346,51 @@ const ProductsEditor = ({
     </Field>
 
     <div className="space-y-4">
-      <label className="block text-sm font-sans font-medium text-foreground">Products</label>
+      <div className="flex items-end justify-between gap-4">
+        <div className="space-y-1.5">
+          <label className="block text-sm font-sans font-medium text-foreground">Products</label>
+          <p className="text-xs text-muted-foreground font-sans max-w-xl">
+            The Shop page lists candles by <strong>Display order</strong> — 1 first, then 2, 3, and so on.
+            Leave the box empty and that candle goes to the end of the grid. The same order is used
+            inside each shop category.
+          </p>
+        </div>
+        {data.items.length > 1 && (
+          <button
+            type="button"
+            onClick={() => onChange({ ...data, items: sortByDisplayOrder(data.items) })}
+            className="shrink-0 px-3 py-2 rounded-lg border border-border text-muted-foreground font-sans text-xs hover:border-primary hover:text-primary transition-colors"
+            title="Rearrange the cards below to match the Shop page"
+          >
+            Sort this list by display order
+          </button>
+        )}
+      </div>
       {data.items.map((product, i) => (
         <Card key={product.id}>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <span className="font-sans text-sm font-medium text-foreground">Product {i + 1}</span>
-            <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
+            <div className="flex items-center gap-2">
+              <label htmlFor={`display-order-${product.id}`} className="font-sans text-xs text-muted-foreground whitespace-nowrap">
+                Display order
+              </label>
+              <Input
+                id={`display-order-${product.id}`}
+                type="number"
+                min={1}
+                step={1}
+                className="!w-20 !px-2 !py-1.5 text-center"
+                placeholder="—"
+                value={product.display_order ?? ""}
+                onChange={(e) => {
+                  const items = [...data.items];
+                  const v = e.target.value;
+                  items[i] = { ...items[i], display_order: v === "" ? null : Number(v) };
+                  onChange({ ...data, items });
+                }}
+              />
+              <RemoveButton onClick={() => onChange({ ...data, items: data.items.filter((_, j) => j !== i) })} />
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Name">
@@ -1427,6 +1466,7 @@ const ProductsEditor = ({
             price: "0",
             image_url: "",
             tag: "",
+            display_order: nextDisplayOrder(data.items),
           };
           onChange({ ...data, items: [...data.items, newProduct] });
         }}

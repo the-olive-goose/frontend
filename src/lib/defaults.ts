@@ -59,6 +59,14 @@ export interface Product {
   detail_paragraphs?: string[];
   /** Manual "You may also like" picks. Empty = auto-recommended. */
   recommended_ids?: string[];
+
+  /**
+   * Where this product sits in the Shop grid — 1 shows first, then 2, 3, …
+   * Set in Admin → Products. Blank/null means "unnumbered": those keep the order
+   * they were added in and sit after every numbered product, so a half-numbered
+   * catalogue still renders sensibly.
+   */
+  display_order?: number | null;
 }
 
 // ── Product card theme ─────────────────────────────────────────────────────────

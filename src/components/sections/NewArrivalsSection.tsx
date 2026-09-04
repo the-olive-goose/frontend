@@ -10,6 +10,7 @@ import {
   type Product,
   type ProductCardTheme,
 } from "@/lib/defaults";
+import { productsInCategory } from "@/lib/products";
 import RichText from "@/lib/richtext";
 import { ProductListScope } from "@/components/ProductListScope";
 import { SkelBlock } from "@/components/ui/ContentSkeleton";
@@ -53,12 +54,12 @@ const NewArrivalsSection = () => {
   const isMobile  = useIsMobile(); // must be above any early return
   const perView   = isMobile ? CANDLES_PER_VIEW_MOBILE : CANDLES_PER_VIEW;
 
-  const resolveProducts = useCallback((category: ShopCategory): Product[] => {
-    if (!category.product_ids?.length) return [];
-    return category.product_ids
-      .map(id => allProducts.find(p => p.id === id))
-      .filter((p): p is Product => !!p);
-  }, [allProducts]);
+  // Same helper the shop grid uses, so this strip and the category page it links
+  // to list the same candles in the same order — the admin's Display Order.
+  const resolveProducts = useCallback(
+    (category: ShopCategory): Product[] => productsInCategory(category.product_ids, allProducts),
+    [allProducts]
+  );
 
   // Everything the swipe handler needs is derived above the early return, so
   // the hooks below run on every render.

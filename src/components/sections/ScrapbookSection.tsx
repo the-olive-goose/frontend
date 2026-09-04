@@ -10,6 +10,7 @@ import {
   type Product,
   type ProductCardTheme,
 } from "@/lib/defaults";
+import { productsInCategory } from "@/lib/products";
 import RichText from "@/lib/richtext";
 import ProductCard from "@/components/ui/ProductCard";
 import { ProductListScope } from "@/components/ProductListScope";
@@ -345,13 +346,12 @@ const ScrapbookSection = () => {
       .catch(() => setCategories([]));
   }, []);
 
-  // Resolve product_ids → actual Product objects for a category
-  const resolveProducts = useCallback((cat: ShopCategory): Product[] => {
-    if (!cat.product_ids || cat.product_ids.length === 0) return [];
-    return cat.product_ids
-      .map(id => allProducts.find(p => p.id === id))
-      .filter((p): p is Product => !!p);
-  }, [allProducts]);
+  // Resolve product_ids → actual Product objects for a category, in the admin's
+  // Display Order — the same helper, and so the same order, as the shop grid.
+  const resolveProducts = useCallback(
+    (cat: ShopCategory): Product[] => productsInCategory(cat.product_ids, allProducts),
+    [allProducts]
+  );
 
   const candleOffset = candleOffsets[currentPage] ?? 0;
   const setCandleOffset = useCallback((n: number) => {
