@@ -38,3 +38,27 @@ export async function fillDeliveryAddress(page: Page, fullName: string) {
   // rather than letting a silent validation failure surface as a click timeout.
   await expect(page.getByText("Enter your street address.")).toHaveCount(0);
 }
+
+/**
+ * Tick the "I have read and agree to the Terms of Service and Delivery &
+ * Returns Policy" box that sits directly above the pay button.
+ *
+ * The box is unticked on every visit by design, and the pay button is disabled
+ * until it is ticked — so every journey that reaches Stripe has to go through
+ * here. The disabled/enabled assertions around the tick mean this helper also
+ * proves the gate is still doing its job, in every suite that uses it.
+ *
+ * There are two copies of the checkbox — one in the desktop summary card, one in
+ * the mobile sticky bar — and CSS shows exactly one at a time, so the visible
+ * one is the one to click.
+ */
+export async function acceptCheckoutTerms(page: Page) {
+  const pay = page.getByRole("button", { name: /continue to secure payment/i }).first();
+  await expect(pay).toBeVisible({ timeout: 15_000 });
+  await expect(pay, "the pay button must be disabled until the terms are accepted").toBeDisabled();
+
+  const agree = page.getByRole("checkbox", { name: /terms of service/i }).first();
+  await agree.check();
+
+  await expect(pay, "ticking the terms box must enable the pay button").toBeEnabled();
+}

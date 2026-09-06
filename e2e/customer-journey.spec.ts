@@ -12,7 +12,7 @@
 
 import { test, expect, Page } from "@playwright/test";
 import { payStripeTestCard } from "./stripe-checkout";
-import { fillDeliveryAddress } from "./address-form";
+import { acceptCheckoutTerms, fillDeliveryAddress } from "./address-form";
 
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
 const API = process.env.E2E_API ?? "http://localhost:3001";
@@ -185,6 +185,7 @@ test.describe("Purchase journey", () => {
     // Place order → redirected to Stripe's hosted checkout. This is the
     // security-critical milestone owned by OUR code: a valid, server-priced
     // Checkout Session was created and we handed the shopper to Stripe.
+    await acceptCheckoutTerms(page);
     await page.getByRole("button", { name: /pay|place order|continue to payment/i }).first().click();
     await page.waitForURL(/checkout\.stripe\.com/, { timeout: 45_000 });
     expect(page.url()).toContain("checkout.stripe.com");

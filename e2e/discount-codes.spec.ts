@@ -26,7 +26,7 @@
 
 import { test, expect, APIRequestContext, request as pwRequest, Page } from "@playwright/test";
 import { payStripeTestCard } from "./stripe-checkout";
-import { fillDeliveryAddress } from "./address-form";
+import { acceptCheckoutTerms, fillDeliveryAddress } from "./address-form";
 
 const API = process.env.E2E_API ?? "http://localhost:3001";
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
@@ -647,6 +647,7 @@ test.describe("Checkout UI", () => {
 
     // Place order → reaching Stripe means the server accepted the coded session
     // (validated + reserved + priced) and handed us off to pay.
+    await acceptCheckoutTerms(page);
     await page.getByRole("button", { name: /continue to secure payment/i }).first().click();
     await page.waitForURL(/checkout\.stripe\.com/, { timeout: 45_000 });
     expect(page.url()).toContain("checkout.stripe.com");

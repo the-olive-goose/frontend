@@ -33,7 +33,7 @@ import { spawnSync } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { payStripeTestCard } from "./stripe-checkout";
-import { fillDeliveryAddress } from "./address-form";
+import { acceptCheckoutTerms, fillDeliveryAddress } from "./address-form";
 
 const API = process.env.E2E_API ?? "http://localhost:3001";
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
@@ -536,6 +536,7 @@ test.describe("the shopper comes back", () => {
     await page.getByRole("button", { name: /proceed to checkout/i }).click();
     await page.waitForURL(/\/checkout/, { timeout: 30_000 });
     await fillDeliveryAddress(page, "Aoife Cartwright");
+    await acceptCheckoutTerms(page);
     await page.getByRole("button", { name: /pay|place order|continue to payment/i }).first().click();
     await page.waitForURL(/checkout\.stripe\.com/, { timeout: 45_000 });
 

@@ -21,7 +21,7 @@
  */
 
 import { test, expect, devices, Page } from "@playwright/test";
-import { fillDeliveryAddress } from "./address-form";
+import { acceptCheckoutTerms, fillDeliveryAddress } from "./address-form";
 
 const BASE = process.env.E2E_BASE ?? "http://localhost:8080";
 const API = process.env.E2E_API ?? "http://localhost:3001";
@@ -300,8 +300,13 @@ test.describe("Tap targets", () => {
           const r = el.getBoundingClientRect();
           if (r.width === 0 || r.height === 0) continue;           // not rendered
           if (getComputedStyle(el).visibility === "hidden") continue;
-          // Inline text links inside a paragraph are read, not tapped as targets.
-          if (el.tagName === "A" && el.closest("p")) continue;
+          // Inline text links inside a run of prose are read, not tapped as
+          // targets — WCAG 2.5.8's inline exception. A paragraph is one such run;
+          // so is the checkout's terms-consent sentence, whose policy links sit
+          // inside the <label> the shopper taps to tick the box. Padding those
+          // links out to 44px would put a full-height tap strip over the box
+          // itself, so a thumb aimed at the tick would open a policy instead.
+          if (el.tagName === "A" && el.closest("p, label")) continue;
           // A product thumbnail is an image-only link sitting right beside the
           // product-title link to the same place. WCAG 2.5.8 exempts a target
           // that has an equivalent adjacent one, and padding the thumbnail out to
@@ -422,6 +427,8 @@ test.describe("Mobile purchase journey", () => {
     // No sideways scroll once the form is populated either.
     expect(await horizontalOverflow(page), "checkout overflows horizontally when filled")
       .toBeLessThanOrEqual(1);
+
+    await acceptCheckoutTerms(page);
 
     const pay = page.getByRole("button", { name: /continue to secure payment|pay|place order/i }).first();
     await expect(pay).toBeVisible({ timeout: 10_000 });

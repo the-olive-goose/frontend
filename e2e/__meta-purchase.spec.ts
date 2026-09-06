@@ -2,7 +2,7 @@ import { test, expect, type Page, type Request } from "@playwright/test";
 import pg from "pg";
 import { existsSync, readFileSync } from "fs";
 import { payStripeTestCard } from "./stripe-checkout";
-import { fillDeliveryAddress } from "./address-form";
+import { acceptCheckoutTerms, fillDeliveryAddress } from "./address-form";
 
 // The money end of the Meta Pixel, watched rather than reasoned about.
 //
@@ -105,6 +105,8 @@ test("a real purchase: the browser's funnel, then the server's sale", async ({ p
 
   await fillDeliveryAddress(page, "Meta Pixel Tester");
   await page.waitForTimeout(2500);
+
+  await acceptCheckoutTerms(page);
 
   const placeOrder = page.getByRole("button", { name: /continue to secure payment/i }).first();
   await expect(placeOrder).toBeVisible({ timeout: 15_000 });
@@ -326,6 +328,8 @@ test("a shopper who declines cookies is not forwarded to Meta at all", async ({ 
   await page.waitForTimeout(2500);
   await fillDeliveryAddress(page, "No Consent Tester");
   await page.waitForTimeout(2500);
+  await acceptCheckoutTerms(page);
+
   const placeOrder = page.getByRole("button", { name: /continue to secure payment/i }).first();
   await expect(placeOrder).toBeVisible({ timeout: 15_000 });
   await placeOrder.click();

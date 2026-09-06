@@ -38,6 +38,7 @@ const inputStyle = { border: "1px solid #ccc", background: "#fff", color: "#111"
 
 // Sentinel for the picker's "+ Use a new address" option (vs. a saved address id).
 const NEW_ADDRESS = "__new__";
+const TERMS_NOTICE = "Please tick the box to accept the Terms of Service and Delivery & Returns Policy.";
 
 // The delivery fields on a saved address, as the checkout address form wants them.
 // Normalized on the way in so a legacy row (bare phone digits, lowercase Eircode)
@@ -116,6 +117,9 @@ const CheckoutPage = () => {
   // it doesn't depend on the shopper still having the email it arrived in.
   const [offeredCode, setOfferedCode] = useState<MyDiscountCode | null>(null);
   const [placing, setPlacing] = useState(false);
+  // Consent to the terms. Starts unticked on every visit — a pre-ticked box is
+  // not consent — and nothing re-hydrates it from storage.
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [error, setError] = useState(
     searchParams.get("canceled") ? "Payment was canceled — your basket is still here whenever you're ready." : ""
   );
@@ -383,6 +387,12 @@ const CheckoutPage = () => {
       setError(minChargeNotice);
       return;
     }
+    // The button is disabled until the box is ticked; this is the belt to that
+    // brace, so no code path can start a payment without the agreement.
+    if (!agreedToTerms) {
+      setError(TERMS_NOTICE);
+      return;
+    }
     if (isPickup && contactPhoneError) {
       setContactPhoneTouched(true);
       setError(contactPhoneError);
@@ -485,6 +495,36 @@ const CheckoutPage = () => {
       setPlacing(false);
     }
   };
+
+  // The row is padded to the 44px thumb floor the rest of the mobile UI is built
+  // to: the box itself is 18px, but the whole label ticks it.
+  //
+  // Sits directly above whichever "Continue to secure payment" button is on
+  // screen — the desktop summary card or the mobile sticky bar — and gates both
+  // off this one piece of state. The policy links open in their own tab so a
+  // shopper who reads them doesn't lose a filled-in checkout. stopPropagation
+  // keeps a link tap from toggling the box it sits inside.
+  const termsAgreement = (
+    <label className="flex items-start gap-2 cursor-pointer select-none py-1.5">
+      <input
+        type="checkbox"
+        checked={agreedToTerms}
+        onChange={e => { setAgreedToTerms(e.target.checked); if (e.target.checked) setError(""); }}
+        className="shrink-0 cursor-pointer"
+        style={{ width: 18, height: 18, marginTop: 1, accentColor: "#a88734" }}
+      />
+      <span className="font-sans text-xs leading-snug" style={{ color: "#0F1111" }}>
+        I have read and agree to the{" "}
+        <a href="/terms-of-service" target="_blank" rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          className="underline font-semibold" style={{ color: "#0F1111" }}>Terms of Service</a>{" "}
+        and{" "}
+        <a href="/returns" target="_blank" rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          className="underline font-semibold" style={{ color: "#0F1111" }}>Delivery &amp; Returns Policy</a>.
+      </span>
+    </label>
+  );
 
   return (
     <div className="min-h-screen" style={{ background: "#f3f3f3" }}>
@@ -838,16 +878,22 @@ const CheckoutPage = () => {
 
                   {error && <p className="font-sans text-sm" style={{ color: "#C7511F" }}>{error}</p>}
 
-                  <button onClick={handlePlaceOrder} disabled={placing || belowMinCharge}
-                    className="hidden lg:block w-full font-sans text-sm font-bold py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
+                  <div className="hidden lg:block">{termsAgreement}</div>
+
+                  <button onClick={handlePlaceOrder} disabled={placing || belowMinCharge || !agreedToTerms}
+                    className="hidden lg:block w-full font-sans text-sm font-bold py-2.5 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
                     style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
                     {placing ? "Redirecting to payment…" : `Continue to secure payment · €${grandTotal.toFixed(2)}`}
                   </button>
                   <div className="pt-1">
                     <TrustBadges compact />
                   </div>
+                  {/* The terms themselves are now an explicit tick above the button, so
+                      this line only has the privacy notice left to carry. */}
                   <p className="font-sans text-xs text-center" style={{ color: "#888" }}>
-                    By placing your order, you agree to our Terms &amp; Privacy Policy.
+                    By placing your order, you also agree to our{" "}
+                    <a href="/privacy-policy" target="_blank" rel="noopener noreferrer"
+                      className="underline" style={{ color: "#666" }}>Privacy Policy</a>.
                   </p>
                 </div>
               </div>
@@ -867,8 +913,9 @@ const CheckoutPage = () => {
           {(error || belowMinCharge) && (
             <p className="font-sans text-xs mb-2 text-center" style={{ color: "#C7511F" }}>{error || minChargeNotice}</p>
           )}
-          <button onClick={handlePlaceOrder} disabled={placing || belowMinCharge}
-            className="w-full font-sans text-sm font-bold py-3 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60"
+          <div className="mb-2">{termsAgreement}</div>
+          <button onClick={handlePlaceOrder} disabled={placing || belowMinCharge || !agreedToTerms}
+            className="w-full font-sans text-sm font-bold py-3 rounded-full transition-all hover:brightness-95 active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
             style={{ background: "#f0c14b", border: "1px solid #a88734", color: "#111" }}>
             {placing ? "Redirecting to payment…" : `Continue to secure payment · €${grandTotal.toFixed(2)}`}
           </button>
